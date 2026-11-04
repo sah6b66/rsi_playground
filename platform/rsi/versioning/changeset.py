@@ -49,3 +49,37 @@ class Changeset(BaseModel):
     hypothesis_id: str
     base_version: VersionId
     files: list[FileChange] = Field(default_factory=list)
+
+
+class FileDiff(BaseModel):
+    """One file-level difference between two versions (DD-09 §3)."""
+
+    path: str
+    op: Literal["create", "edit", "delete"]
+    patch: str = ""
+
+
+class FreezeRecord(BaseModel):
+    """Result of freezing an evalset (DD-09 §3)."""
+
+    evalset_id: str
+    git_ref: str
+    content_hash: str
+    frozen_at: str
+
+
+class LineageNode(BaseModel):
+    """A node in a SUT's version lineage graph."""
+
+    version_id: str
+    label: str = Field(description="tag or branch name")
+    kind: Literal["baseline", "candidate"]
+    parent_ids: list[str] = Field(default_factory=list)
+    experiment_ids: list[str] = Field(default_factory=list)
+
+
+class LineageGraph(BaseModel):
+    """Version lineage for one SUT (baseline tags + candidate branches)."""
+
+    nodes: list[LineageNode] = Field(default_factory=list)
+    edges: list[tuple[str, str]] = Field(default_factory=list)

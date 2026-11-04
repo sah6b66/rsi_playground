@@ -12,20 +12,36 @@ Refs layout::
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import shutil
 import threading
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import git
 
 from rsi.core.errors import GitStoreError, NotFastForwardError
-from rsi.versioning.changeset import Changeset, FileChange, VersionId
+from rsi.versioning.changeset import (
+    Changeset,
+    FileChange,
+    FileDiff,
+    FreezeRecord,
+    LineageGraph,
+    LineageNode,
+    VersionId,
+)
 from rsi.versioning.worktrees import Worktrees
 
 _BASELINE_RE = re.compile(r"^suts/(?P<sut>[^/]+)/baseline/v(?P<n>\d+)$")
+_CAND_RE = re.compile(r"^suts/(?P<sut>[^/]+)/cand/(?P<hyp>[^/]+)$")
 _SUT_PATH_RE = re.compile(r"^suts/(?P<sut>[^/]+)/")
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _baseline_prefix(sut_id: str) -> str:
@@ -152,7 +168,199 @@ class GitStore:
             repo.create_tag(name, ref=commit, message=f"rollback {sut_id}")
             self._sync_staging(staging, commit.hexsha)
 
+    # ── export / diff / lineage (read-only, no lock) ─────────────────
+
+    def export(self, version_id: VersionId, dest: Path) -> Path:
+        """Copy the full file tree at ``version_id`` into ``dest`` via a temp worktree."""
+        repo, worktrees, _ = self._require()
+        dest = Path(dest)
+        op_id = f"tmp-{uuid.uuid4().hex}"
+        path = worktrees.worktree_root / op_id
+        try:
+            repo.git.worktree("add", str(path), str(version_id))
+            shutil.copytree(
+                path,
+                dest,
+                ignore=shutil.ignore_patterns(".git"),
+                dirs_exist_ok=True,
+            )
+        except git.GitCommandError as exc:
+            raise GitStoreError(
+                f"export failed: {exc}", version_id=str(version_id), dest=str(dest)
+            ) from exc
+        finally:
+            try:
+                worktrees.cleanup(op_id)
+            except git.GitCommandError:
+                shutil.rmtree(path, ignore_errors=True)
+                repo.git.worktree("prune")
+        return dest
+
+    def diff(self, a: VersionId, b: VersionId) -> list[FileDiff]:
+        """File-level diff between two commits."""
+        repo, _, _ = self._require()
+        try:
+            commit_a = repo.commit(str(a))
+            commit_b = repo.commit(str(b))
+        except git.GitCommandError as exc:
+            raise GitStoreError(f"diff failed: {exc}", a=str(a), b=str(b)) from exc
+        out: list[FileDiff] = []
+        for d in commit_a.diff(commit_b, create_patch=True):
+            if d.new_file:
+                op, path = "create", str(d.b_path)
+            elif d.deleted_file:
+                op, path = "delete", str(d.a_path)
+            else:
+                op, path = "edit", str(d.b_path)
+            patch = d.diff
+            if isinstance(patch, bytes):
+                patch = patch.decode("utf-8", "replace")
+            out.append(FileDiff(path=path, op=op, patch=patch or ""))
+        return out
+
+    def lineage(self, sut_id: str) -> LineageGraph:
+        """Graph of baseline tags + candidate branches for ``sut_id``."""
+        repo, _, _ = self._require()
+        # Key nodes by label: a tag and a branch may point at the same commit.
+        nodes: dict[str, LineageNode] = {}
+        shas: set[str] = set()
+        edges: list[tuple[str, str]] = []
+        for tag in repo.tags:
+            m = _BASELINE_RE.match(tag.name)
+            if not m or m.group("sut") != sut_id:
+                continue
+            sha = tag.commit.hexsha
+            parents = [p.hexsha for p in tag.commit.parents]
+            nodes[tag.name] = LineageNode(
+                version_id=sha, label=tag.name, kind="baseline", parent_ids=parents
+            )
+            shas.add(sha)
+        for head in repo.heads:
+            m = _CAND_RE.match(head.name)
+            if not m or m.group("sut") != sut_id:
+                continue
+            sha = head.commit.hexsha
+            parents = [p.hexsha for p in head.commit.parents]
+            if head.name not in nodes:
+                nodes[head.name] = LineageNode(
+                    version_id=sha,
+                    label=head.name,
+                    kind="candidate",
+                    parent_ids=parents,
+                    experiment_ids=[m.group("hyp")],
+                )
+                shas.add(sha)
+        for node in nodes.values():
+            for p in node.parent_ids:
+                if p in shas:
+                    edges.append((p, node.version_id))
+        return LineageGraph(nodes=list(nodes.values()), edges=edges)
+
+    # ── evalset freeze (FR3.3) ───────────────────────────────────────
+
+    def freeze_evalset(self, evalset_id: str) -> FreezeRecord:
+        """Canonical-hash + tag ``evalsets/<id>/freeze/v<N>`` (idempotent per content)."""
+        repo, _, staging = self._require()
+        with self._write_lock:
+            es_dir = staging / "evalsets" / evalset_id
+            if not es_dir.is_dir():
+                raise GitStoreError(
+                    f"evalset directory missing: evalsets/{evalset_id}",
+                    evalset_id=evalset_id,
+                )
+            h = hashlib.sha256()
+            for f in sorted(es_dir.rglob("*")):
+                if f.is_file():
+                    h.update(f.read_bytes())
+            content_hash = h.hexdigest()
+            srepo = self._staging_repo(staging)
+            sha = srepo.head.commit.hexsha
+            prefix = f"evalsets/{evalset_id}/freeze/"
+            n = 1
+            for tag in repo.tags:
+                if tag.name.startswith(prefix):
+                    m = re.match(rf"{re.escape(prefix)}v(\d+)$", tag.name)
+                    if m:
+                        n = max(n, int(m.group(1)) + 1)
+            name = f"{prefix}v{n}"
+            repo.create_tag(name, ref=sha, message=f"freeze {evalset_id}")
+            return FreezeRecord(
+                evalset_id=evalset_id,
+                git_ref=sha,
+                content_hash=content_hash,
+                frozen_at=_utcnow_iso(),
+            )
+
+    def verify_freeze(self) -> bool:
+        """Check ``judge/freeze.manifest`` (path → sha256) against staging files."""
+        _, _, staging = self._require()
+        manifest_path = staging / "judge" / "freeze.manifest"
+        if not manifest_path.is_file():
+            return True  # no freeze configured = OK
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return False
+        for rel, expected in manifest.items():
+            f = staging / rel
+            if not f.is_file():
+                return False
+            if hashlib.sha256(f.read_bytes()).hexdigest() != expected:
+                return False
+        return True
+
+    # ── manual edit API (FR10.5 P0) ──────────────────────────────────
+
+    def list_files(self, sut_id: str, version: VersionId | None = None) -> dict[str, str]:
+        """Return {relpath: content} for suts/<sut_id>/ at a version or staging."""
+        repo, worktrees, staging = self._require()
+        if version is None:
+            return self._read_sut_dir(staging / "suts" / sut_id, staging)
+        op_id = f"tmp-{uuid.uuid4().hex}"
+        path = worktrees.worktree_root / op_id
+        try:
+            repo.git.worktree("add", str(path), str(version))
+            return self._read_sut_dir(path / "suts" / sut_id, path)
+        except git.GitCommandError as exc:
+            raise GitStoreError(
+                f"list_files failed: {exc}", sut_id=sut_id, version=str(version)
+            ) from exc
+        finally:
+            try:
+                worktrees.cleanup(op_id)
+            except git.GitCommandError:
+                shutil.rmtree(path, ignore_errors=True)
+                repo.git.worktree("prune")
+
+    def write_file(
+        self,
+        sut_id: str,
+        path: str,
+        content: str,
+        commit: bool = False,
+        message: str = "",
+    ) -> None:
+        """Write ``suts/<sut_id>/<path>`` in staging; optionally commit."""
+        _, _, staging = self._require()
+        rel = f"suts/{sut_id}/{path}"
+        target = staging / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        if commit:
+            with self._write_lock:
+                self._commit_staging(message or f"write: {rel}", paths=[f"suts/{sut_id}"])
+
     # ── internal helpers ─────────────────────────────────────────────
+
+    @staticmethod
+    def _read_sut_dir(sut_dir: Path, root: Path) -> dict[str, str]:
+        if not sut_dir.is_dir():
+            raise GitStoreError(f"directory missing: {sut_dir.relative_to(root)}")
+        return {
+            str(f.relative_to(sut_dir)).replace("\\", "/"): f.read_text(encoding="utf-8")
+            for f in sorted(sut_dir.rglob("*"))
+            if f.is_file()
+        }
 
     def _commit_staging(self, message: str, paths: list[str] | None = None) -> VersionId:
         """Add (+ optionally path-filter) and commit on staging; return sha."""
