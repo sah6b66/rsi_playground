@@ -1,0 +1,6 @@
+{
+  "include": ["rsi", "tests"],
+  "pythonVersion": "3.12",
+  "venvPath": ".",
+  "venv": ".venv"
+}
