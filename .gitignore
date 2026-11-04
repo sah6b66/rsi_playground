@@ -1,3 +1,9 @@
+# Reference implementations (too large for git, see docs/ references)
+open_source/
+
+# Local tool configuration
+.claude/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
