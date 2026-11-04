@@ -1,0 +1,116 @@
+"""HostService: instance lifecycle over HostPool + NetPolicy + CarrierAdapter.
+
+P0 offline: no GitStore export (config_version_id doubles as the config dir
+path placeholder), no real containers — adapter/fake drives everything.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from rsi.carrier.adapters.fake import CarrierAdapter, RunHandle
+from rsi.carrier.extract import extract_task_result
+from rsi.carrier.hosts import HostPool
+from rsi.carrier.network import NetPolicy
+from rsi.carrier.overlay import OverlayBuilder
+from rsi.core.models import LabHandle, TaskResult, TaskSpec
+from rsi.core.naming import new_id
+
+__all__ = ["HostService", "InstanceHandle", "RunHandle"]
+
+
+class InstanceHandle(BaseModel):
+    """A live SUT instance managed by HostService."""
+
+    instance_id: str
+    sut_id: str
+    run_id: str
+    host: str
+    container_id: str
+    status: str = "running"
+    config_dir: Path
+    env: dict[str, str] = Field(default_factory=dict)
+
+
+class HostService:
+    """Instance create/submit/collect/destroy over pluggable carriers."""
+
+    def __init__(
+        self,
+        host_pool: HostPool,
+        net_policy: NetPolicy,
+        adapters: dict[str, CarrierAdapter],
+    ) -> None:
+        if not adapters:
+            raise ValueError("at least one CarrierAdapter is required")
+        self.host_pool = host_pool
+        self.net_policy = net_policy
+        self.adapters = adapters
+        self._default_adapter = next(iter(adapters.values()))
+        self._instances: dict[str, InstanceHandle] = {}
+
+    def _adapter_for(self, host: str) -> CarrierAdapter:
+        return self.adapters.get(host, self._default_adapter)
+
+    def create_instance(
+        self,
+        image_ref: str,
+        config_version_id: str,
+        lab: LabHandle,
+        permission: str,
+        instrument: bool,
+        host: str,
+        cred: Any,
+        run_id: str,
+    ) -> InstanceHandle:
+        """Create (P0: register) a SUT instance attached to lab + trace nets."""
+        instance_id = new_id("inst")
+        # P0: skip GitStore export — config_version_id is a placeholder path.
+        config_dir = Path(config_version_id)
+        if instrument and config_dir.exists():
+            config_dir = OverlayBuilder.build(config_dir)
+        handle = InstanceHandle(
+            instance_id=instance_id,
+            sut_id=image_ref,
+            run_id=run_id,
+            host=host,
+            container_id=instance_id,
+            status="running",
+            config_dir=config_dir,
+            env={"RSI_LAB_ID": lab.lab_id, "RSI_RUN_ID": run_id},
+        )
+        self.net_policy.attach(handle.container_id, [f"lab-{lab.lab_id}", "trace"])
+        self._instances[instance_id] = handle
+        return handle
+
+    def submit_task(self, instance: InstanceHandle, task: TaskSpec) -> RunHandle:
+        """Dispatch the task prompt to the instance's carrier adapter."""
+        adapter = self._adapter_for(instance.host)
+        return adapter.submit_task(instance, task)
+
+    def collect(self, handle: RunHandle, timeout_s: float = 1800) -> TaskResult:
+        """Collect stdout and extract the FINAL_JSON result."""
+        instance = self._instances.get(handle.instance_id)
+        adapter = (
+            self._adapter_for(instance.host) if instance else self._default_adapter
+        )
+        try:
+            stdout = adapter.collect_result(handle, timeout_s)
+        except Exception:
+            return TaskResult(task_complete=False, instance_crashed=True)
+        return extract_task_result(stdout)
+
+    def destroy(self, instance: InstanceHandle) -> None:
+        """Detach networks and stop tracking the instance."""
+        self.net_policy.detach(instance.container_id)
+        self._instances.pop(instance.instance_id, None)
+
+    def destroy_stale(self, host: str) -> int:
+        """Clean up leftover instances on a host; returns count removed."""
+        stale = [i for i in self._instances.values() if i.host == host]
+        for instance in stale:
+            self.destroy(instance)
+        return len(stale)
