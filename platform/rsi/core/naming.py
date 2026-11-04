@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from rsi.core.errors import NamingError
 
 PREFIXES: frozenset[str] = frozenset(
-    {"batch", "run", "lab", "snap", "iter", "jd", "hyp", "exp", "inst"}
+    {"batch", "run", "lab", "snap", "iter", "jd", "hyp", "exp", "inst", "cred"}
 )
 
 # Crockford base32, lowercased, excluding i l o u.

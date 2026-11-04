@@ -51,7 +51,7 @@ class TestNewId:
 class TestPrefixes:
     def test_frozenset_members(self):
         assert PREFIXES == frozenset(
-            {"batch", "run", "lab", "snap", "iter", "jd", "hyp", "exp", "inst"}
+            {"batch", "run", "lab", "snap", "iter", "jd", "hyp", "exp", "inst", "cred"}
         )
 
 
