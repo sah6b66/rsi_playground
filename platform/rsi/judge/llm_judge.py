@@ -15,11 +15,14 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from rsi.core.models import PathQuality
 from rsi.llm.client import LLMClient
+from rsi.log import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
     from rsi.core.models import EvalTask, TaskResult, TraceEvent
 
 __all__ = ["LLMJudge", "PathQualityResult", "RootCauseMatchResult", "SemanticScores"]
+
+logger = get_logger(__name__)
 
 
 class _M(BaseModel):
@@ -73,14 +76,17 @@ class LLMJudge:
         result: "TaskResult",
         events: "list[TraceEvent]",
     ) -> SemanticScores:
+        logger.debug("judge.entry", task=task.task.title, events=len(events))
         try:
             root = await self._judge_root_cause(task, result)
-        except Exception:  # noqa: BLE001 - degrade to indeterminate, not raise
+        except Exception as exc:  # noqa: BLE001 - degrade to indeterminate, not raise
+            logger.debug("judge.indeterminate", stage="root_cause", exc_type=type(exc).__name__)
             return self._indeterminate("root_cause judgment unavailable")
 
         try:
             quality = await self._judge_path_quality(task, result, events)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("judge.indeterminate", stage="path_quality", exc_type=type(exc).__name__)
             return self._indeterminate("path_quality judgment unavailable")
 
         match = root.match
@@ -97,13 +103,20 @@ class LLMJudge:
             if consistent
             else "root cause matches but path is suspect (lucky guess)"
         )
-        return SemanticScores(
+        result_scores = SemanticScores(
             root_cause_match=match,
             root_cause_confidence=root.confidence,
             path_quality=path,
             consistency=consistent,
             consistency_reason=reason,
         )
+        logger.debug(
+            "judge.exit",
+            root_cause_match=result_scores.root_cause_match,
+            path_verdict=path.verdict,
+            consistent=consistent,
+        )
+        return result_scores
 
     # -- internals ----------------------------------------------------------------
 

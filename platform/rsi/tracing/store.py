@@ -13,11 +13,14 @@ from pydantic import BaseModel
 
 from rsi.core.enums import EventType
 from rsi.core.models import TraceEvent
+from rsi.log import get_logger
 
 if TYPE_CHECKING:
     from rsi.tracing.collector import TraceCollector
 
 __all__ = ["TraceFilter", "TraceStore"]
+
+logger = get_logger(__name__)
 
 
 class TraceFilter(BaseModel):
@@ -52,6 +55,7 @@ class TraceStore:
         cursor: str | None,
         limit: int,
     ) -> tuple[list[TraceEvent], str | None]:
+        logger.debug("query.entry", cursor=cursor, limit=limit)
         matched = self._filter_events(filter)
         if cursor is not None:
             cur_run, _, cur_seq = cursor.partition(":")
@@ -66,6 +70,7 @@ class TraceStore:
         if limit and len(matched) > limit and page:
             last = page[-1]
             next_cursor = f"{last.run_id}:{last.seq}"
+        logger.debug("query.exit", matched=len(matched), page=len(page))
         return page, next_cursor
 
     def _filter_events(self, filter: TraceFilter) -> list[TraceEvent]:
@@ -97,6 +102,7 @@ class TraceStore:
     # -- stats ------------------------------------------------------------
 
     def stats(self, filter: TraceFilter) -> dict[str, Any]:
+        logger.debug("stats.entry")
         events = self._filter_events(filter)
         tokens = 0
         for ev in events:
@@ -108,6 +114,7 @@ class TraceStore:
         steps = sum(1 for e in events if e.event_type == EventType.TOOL_CALL)
         duration_ms = sum(e.duration_ms or 0 for e in events)
         tss = sorted(e.ts for e in events if e.ts)
+        logger.debug("stats.exit", event_count=len(events), tokens=tokens)
         return {
             "event_count": len(events),
             "tokens": tokens,
