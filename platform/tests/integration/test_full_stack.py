@@ -31,6 +31,7 @@ from rsi.core.models import (
     Topology,
 )
 from rsi.db.tables import (
+    Batch,
     ConfigVersion,
     Judgment,
     Lab,
@@ -178,10 +179,23 @@ class TestIN016TraceVersionLookup:
         assert any("suts" in p.parts and "sut-f9" in p.parts for p in prompt_files)
         assert prompt_files[0].read_text(encoding="utf-8").startswith("# prompt v1")
 
-        # documented gap: runs table has no production writer yet
+        # F10: runs/batches rows now land through the production chain —
+        # run -> batch_id -> batches.config_version_id reverse lookup works.
         with services["session_factory"]() as session:
             runs = session.exec(select(Run)).all()
-        assert runs == []
+            assert runs, "runs rows must be persisted by BatchRunner (F10)"
+            assert len(runs) == 2
+            run_ids_db = {r.id for r in runs}
+            assert run_ids_db == run_ids, "run ids must match the judged runs"
+            for run in runs:
+                assert run.batch_id == "batch-f9"
+                assert run.result_summary_json  # scores summary recorded
+            batch = session.get(Batch, "batch-f9")
+            assert batch is not None
+            assert batch.status == "finalized"
+            assert batch.finished_at
+            assert batch.config_version_id == str(version_id)
+            assert batch.purpose == "baseline_eval"  # adhoc -> baseline_eval
 
 
 # ---------------------------------------------------------------- wiring regressions

@@ -75,7 +75,10 @@ class StubRunner:
     def __init__(self, stats: BatchStats) -> None:
         self.stats = stats
 
-    async def run_batch(self, batch_id, env, tasks, config_version_id, image_ref):
+    async def run_batch(
+        self, batch_id, env, tasks, config_version_id, image_ref,
+        db_meta=None,  # F10: batches/runs persistence metadata
+    ):
         return self.stats
 
 

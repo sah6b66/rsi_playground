@@ -612,3 +612,58 @@ class TestFreezeIdempotency:
         rec2 = store.freeze_evalset("es")
         assert "evalsets/es/freeze/v2" in [t.name for t in store.repo.tags]
         assert rec2.content_hash != rec1.content_hash
+
+
+# ── F10: production wiring fixes (runs/batches, IterationEngine, write_file) ──
+
+
+class TestF10WriteFileRegistersVersion:
+    def test_write_file_commit_registers_config_version(self, db_rig):
+        """F10: write_file(commit=True) 后 config_versions 有行（kind 为
+        CHECK 允许的 baseline，label 标注 manual write）。"""
+        store, _, sf = db_rig
+        from rsi.versioning.gitstore import GitStore  # noqa: F401
+
+        store.write_file(
+            "test-agent", "system-prompt.md", "# manual v2", commit=True,
+            message="manual edit",
+        )
+        with sf() as s:
+            rows = s.exec(
+                select(ConfigVersion).where(ConfigVersion.sut_id == "test-agent")
+            ).all()
+        assert any("manual write" in (r.label or "") for r in rows)
+        manual = next(r for r in rows if "manual write" in (r.label or ""))
+        assert manual.kind in ("baseline", "candidate", "archive")  # CHECK enum
+        assert manual.git_ref  # real commit sha
+
+    def test_write_file_no_commit_registers_nothing(self, db_rig):
+        store, _, sf = db_rig
+        with sf() as s:
+            before = len(s.exec(select(ConfigVersion)).all())
+        store.write_file("test-agent", "notes.md", "staging only")
+        with sf() as s:
+            after = len(s.exec(select(ConfigVersion)).all())
+        assert before == after
+
+
+class TestF10IterationEngineWiring:
+    def test_build_services_wires_engine_components(self, tmp_path):
+        """F10: bootstrap 构造的 IterationEngine 带上 change_applier/critic/
+        decision_recorder/gitstore（APPLYING/DECIDING 生产链依赖）。"""
+        from rsi.bootstrap import build_services
+        from rsi.settings import DatabaseSettings, Settings
+
+        services = build_services(
+            Settings(
+                home=tmp_path,
+                database=DatabaseSettings(
+                    url=f"sqlite:///{(tmp_path / 'wiring.db').as_posix()}"
+                ),
+            )
+        )
+        engine = services["iteration_engine"]
+        assert engine.change_applier is not None
+        assert engine.critic is not None
+        assert engine.decision_recorder is not None
+        assert engine.gitstore is services["git_store"]

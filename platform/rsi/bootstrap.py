@@ -301,6 +301,14 @@ def build_services(
         event_bus=event_bus,
         budget=budget_controller,
         ckpt=checkpoint_store,
+        # F10 wiring: optimizer loop components built above must reach the
+        # engine — APPLYING needs the real ChangeApplier (candidate versions),
+        # DECIDING needs critic + DecisionRecorder (experiments rows) and the
+        # GitStore for promote/rollback on the production chain.
+        change_applier=change_applier,
+        critic=deterministic_critic,
+        decision_recorder=decision_recorder,
+        gitstore=git_store,
     )
 
     # -- HealthMonitor (D-1, DD-12 §4.7) -----------------------------------

@@ -439,7 +439,17 @@ class GitStore:
         target.write_text(content, encoding="utf-8")
         if commit:
             with self._write_lock:
-                self._commit_staging(message or f"write: {rel}", paths=[f"suts/{sut_id}"])
+                vid = self._commit_staging(
+                    message or f"write: {rel}", paths=[f"suts/{sut_id}"]
+                )
+                # F10: a direct write_file(commit=True) creates a real
+                # version commit, so it must register a config_versions row
+                # like snapshot does. ck_config_versions_kind only allows
+                # baseline/candidate/archive — a manual write is closest to
+                # "baseline" (it lands on the baseline line, no hypothesis).
+                self._register_version(
+                    vid, sut_id, "baseline", f"manual write {path}"
+                )
 
     def delete_file(
         self,

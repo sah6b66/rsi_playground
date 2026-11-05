@@ -215,6 +215,7 @@ class BatchRunner:
         image_ref: str,
         permission: str = "read-only",
         bypass_cache: bool | None = None,
+        db_meta: dict[str, str] | None = None,
     ) -> BatchStats:
         # D-4: None -> runner default; noise-calibration batches force bypass
         # (ADR-17) so repeated runs always execute.
@@ -256,6 +257,9 @@ class BatchRunner:
         consecutive_env_failures = 0
         self.last_status = "running"
         await self.event_bus.publish("batch", batch_id, "created", "running")
+        # F10: batches/runs persistence (IN-016 run->batch->config_version
+        # DB reverse lookup) — best effort, never blocks the batch.
+        self._db_insert_batch(batch_id, config_version_id, permission, db_meta)
 
         try:
             for seq, task in enumerate(pending):
@@ -311,6 +315,12 @@ class BatchRunner:
                         },
                     )
                     await self.event_bus.publish("run", run_id, "judging", "cached")
+                    # F10: cached hits reuse the original run_id — insert only
+                    # when no row exists yet (fresh DB / cleared cache entry).
+                    self._db_insert_run(
+                        batch_id, task.task_id, run_id, "cached", seq,
+                        lab.lab_id, cache_key, verdict,
+                    )
                     continue
 
                 # d. run task (9-step pipeline)
@@ -328,6 +338,17 @@ class BatchRunner:
                 verdict_task_ids.append(task.task_id)
                 run_status = (
                     RunStatus.ENV_FAILED if verdict.missing else RunStatus.DONE
+                )
+                # F10: persist the executed run row
+                self._db_insert_run(
+                    batch_id,
+                    task.task_id,
+                    self.last_run_ids.get(task.task_id, ""),
+                    run_status.value,
+                    seq,
+                    lab.lab_id,
+                    cache_key,
+                    verdict,
                 )
                 completed.append(
                     {
@@ -403,6 +424,7 @@ class BatchRunner:
         await self.event_bus.publish("batch", batch_id, "running", status)
         # 4. aggregate verdicts -> BatchStats
         stats = self.stats_agg.aggregate(verdicts, task_ids=verdict_task_ids)
+        self._db_finish_batch(batch_id, status, stats)
         logger.debug(
             "run_batch.exit", batch_id=batch_id, status=status, n=stats.n
         )
@@ -613,6 +635,145 @@ class BatchRunner:
                     self.carrier.destroy(instance)
                 except Exception:  # noqa: BLE001
                     pass
+
+    # -- F10: batches/runs persistence ------------------------------------
+
+    # ck_batches_purpose has no 'adhoc_eval' member; a plain (non-iteration)
+    # batch is closest to a baseline eval of the given config version.
+    _DB_PURPOSE_MAP = {"adhoc_eval": "baseline_eval"}
+
+    def _db_insert_batch(
+        self,
+        batch_id: str,
+        config_version_id: str,
+        permission: str,
+        db_meta: dict[str, str] | None,
+    ) -> None:
+        """INSERT the batches row at batch start. Best effort — never raises.
+
+        ``db_meta`` carries the caller-side identifiers BatchRunner itself
+        does not know: ``evalset_id``/``sut_id`` (required NOT NULL columns;
+        SQLite FK enforcement is off in this deployment, so empty-string
+        placeholders are used when the caller cannot supply them),
+        ``iteration_id`` and ``profile_id`` (nullable).
+        """
+        if self.session_factory is None:
+            return
+        try:
+            from rsi.db.tables import Batch
+
+            meta = db_meta or {}
+            purpose = self._batch_purpose(batch_id)
+            with self.session_factory() as session:
+                session.add(
+                    Batch(
+                        id=batch_id,
+                        evalset_id=str(meta.get("evalset_id", "")),
+                        sut_id=str(meta.get("sut_id", "")),
+                        config_version_id=config_version_id,
+                        purpose=self._DB_PURPOSE_MAP.get(purpose, purpose),
+                        optimization_profile_id=meta.get("profile_id"),
+                        status="running",
+                        iteration_id=meta.get("iteration_id"),
+                        permission=permission,
+                        created_at=_utcnow_iso(),
+                    )
+                )
+                session.commit()
+        except Exception as exc:  # noqa: BLE001 - DB write must not fail runs
+            logger.warning(
+                "batch.persist_failed", batch_id=batch_id, error=str(exc)
+            )
+
+    def _db_finish_batch(self, batch_id: str, status: str, stats: Any) -> None:
+        """UPDATE the batches row at batch end (status/finished_at/stats)."""
+        if self.session_factory is None:
+            return
+        try:
+            from rsi.db.tables import Batch
+
+            stats_json = None
+            if hasattr(stats, "model_dump_json"):
+                stats_json = stats.model_dump_json()
+            with self.session_factory() as session:
+                row = session.get(Batch, batch_id)
+                if row is None:
+                    return
+                row.status = status
+                row.finished_at = _utcnow_iso()
+                row.stats_json = stats_json
+                session.add(row)
+                session.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "batch.persist_finish_failed", batch_id=batch_id, error=str(exc)
+            )
+
+    def _db_insert_run(
+        self,
+        batch_id: str,
+        task_id: str,
+        run_id: str,
+        status: str,
+        seq: int,
+        lab_id: str | None,
+        cache_key: tuple[str, str] | None,
+        verdict: Any,
+    ) -> None:
+        """INSERT one runs row after run_task completes (or on a cache hit).
+
+        Cache hits reuse the original run_id; if that row already exists the
+        insert is skipped (PK conflict would abort the batch otherwise).
+        """
+        if self.session_factory is None or not run_id:
+            return
+        try:
+            from rsi.db.tables import Run
+
+            summary = None
+            if verdict is not None and hasattr(verdict, "scores"):
+                try:
+                    summary = json.dumps(
+                        {
+                            "task_complete": getattr(
+                                verdict.scores, "task_complete", None
+                            ),
+                            "scores": verdict.scores.model_dump(mode="json"),
+                            "missing": bool(getattr(verdict, "missing", False)),
+                        },
+                        ensure_ascii=False,
+                    )
+                except Exception:  # noqa: BLE001 - summary is optional
+                    summary = None
+            now = _utcnow_iso()
+            with self.session_factory() as session:
+                if session.get(Run, run_id) is not None:
+                    return
+                session.add(
+                    Run(
+                        id=run_id,
+                        batch_id=batch_id,
+                        eval_task_id=task_id,
+                        lab_id=lab_id,
+                        exec_host=self.host,
+                        status=status,
+                        cache_key=(
+                            f"{cache_key[0]}/{cache_key[1]}"
+                            if isinstance(cache_key, tuple)
+                            else None
+                        ),
+                        result_summary_json=summary,
+                        started_at=now,
+                        ended_at=now,
+                        seq_in_batch=seq,
+                    )
+                )
+                session.commit()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "run.persist_failed", batch_id=batch_id, run_id=run_id,
+                error=str(exc),
+            )
 
     def _record_instrumentation(
         self, batch_id: str, config_version_id: str, report: Any

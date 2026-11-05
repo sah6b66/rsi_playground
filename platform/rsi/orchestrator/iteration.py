@@ -530,6 +530,9 @@ class IterationEngine:
         # 5. VERIFYING: baseline (if not supplied) + three-tier candidate
         await self._advance(iteration_id, from_, "VERIFYING")
         from_ = "VERIFYING"
+        # F10: batches/runs rows carry the iteration linkage (iteration_id
+        # + sut_id) so run->batch->iteration is traceable in the DB.
+        db_meta = {"iteration_id": iteration_id, "sut_id": sut_id}
         if baseline_stats is None:
             baseline_stats = await self.batch_runner.run_batch(
                 f"{iteration_id}-baseline",
@@ -537,9 +540,10 @@ class IterationEngine:
                 tasks,
                 config_version_id,
                 image_ref,
+                db_meta=db_meta,
             )
         candidate_stats, short_circuit = await self._verifying_phase(
-            env, tasks, cand_cfg, image_ref, profile
+            env, tasks, cand_cfg, image_ref, profile, db_meta=db_meta
         )
 
         # 6. DECIDING: DecisionCtx -> selector -> human gate -> Decision
@@ -772,6 +776,7 @@ class IterationEngine:
         config_version_id: str,
         image_ref: str,
         profile: OptimizationProfile,
+        db_meta: dict[str, str] | None = None,
     ) -> tuple[BatchStats, str | None]:
         """Three-tier candidate verification with short-circuit (DD-12 §5.5).
 
@@ -786,7 +791,8 @@ class IterationEngine:
 
         if smoke:
             stats = await self.batch_runner.run_batch(
-                f"verify-smoke-{smoke}", env, tasks, config_version_id, image_ref
+                f"verify-smoke-{smoke}", env, tasks, config_version_id, image_ref,
+                db_meta=db_meta,
             )
             rate = stats.metrics.get("task_complete", 0.0)
             logger.info("verify.smoke", task_complete_rate=rate, n=stats.n)
@@ -804,7 +810,8 @@ class IterationEngine:
 
         if iterate:
             stats = await self.batch_runner.run_batch(
-                f"verify-screen-{iterate}", env, tasks, config_version_id, image_ref
+                f"verify-screen-{iterate}", env, tasks, config_version_id, image_ref,
+                db_meta=db_meta,
             )
             rate = stats.metrics.get("task_complete", 0.0)
             logger.info("verify.screen", task_complete_rate=rate, n=stats.n)
@@ -813,7 +820,8 @@ class IterationEngine:
 
         holdout = getattr(ev, "holdout", "") or ""
         stats = await self.batch_runner.run_batch(
-            f"verify-holdout-{holdout}", env, tasks, config_version_id, image_ref
+            f"verify-holdout-{holdout}", env, tasks, config_version_id, image_ref,
+            db_meta=db_meta,
         )
         logger.info(
             "verify.holdout",
