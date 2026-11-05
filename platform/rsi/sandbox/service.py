@@ -79,11 +79,17 @@ class SandboxService:
         labs_dir: Path | str,
         config_api: ConfigApiCaller | None = None,
         scheduler: LabScheduler | None = None,
+        settings=None,
     ) -> None:
         self._backends = backends
         self.labs_dir = Path(labs_dir)
         self._config_api = config_api or ConfigApiCaller()
         self._scheduler = scheduler or LabScheduler(backends)
+        # settings wiring (H1): build retry limit + ready timeout
+        self._build_retry = settings.sandbox.build_retry if settings else 2
+        self._ready_timeout_s = (
+            settings.sandbox.ready_timeout_s if settings else 600
+        )
         self._lab_backend: dict[str, str] = {}
         self._envs: dict[str, EnvSpec] = {}
         self._snapshots: dict[str, list[SnapRef]] = {}
@@ -103,15 +109,23 @@ class SandboxService:
         selection = self._scheduler.select(env, backend_key)
         logger.debug("build_lab.backend_selected", backend_key=selection.backend_key, reason=selection.reason)
         backend = self._backends[selection.backend_key]
-        lab = await backend.build(env)
-        report = await backend.wait_ready(lab)
-        if not report.passed:
+        last_error: EnvError | None = None
+        lab = None
+        for _attempt in range(self._build_retry + 1):
+            lab = await backend.build(env)
+            report = await backend.wait_ready(lab, self._ready_timeout_s)
+            if report.passed:
+                break
             logger.debug("build_lab.not_ready", lab_id=lab.lab_id, summary=report.summary())
             await backend.destroy(lab)
-            raise EnvError(
+            last_error = EnvError(
                 f"lab for env {env.name!r} not ready: {report.summary()}",
                 context={"env": env.name, "backend": selection.backend_key},
             )
+            lab = None
+        if lab is None:
+            assert last_error is not None
+            raise last_error
         self._lab_backend[lab.lab_id] = selection.backend_key
         self._envs[lab.lab_id] = env
         snap0 = await backend.snapshot(lab, "snap0")
@@ -137,7 +151,7 @@ class SandboxService:
     async def wait_ready(
         self, lab: LabHandle, timeout_s: int | None = None
     ) -> ReadyReport:
-        return await self._backend(lab).wait_ready(lab, timeout_s or 600)
+        return await self._backend(lab).wait_ready(lab, timeout_s or self._ready_timeout_s)
 
     async def snapshot(self, lab: LabHandle, name: str) -> SnapRef:
         logger.debug("snapshot.entry", lab_id=lab.lab_id, name=name)

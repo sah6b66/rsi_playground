@@ -25,10 +25,13 @@ class BudgetController:
         stop_file: Path,
         scope_limits: dict[str, int],
         global_limit: int,
+        *,
+        event_bus=None,
     ) -> None:
         self.stop_file = Path(stop_file)
         self.scope_limits = dict(scope_limits)
         self.global_limit = global_limit
+        self.event_bus = event_bus
         self._used: dict[str, dict[str, float]] = {}
         self._halted: set[str] = set()
 
@@ -86,6 +89,10 @@ class BudgetController:
                 f"global budget exceeded: {total} > {self.global_limit} tokens\n",
                 encoding="utf-8",
             )
+            if self.event_bus is not None:
+                publish_alert = getattr(self.event_bus, "publish_alert", None)
+                if publish_alert is not None:
+                    await publish_alert("critical", "全局预算超限，触发 STOP 熔断")
             raise BudgetExceeded(
                 f"global budget exceeded: {total} > {self.global_limit} tokens"
             )

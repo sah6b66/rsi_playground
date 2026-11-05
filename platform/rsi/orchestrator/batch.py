@@ -76,7 +76,8 @@ class BatchRunner:
         event_bus,
         stats_agg,
         *,
-        task_timeout_s: float = 1800.0,
+        settings=None,
+        task_timeout_s: float | None = None,
         host: str = "main",
     ) -> None:
         self.sandbox = sandbox
@@ -88,7 +89,21 @@ class BatchRunner:
         self.budget = budget
         self.event_bus = event_bus
         self.stats_agg = stats_agg
+        self.settings = settings
+        if task_timeout_s is None:
+            task_timeout_s = (
+                float(settings.carrier.task_timeout_s)
+                if settings is not None
+                else 1800.0
+            )
         self.task_timeout_s = task_timeout_s
+        # settings wiring (H1): build retry limit + ready timeout from settings
+        self.prepare_attempts = (
+            settings.sandbox.build_retry + 1 if settings is not None else _PREPARE_ATTEMPTS
+        )
+        self.ready_timeout_s = (
+            settings.sandbox.ready_timeout_s if settings is not None else 600
+        )
         self.host = host
         self._envs: dict[str, Any] = {}
         # introspection for tests/ops: latest batch status and task->run_id map
@@ -146,6 +161,9 @@ class BatchRunner:
                 if self.budget.check_stop_file():
                     status = "aborted"
                     logger.debug("run_batch.abort", reason="stop_file", seq=seq)
+                    await self._publish_alert(
+                        "warning", "STOP 熔断文件检测到，批次中止", scope=batch_id
+                    )
                     break
                 # b. budget -> abort
                 try:
@@ -155,6 +173,9 @@ class BatchRunner:
                 except BudgetExceeded:
                     status = "aborted"
                     logger.debug("run_batch.abort", reason="budget", seq=seq)
+                    await self._publish_alert(
+                        "critical", "预算超限，批次中止", scope=batch_id
+                    )
                     break
 
                 # c. run task (9-step pipeline)
@@ -189,6 +210,11 @@ class BatchRunner:
                             "run_batch.circuit_breaker",
                             consecutive=consecutive_env_failures,
                             seq=seq,
+                        )
+                        await self._publish_alert(
+                            "critical",
+                            f"沙箱离线: 连续 {consecutive_env_failures} 个任务环境失败",
+                            scope=batch_id,
                         )
                         break
                 else:
@@ -248,7 +274,7 @@ class BatchRunner:
         # 1. prepare (backup + exec_cli/call_api), retry <= 2, then env_failed
         applied = []
         prepared = False
-        for _attempt in range(_PREPARE_ATTEMPTS):
+        for _attempt in range(self.prepare_attempts):
             try:
                 applied = await self.sandbox.prepare(lab, task.task_id, task.prepare)
                 prepared = True
@@ -317,6 +343,14 @@ class BatchRunner:
 
     # -- helpers ----------------------------------------------------------------
 
+    async def _publish_alert(
+        self, severity: str, message: str, scope: str | None = None
+    ) -> None:
+        """system.alert publisher (H2): no-op when the bus lacks publish_alert."""
+        publish_alert = getattr(self.event_bus, "publish_alert", None)
+        if publish_alert is not None:
+            await publish_alert(severity, message, scope=scope)
+
     async def _build_or_reuse_lab(self, env, state: dict | None):
         """Build a fresh lab, or reuse the checkpointed one if still alive."""
         if state is not None and state.get("lab_id"):
@@ -341,7 +375,7 @@ class BatchRunner:
                 return candidate, await self.sandbox.snapshot(candidate, "snap0")
             logger.info("batch.lab_dead", lab_id=state.get("lab_id"))
         lab = await self.sandbox.build_lab(env)
-        await self.sandbox.wait_ready(lab)
+        await self.sandbox.wait_ready(lab, self.ready_timeout_s)
         return lab, await self.sandbox.snapshot(lab, "snap0")
 
     @staticmethod

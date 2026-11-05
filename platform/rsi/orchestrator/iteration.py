@@ -302,6 +302,15 @@ class IterationEngine:
             rate = stats.metrics.get("task_complete", 0.0)
             logger.info("verify.smoke", task_complete_rate=rate, n=stats.n)
             if rate < 0.5:
+                publish_alert = getattr(
+                    self.event_bus, "publish_alert", None
+                )
+                if publish_alert is not None:
+                    await publish_alert(
+                        "info",
+                        "冒烟集未通过，候选版本短路回退",
+                        scope=self.last_iteration_id,
+                    )
                 return stats, "smoke"
 
         if iterate:
