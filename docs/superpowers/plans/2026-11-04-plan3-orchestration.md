@@ -17,6 +17,9 @@
 - FakeSandboxBackend for all device interaction
 - Commit after each green test cycle
 
+## Dispatch Rule (v2 — 用户决策)
+Code-generation dispatches reference **only DD files** (detailed design). No upstream FR/ADR/configuration references in implementer prompts. Upstream docs are for controller review only. Missing DD context is either added to DD §7 (Implementation Notes) or inlined in the dispatch as "Additional Context".
+
 ---
 
 ### Task 1: EventBus + CheckpointStore
