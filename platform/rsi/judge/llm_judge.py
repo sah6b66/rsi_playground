@@ -53,6 +53,8 @@ class PathQualityResult(_M):
 
     verdict: str  # "pass" | "suspect" (validated when mapped to PathQuality)
     skipped_critical_steps: list[str] = []
+    checklist_missed: list[str] = []  # expected checklist items not covered
+    checklist_false_positive: list[str] = []  # SUT actions matching no checklist item
     reasoning: str
 
 
@@ -107,6 +109,8 @@ class LLMJudge:
             root_cause_match=match,
             root_cause_confidence=root.confidence,
             path_quality=path,
+            checklist_missed=quality.checklist_missed,
+            checklist_false_positive=quality.checklist_false_positive,
             consistency=consistent,
             consistency_reason=reason,
         )
@@ -144,12 +148,15 @@ class LLMJudge:
         self, task: "EvalTask", result: "TaskResult", events: "list[TraceEvent]"
     ) -> PathQualityResult:
         critical = task.task.expected.critical_steps or []
+        checklist = task.task.expected.checklist or []
         resp = await self._llm.complete(
             "judge",
             "path_quality",
             vars={
                 "steps_summary": _event_texts(events)[:8000],
                 "critical_steps": "\n".join(s.evidence for s in critical),
+                "checklist_items": "\n".join(ci.item for ci in checklist),
+                "sut_actions": "\n".join(a.action for a in result.actions),
                 "task_complete": str(result.task_complete),
                 "actions": "\n".join(a.action for a in result.actions),
             },

@@ -15,6 +15,7 @@ from rsi.core.models import (
     TaskRecord,
     TaskResult,
     TaskSpec,
+    CheckItem,
     CriticalStep,
     ExpectedAnswer,
 )
@@ -30,7 +31,7 @@ def _lab() -> LabHandle:
     )
 
 
-def _task(final_state, critical=None) -> EvalTask:
+def _task(final_state, critical=None, checklist=None) -> EvalTask:
     from rsi.core.models import DeviceSpec, Topology
 
     env = EnvSpec(
@@ -47,6 +48,7 @@ def _task(final_state, critical=None) -> EvalTask:
         expected=ExpectedAnswer(
             final_state=final_state,
             critical_steps=critical,
+            checklist=checklist,
         ),
     )
     return EvalTask(env=env, task=rec)
@@ -165,3 +167,52 @@ async def test_no_critical_steps_defaults_empty() -> None:
     assert scores.final_state_results == []
     assert scores.critical_steps_hit == []
     assert scores.diagnostic_steps == 0
+
+
+@pytest.mark.asyncio
+async def test_checklist_evidence_hit_not_missed() -> None:
+    checklist = [
+        CheckItem(item="check bgp peers", evidence_cli="display bgp peer"),
+        CheckItem(item="check interface status", evidence_cli="display interface GE0/0/1"),
+    ]
+    events = [
+        _event({"name": "ssh", "args": {"cli": "display bgp peer 10.1.1.2 verbose"}}, 0),
+    ]
+    det = DeterministicJudge()
+    scores = await det.evaluate(
+        _task([], checklist=checklist),
+        TaskResult(task_complete=True),
+        _lab(),
+        _Sandbox({}),
+        events,
+    )
+    assert scores.checklist_missed == ["check interface status"]
+
+
+@pytest.mark.asyncio
+async def test_checklist_matched_by_action_text_not_missed() -> None:
+    checklist = [CheckItem(item="Check CPU usage", evidence_cli="display cpu-usage")]
+    from rsi.core.models import ActionRecord
+
+    result = TaskResult(
+        task_complete=True,
+        actions=[ActionRecord(action="ran check CPU usage on R1")],
+    )
+    det = DeterministicJudge()
+    scores = await det.evaluate(
+        _task([], checklist=checklist), result, _lab(), _Sandbox({}), []
+    )
+    assert scores.checklist_missed == []
+
+
+@pytest.mark.asyncio
+async def test_checklist_all_missed_when_no_evidence() -> None:
+    checklist = [
+        CheckItem(item="a", evidence_cli="display a"),
+        CheckItem(item="b"),  # no evidence_cli, no matching action
+    ]
+    det = DeterministicJudge()
+    scores = await det.evaluate(
+        _task([], checklist=checklist), TaskResult(task_complete=True), _lab(), _Sandbox({}), []
+    )
+    assert scores.checklist_missed == ["a", "b"]

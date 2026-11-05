@@ -19,8 +19,8 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle guard
     from rsi.core.models import EvalTask, LabHandle, TaskResult, TraceEvent, Verdict
     from rsi.judge.aggregate import VerdictAggregator
     from rsi.judge.antihack import AntiHackDetector
-    from rsi.judge.deterministic import DeterministicJudge
-    from rsi.judge.llm_judge import LLMJudge
+    from rsi.judge.deterministic import DetScores, DeterministicJudge
+    from rsi.judge.llm_judge import LLMJudge, SemanticScores
     from rsi.judge.safety import SafetyScanner
 
 __all__ = ["JudgeService"]
@@ -76,6 +76,7 @@ class JudgeService:
             safety_scan(),
         )
         sem = await self._llm.judge(task, result, events)
+        sem = self._merge_checklist(sem, det_scores)
         hack = self._antihack.detect(task, events, det_scores, sem, result=result, run_status=run_status)
         eff = efficiency if efficiency is not None else self._efficiency(events)
         missing = self._missing(result, run_status)
@@ -88,6 +89,18 @@ class JudgeService:
         return verdict
 
     # -- internals ----------------------------------------------------------------
+
+    @staticmethod
+    def _merge_checklist(sem: "SemanticScores", det: "DetScores") -> "SemanticScores":
+        """Union deterministic evidence-based misses with LLM-judged misses so
+        inspection-task scores reflect the task checklist (C1)."""
+        if not det.checklist_missed:
+            return sem
+        missed = list(sem.checklist_missed)
+        for item in det.checklist_missed:
+            if item not in missed:
+                missed.append(item)
+        return sem.model_copy(update={"checklist_missed": missed})
 
     @staticmethod
     def _extract_commands(events: "list[TraceEvent]") -> list[str]:

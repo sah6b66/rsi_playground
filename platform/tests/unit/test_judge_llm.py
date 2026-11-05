@@ -94,6 +94,35 @@ async def test_valid_responses_combined() -> None:
 
 
 @pytest.mark.asyncio
+async def test_checklist_missed_and_false_positive_populated() -> None:
+    captured: dict[str, dict] = {}
+    payloads = {
+        "root_cause": json.dumps({"match": True, "confidence": 0.9}),
+        "path_quality": json.dumps(
+            {
+                "verdict": "pass",
+                "skipped_critical_steps": [],
+                "checklist_missed": ["check memory usage"],
+                "checklist_false_positive": ["reset the device"],
+                "reasoning": "one checklist item uncovered",
+            }
+        ),
+    }
+
+    def handler(component, prompt_name, vars):
+        captured[prompt_name] = vars
+        return payloads[prompt_name]
+
+    judge = LLMJudge(_client(handler))
+    sem = await judge.judge(_task(), TaskResult(task_complete=True), _events())
+    assert sem.checklist_missed == ["check memory usage"]
+    assert sem.checklist_false_positive == ["reset the device"]
+    # checklist context threaded into the path_quality prompt
+    assert "checklist_items" in captured["path_quality"]
+    assert "sut_actions" in captured["path_quality"]
+
+
+@pytest.mark.asyncio
 async def test_root_cause_false_and_suspect_path() -> None:
     payloads = {
         "root_cause": json.dumps({"match": False, "confidence": 0.8}),
