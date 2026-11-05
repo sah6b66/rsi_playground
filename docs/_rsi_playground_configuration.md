@@ -3,7 +3,7 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DES-002 |
-| 版本 | v1.4（P0 多实例并行联动） |
+| 版本 | v1.5（v2.18 远端 Docker 主机支持） |
 | 日期 | 2026-11-02 |
 | 状态 | 待评审 |
 | 上游文档 | 需求 RSI-PG-REQ-001 v0.25；设计 RSI-PG-DES-001 v2.12 |
@@ -93,11 +93,18 @@ carrier:
   adapters:                     # 载体基底镜像 = CarrierAdapter.build_image 的 FROM（FR1.1，非 SUT 镜像本身）
     claude_code: {image_base: rsi/claude-code-runtime:1.x}
     opencode:    {image_base: rsi/opencode-runtime:1.x}
-  hosts:                        # Docker 执行主机池（FR5.8 模块自管，carrier/hosts.py 消费）
+  hosts:                        # Docker 执行主机池（FR5.8 模块自管；v2.18 R1-R6 多主机 P0 即用）
     main: {docker: local, subnets: [10.100.0.0/16]}
-                                 # P0 默认：主节点本机（Docker Desktop / npipe）；
-                                 # subnets=本主机 lab 网段池（全网唯一，check-subnets 校验，Q10）
-    # remote-01: {docker: ssh://user@host, subnets: [10.103.0.0/24]}   # P1：SSH 隧道 DOCKER_HOST
+                                 # 本机 Docker Desktop（npipe）；subnets=本主机 lab 网段池
+    gpu-01:                      # 远端 Linux 服务器 1（SSH 隧道 Docker，v2.18 P0）
+      docker: ssh://ops@192.168.1.100
+      subnets: [10.101.0.0/16]
+      max_instances: 10          # 本主机 SUT 容器上限（默认 10）
+    gpu-02:                      # 远端 Linux 服务器 2（可选，多台远端并行管理）
+      docker: ssh://ops@192.168.1.101
+      subnets: [10.102.0.0/16]
+      max_instances: 10
+  max_instances_per_host: 10     # int，全局默认每主机实例上限（host 级可覆盖）
 
 # ════════ ④ instrumentor —— 插桩流水线（rsi/instrumentor，设计 3.3，I-8） ════════
 instrumentor:
@@ -194,4 +201,4 @@ llm_compare: {candidates: [claude-sonnet-4-6, glm-5]}   # switch_model 假设的
 
 ---
 
-> 修订记录：v1.4 — P0 多实例并行联动（ADR-24）：backends 示例键改 ensp-pro-1（多实例键 `<type>-<n>` P0 即用，每实例独立 VM/网络名字空间）；batch_concurrency 默认 1→2（并行可配）+ 新增 max_parallel_labs（含同 lab 任务互斥注记——lab 内共享设备状态）。v1.3 — 二轮交叉审查修复：smoke_verify 冒烟任务来源对齐 FR3.7 P0（P0 即绑定冒烟集，未含时降级首个任务）。v1.2 — 二次交叉审查修复：后端配置键与 env.yaml backend 枚举同名（ensp_pro→ensp-pro）并注明多实例键规则；carrier.hosts.main 补 subnets 字段（FR5.8/Q10）；新增 logging 配置段与 labs_dir/recordings_dir（对齐设计 5.2/2.3）；guards 补 high_risk_worsen（对齐 FR9.3/Selector 规则 2）；smoke_verify 注明 P0 冒烟任务来源；goals 注明加权综合分定义位置。v1.0 — 自主设计文档 v1.5 拆分建档（原设计文档 5.1/5.2 内容整体迁入，内容未变）。
+> 修订记录：v1.5 — v2.18 远端 Docker 主机支持（R1-R6）：carrier.hosts 多主机完整示例（本地 main + 远端 gpu-01/gpu-02 SSH 隧道）；新增 max_instances_per_host（全局默认 + host 级覆盖）；InstanceScheduler least-loaded 选主机。v1.4 — P0 多实例并行联动（ADR-24）：backends 示例键改 ensp-pro-1（多实例键 `<type>-<n>` P0 即用，每实例独立 VM/网络名字空间）；batch_concurrency 默认 1→2（并行可配）+ 新增 max_parallel_labs（含同 lab 任务互斥注记——lab 内共享设备状态）。v1.3 — 二轮交叉审查修复：smoke_verify 冒烟任务来源对齐 FR3.7 P0（P0 即绑定冒烟集，未含时降级首个任务）。v1.2 — 二次交叉审查修复：后端配置键与 env.yaml backend 枚举同名（ensp_pro→ensp-pro）并注明多实例键规则；carrier.hosts.main 补 subnets 字段（FR5.8/Q10）；新增 logging 配置段与 labs_dir/recordings_dir（对齐设计 5.2/2.3）；guards 补 high_risk_worsen（对齐 FR9.3/Selector 规则 2）；smoke_verify 注明 P0 冒烟任务来源；goals 注明加权综合分定义位置。v1.0 — 自主设计文档 v1.5 拆分建档（原设计文档 5.1/5.2 内容整体迁入，内容未变）。

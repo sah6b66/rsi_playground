@@ -3,7 +3,7 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DD-05 |
-| 版本 | v1.0 |
+| 版本 | v1.2（v2.18 R1-R6 远端 Docker 主机支持 + G5 镜像验证） |
 | 上游 | 设计 3.2、接口 §3/§10；FR1、ADR-22（OpenCode P0 优先）；ADR-4 |
 | 交付切片 | S4（HostService+OpenCodeAdapter+Fake+overlay） |
 
@@ -77,14 +77,29 @@ class HostService:
     async def destroy_stale(self, host: str) -> int                           # DELETE /instances/{id} 支撑
 
 class HostPool:
-    def client(self, host: str) -> DockerClient        # main=npipe；P1 remote=ssh:// DOCKER_HOST
-    async def check_reach(self, host: str) -> bool     # docker version() 探测（FR5.8 就绪检查）
-    async def statuses(self) -> list[HostStatus]       # /sandbox/backends 的 carrier 部分数据
+    """Multi-host Docker client pool — local npipe + remote SSH tunnels (v1.2 R1, v2.18)."""
+    def __init__(self, host_configs: dict[str, dict]):
+        # host_configs from carrier.hosts: {"main": {docker: local}, "gpu-01": {docker: ssh://user@host}}
+        # _clients: dict[str, DockerClient] (lazy creation, cached per host)
+        # _instance_counts: dict[str, int] (per-host active instance count)
+    def client(self, host: str) -> DockerClient
+        # 'main'/local → docker.from_env()；ssh:// → DockerClient(base_url=url)（缓存）
+    async def check_reach(self, host: str) -> bool     # client(host).ping() 探测
+    async def statuses(self) -> list[HostStatus]       # 含 reachable + instance_count + max_instances
+    def increment(self, host: str) / decrement(self, host: str)  # 调度器计数
+
+class InstanceScheduler:
+    """New instance host selection — least-loaded + max_instances_per_host (v1.2 R2, v2.18)."""
+    def __init__(self, host_pool: HostPool, max_per_host: int = 10): ...
+    def select(self, explicit_host: str | None = None) -> str
+        # 显式指定→用之；否则按 instance_count 升序选首个 count<max 的主机；全满→CarrierError
 
 class NetPolicy:
-    async def ensure_lab_net(self, lab_id: str) -> str         # 返回网络名 lab-<id>
-    async def ensure_trace_net(self) -> str
-    async def attach(self, container_id: str, networks: list[str]) -> None
+    """Per-host network management (v1.2 R3, v2.18) — 每 host 独立 Docker daemon/网络命名空间."""
+    def __init__(self, host_pool: HostPool): ...
+    async def ensure_lab_net(self, host: str, lab_id: str) -> str   # 在指定 host 上创建 lab-<id>
+    async def ensure_trace_net(self, host: str) -> str              # 在指定 host 上创建 trace
+    async def attach(self, host: str, container_id: str, networks: list[str]) -> None
     # P1：async def egress_rules(container, allowed_subnets, ports=[22,830])
 
 class OverlayBuilder:                                            # ADR-4
