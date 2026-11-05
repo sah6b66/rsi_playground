@@ -60,6 +60,15 @@ async def res_headers(client) -> dict:
     )
     return {"Authorization": f"Bearer {resp.json()['token']}"}
 
+async def make_sut(client, h) -> str:
+    resp = await client.post(
+        "/api/v1/suts",
+        json={"name": "sut-x", "carrier": "linux", "image_ref": "img:1"},
+        headers=h,
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
 
 # -- iterations ---------------------------------------------------------------
 
@@ -67,9 +76,10 @@ async def res_headers(client) -> dict:
 class TestIterations:
     async def test_lifecycle(self, client):
         h = await admin_headers(client)
+        sut_id = await make_sut(client, h)
         resp = await client.post(
             "/api/v1/iterations",
-            json={"sut_id": "sut-1", "profile_id": "prof-1", "mode": "auto"},
+            json={"sut_id": sut_id, "profile_id": "prof-1", "mode": "p1"},
             headers=h,
         )
         assert resp.status_code == 201, resp.text
@@ -107,10 +117,11 @@ class TestIterations:
 
     async def test_abort_on_aborted_409(self, client):
         h = await admin_headers(client)
+        sut_id = await make_sut(client, h)
         it = (
             await client.post(
                 "/api/v1/iterations",
-                json={"sut_id": "s", "profile_id": "p", "mode": "auto"},
+                json={"sut_id": sut_id, "profile_id": "p", "mode": "p1"},
                 headers=h,
             )
         ).json()["iteration_id"]
@@ -120,10 +131,11 @@ class TestIterations:
 
     async def test_delete_archives(self, client):
         h = await admin_headers(client)
+        sut_id = await make_sut(client, h)
         it = (
             await client.post(
                 "/api/v1/iterations",
-                json={"sut_id": "s", "profile_id": "p", "mode": "auto"},
+                json={"sut_id": sut_id, "profile_id": "p", "mode": "p1"},
                 headers=h,
             )
         ).json()["iteration_id"]
@@ -135,10 +147,11 @@ class TestIterations:
 
     async def test_four_human_gates(self, client):
         h = await admin_headers(client)
+        sut_id = await make_sut(client, h)
         it = (
             await client.post(
                 "/api/v1/iterations",
-                json={"sut_id": "s", "profile_id": "p", "mode": "auto"},
+                json={"sut_id": sut_id, "profile_id": "p", "mode": "p1"},
                 headers=h,
             )
         ).json()["iteration_id"]
@@ -149,12 +162,13 @@ class TestIterations:
             ("review", {"approved": True}),
             ("decision", {"decision": "promote"}),
         ]
+        expected = {"hypothesis": 201}  # 门② §9.12: 201 + {hypothesis_id}
         for name, body in gates:
             await client.post(f"/api/v1/iterations/{it}:pause", headers=h)
             resp = await client.post(
                 f"/api/v1/iterations/{it}/{name}", json=body, headers=h
             )
-            assert resp.status_code == 204, (name, resp.text)
+            assert resp.status_code == expected.get(name, 204), (name, resp.text)
             state = (
                 await client.get(f"/api/v1/iterations/{it}", headers=h)
             ).json()["state"]
@@ -162,10 +176,11 @@ class TestIterations:
 
     async def test_gate_on_running_409(self, client):
         h = await admin_headers(client)
+        sut_id = await make_sut(client, h)
         it = (
             await client.post(
                 "/api/v1/iterations",
-                json={"sut_id": "s", "profile_id": "p", "mode": "auto"},
+                json={"sut_id": sut_id, "profile_id": "p", "mode": "p1"},
                 headers=h,
             )
         ).json()["iteration_id"]

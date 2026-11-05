@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from rsi.api.deps import get_current_user
+from rsi.core.errors import AuthError
 from rsi.orchestrator.event_bus import EventBus
 from rsi.security.auth import Claims
 
@@ -73,8 +74,24 @@ async def sse_events(
 
 
 @router.websocket("/runs/{run_id}")
-async def ws_trace(websocket: WebSocket, run_id: str) -> None:
-    """Trace tail stream. P0: accept, send tail, send ping, close."""
+async def ws_trace(websocket: WebSocket, run_id: str, token: str = "") -> None:
+    """Trace tail stream. P0: accept, send tail, send ping, close.
+
+    鉴权（§9.20，D-14）：``?token=`` 短时效 query token。文档未定义短时效
+    token 的签发机制，实现暂复用 JWT（AuthService.verify，角色限 A/E/R），
+    独立短时效签发通道待 S11。
+    """
+    auth = websocket.app.state.services.get("auth_service")
+    if auth is None:
+        await websocket.close(code=1011, reason="auth service unavailable")
+        return
+    try:
+        claims = auth.verify(token)
+        if claims.role not in {"admin", "agent_engineer", "researcher"}:
+            raise AuthError("role not allowed on run streams")
+    except Exception:
+        await websocket.close(code=4401, reason="invalid or missing token")
+        return
     await websocket.accept()
     try:
         traces: dict[str, list[dict[str, Any]]] = websocket.app.state.stores[

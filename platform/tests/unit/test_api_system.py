@@ -218,6 +218,13 @@ class TestSSE:
                     break
 
 
+def _ws_token(services) -> str:
+    auth = services["auth_service"]
+    rec = services["users"]["admin"]
+    token, _ = auth.login(rec["user_id"], rec["role"], rec["password_hash"], "admin-pw")
+    return token
+
+
 class TestWS:
     def test_ws_tail(self, services):
         app = create_app(services)
@@ -228,7 +235,9 @@ class TestWS:
             {"seq": i, "type": "tool_call", "run_id": "run-1"} for i in range(5)
         ]
         with TestClient(app) as tc:
-            with tc.websocket_connect("/api/v1/streams/runs/run-1") as ws:
+            with tc.websocket_connect(
+                f"/api/v1/streams/runs/run-1?token={_ws_token(services)}"
+            ) as ws:
                 msg = ws.receive_json()
                 assert msg["type"] == "tail"
                 assert len(msg["events"]) == 5
@@ -236,6 +245,8 @@ class TestWS:
     def test_ws_missing_run_closes(self, services):
         app = create_app(services)
         with TestClient(app) as tc:
-            with tc.websocket_connect("/api/v1/streams/runs/zz") as ws:
+            with tc.websocket_connect(
+                f"/api/v1/streams/runs/zz?token={_ws_token(services)}"
+            ) as ws:
                 msg = ws.receive_json()
                 assert msg["type"] == "error"

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from rsi.api.deps import get_current_user, get_store
@@ -83,3 +83,49 @@ async def defect_dist(
     a = dict(dist.get("a", {}))
     b = dict(dist.get("b", {}))
     return DefectDistOut(a=a, b=b)
+
+
+class NoiseBandItem(BaseModel):
+    metric: str
+    sigma: float
+    delta: float
+    k: int | None = None
+    evalset_hash: str | None = None
+    low_confidence: bool = False
+    calibrated_at: str | None = None
+    valid: bool = True
+
+
+class NoiseBandsOut(BaseModel):
+    items: list[NoiseBandItem]
+
+
+@router.get("/noise-bands", response_model=NoiseBandsOut)
+async def noise_bands(
+    request: Request,
+    evalset_id: str | None = None,
+    user: Claims = Depends(get_current_user),
+) -> NoiseBandsOut:
+    """噪声带标定状态（ADR-17，§9.17）。读 NoiseBandCalibrator 最近一次标定。"""
+    calibrator = request.app.state.services.get("noise_band")
+    items: list[NoiseBandItem] = []
+    if calibrator is not None:
+        factor = float(getattr(calibrator, "factor", 1.96))
+        sigma_map: dict = getattr(calibrator, "last_sigma", {}) or {}
+        n_pairs = int(getattr(calibrator, "last_n_pairs", 0) or 0)
+        # 文档未定义 calibrated_at 来源，实现取标定器最近标定时间（无则空）
+        calibrated_at = getattr(calibrator, "last_calibrated_at", None)
+        for metric, sigma in sorted(sigma_map.items()):
+            items.append(
+                NoiseBandItem(
+                    metric=metric,
+                    sigma=float(sigma),
+                    delta=factor * float(sigma),
+                    k=n_pairs or None,
+                    evalset_hash=None,
+                    low_confidence=(n_pairs or 0) < 3,
+                    calibrated_at=calibrated_at,
+                    valid=True,
+                )
+            )
+    return NoiseBandsOut(items=items)

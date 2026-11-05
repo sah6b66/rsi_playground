@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -11,7 +12,12 @@ from pydantic import BaseModel, Field
 
 from rsi.api.deps import audit, get_current_user, get_store, require_perms
 from rsi.core.enums import IterationState
-from rsi.core.errors import InvalidTransitionError, NotFoundError
+from rsi.core.errors import (
+    ConflictError,
+    InvalidTransitionError,
+    NotFoundError,
+    ValidationError,
+)
 from rsi.security.auth import Claims
 
 router = APIRouter(prefix="/iterations", tags=["iterations"])
@@ -29,9 +35,11 @@ _GATES: dict[str, tuple[str, str]] = {
 
 
 class IterationCreate(BaseModel):
+    """§9.12：``mode ∈ p1|p2``；p2 在 P2 阶段开放（此前 409）。"""
+
     sut_id: str = Field(json_schema_extra={"example": "sut-1a2b3c4d"})
     profile_id: str = Field(json_schema_extra={"example": "prof-9f8e7d6c"})
-    mode: str = Field(default="auto", json_schema_extra={"example": "auto"})
+    mode: str = Field(default="p1", json_schema_extra={"example": "p1"})
 
 
 class IterationOut(BaseModel):
@@ -97,7 +105,35 @@ async def create_iteration(
     body: IterationCreate,
     user: Claims = Depends(require_perms("batch:trigger")),
     store: dict = Depends(get_store("iterations")),
+    suts: dict = Depends(get_store("suts")),
 ) -> dict:
+    # mode 校验（§9.12 / T2-7）：p2 未开放 → 409；非法值 → 422
+    if body.mode == "p2":
+        raise ConflictError(
+            "P2 未开放：全自动迭代模式于 P2 阶段开放",
+            context={"mode": body.mode},
+        )
+    if body.mode != "p1":
+        raise ValidationError(
+            f"invalid mode {body.mode!r}: expected 'p1'",
+            context={"mode": body.mode},
+        )
+    if body.sut_id not in suts:
+        raise NotFoundError(
+            f"sut {body.sut_id!r} not found", context={"sut_id": body.sut_id}
+        )
+    # v2.14 迭代互斥：同一 sut_id 存在活跃迭代 → 409
+    for other in store.values():
+        if (
+            other["sut_id"] == body.sut_id
+            and IterationState(other["state"]) not in _TERMINAL
+            and not other["archived"]
+        ):
+            raise ConflictError(
+                f"sut {body.sut_id!r} already has an active iteration "
+                f"{other['id']!r}",
+                context={"sut_id": body.sut_id, "iteration_id": other["id"]},
+            )
     it = {
         "id": f"iter-{uuid.uuid4().hex[:8]}",
         "sut_id": body.sut_id,
@@ -200,13 +236,16 @@ async def delete_iteration(
 
 
 def _gate_router(name: str, required_step: str, next_step: str):
-    @router.post(f"/{{iteration_id}}/{name}", status_code=204)
+    status_code = 201 if name == "hypothesis" else 204
+
+    @router.post(f"/{{iteration_id}}/{name}", status_code=status_code)
     @audit.audited(f"gate.{name.replace('-', '_')}", object_type="iteration")
     async def gate(
         iteration_id: str,
         body: GateBody,
         user: Claims = Depends(require_perms("approval:decide")),
         store: dict = Depends(get_store("iterations")),
+        hypotheses: dict = Depends(get_store("hypotheses")),
     ) -> Response:
         it = _get(store, iteration_id)
         if it["state"] != IterationState.PAUSED.value:
@@ -221,6 +260,30 @@ def _gate_router(name: str, required_step: str, next_step: str):
             {"gate": name, "step": required_step, "by": str(user.sub),
              "at": _now()}
         )
+        if name == "hypothesis":
+            # 人工门②（§9.12）：写 hypotheses.iteration_id 并推进状态机，
+            # 响应 201 + {"hypothesis_id": ...}
+            hyp = {
+                "id": f"hyp-{uuid.uuid4().hex[:8]}",
+                "sut_id": it["sut_id"],
+                "iteration_id": it["id"],
+                "statement": body.hypothesis or "",
+                "target": body.model_extra.get("target") if body.model_extra else None,
+                "predicted_effect": (
+                    body.model_extra.get("predicted_effect")
+                    if body.model_extra
+                    else None
+                ),
+                "status": "submitted",
+                "created_at": _now(),
+                "updated_at": _now(),
+            }
+            hypotheses[hyp["id"]] = hyp
+            return Response(
+                status_code=201,
+                content=json.dumps({"hypothesis_id": hyp["id"]}),
+                media_type="application/json",
+            )
         return Response(status_code=204)
 
     gate.__name__ = f"gate_{name.replace('-', '_')}"

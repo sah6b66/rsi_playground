@@ -199,7 +199,7 @@ class TestFullApiWorkflow:
             json={
                 "sut_id": sut["id"],
                 "profile_id": profile["id"],
-                "mode": "auto",
+                "mode": "p1",
             },
             headers=h,
         )

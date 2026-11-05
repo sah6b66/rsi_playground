@@ -353,6 +353,27 @@ class GitStore:
             with self._write_lock:
                 self._commit_staging(message or f"write: {rel}", paths=[f"suts/{sut_id}"])
 
+    def delete_file(
+        self,
+        sut_id: str,
+        path: str,
+        commit: bool = False,
+        message: str = "",
+    ) -> None:
+        """Delete ``suts/<sut_id>/<path>`` from staging; optionally commit.
+
+        Staging-only delete (``commit=False``) removes the file from the
+        staging worktree without creating a version.
+        """
+        _, _, staging = self._require()
+        rel = f"suts/{sut_id}/{path}"
+        target = staging / rel
+        if target.is_file():
+            target.unlink()
+        if commit:
+            with self._write_lock:
+                self._commit_staging(message or f"delete: {rel}", paths=[f"suts/{sut_id}"])
+
     # ── internal helpers ─────────────────────────────────────────────
 
     @staticmethod

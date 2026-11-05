@@ -9,6 +9,8 @@ the RegularizedSelector operate on a calibrated band instead of 0.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from rsi.core.models import BatchStats, NoiseBandInfo
 from rsi.log import get_logger
 
@@ -36,6 +38,9 @@ class NoiseBandCalibrator:
         self.factor = factor
         # Last calibration's raw per-metric sigma (evidence, not in the band model).
         self.last_sigma: dict[str, float] = {}
+        # API (§9.17) needs the last calibration metadata as well.
+        self.last_n_pairs: int = 0
+        self.last_calibrated_at: str | None = None
 
     def calibrate(
         self, batch_stats_runs: list[BatchStats], k: int = 3
@@ -58,6 +63,7 @@ class NoiseBandCalibrator:
             )
         if not runs:
             self.last_sigma = {}
+            self.last_n_pairs = 0
             return NoiseBandInfo(metrics={}, n_pairs=0)
 
         metric_names: set[str] = set()
@@ -76,6 +82,8 @@ class NoiseBandCalibrator:
             band[name] = self.factor * sigma[name]
 
         self.last_sigma = sigma
+        self.last_n_pairs = len(runs)
+        self.last_calibrated_at = datetime.now(UTC).isoformat()
         info = NoiseBandInfo(metrics=band, n_pairs=len(runs))
         logger.debug(
             "calibrate.exit", metrics=len(band), n_pairs=info.n_pairs
