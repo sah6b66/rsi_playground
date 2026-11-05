@@ -37,16 +37,19 @@ class TestNoiseBandCalibrator:
         assert info.n_pairs == 3
         sigma = (2 * 0.01 / 3) ** 0.5
         assert cal.last_sigma["root_cause_accuracy"] == pytest.approx(sigma)
-        # delta = 1.96 * sigma (default factor)
-        assert info.metrics["root_cause_accuracy"] == pytest.approx(1.96 * sigma)
+        # delta = 1.96 * sigma (default factor); D-8 nested metric shape
+        assert info.metrics["root_cause_accuracy"]["sigma"] == pytest.approx(sigma)
+        assert info.metrics["root_cause_accuracy"]["delta"] == pytest.approx(1.96 * sigma)
+        assert info.metrics["root_cause_accuracy"]["n_pairs"] == 3.0
         # zero-variance metric -> zero band
-        assert info.metrics["task_complete"] == pytest.approx(0.0)
+        assert info.metrics["task_complete"]["delta"] == pytest.approx(0.0)
 
     def test_constant_runs_give_zero_band(self) -> None:
         cal = NoiseBandCalibrator()
         info = cal.calibrate([_stats({"task_complete": 1.0})] * 3)
-        assert info.metrics["task_complete"] == 0.0
+        assert info.metrics["task_complete"]["delta"] == 0.0
         assert info.n_pairs == 3
+        assert info.valid is True
 
     def test_empty_runs(self) -> None:
         info = NoiseBandCalibrator().calibrate([])
@@ -58,7 +61,7 @@ class TestNoiseBandCalibrator:
         info = NoiseBandCalibrator().calibrate(
             [_stats({"root_cause_accuracy": v}) for v in (0.7, 0.8, 0.9)]
         )
-        assert info.metrics["root_cause_accuracy"] > 0.0
+        assert info.metrics["root_cause_accuracy"]["delta"] > 0.0
 
 
 class TestSignificanceTester:

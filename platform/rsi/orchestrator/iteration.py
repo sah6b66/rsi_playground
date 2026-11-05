@@ -694,20 +694,39 @@ class IterationEngine:
     ) -> None:
         """Recalculate predicted-task hit rate (DD-12 §5.5 calc_hit_rate).
 
-        Per-task scores ride in ``metrics["task_scores"]`` (task_id -> score);
-        a predicted task counts as hit only if the candidate improved it.
+        Per-task scores ride in ``stats.task_scores`` — either the production
+        BatchStats list of ``{task_id, score, ...}`` rows (D-9) or the legacy
+        ``{task_id: score}`` dict shape. A predicted task counts as hit only
+        if the candidate improved it; empty/absent scores skip the recalc.
         """
         predicted = hyp.get("predicted_affected_tasks") or []
         if not predicted:
             return
 
-        def _scores(stats) -> dict:
-            if stats is None:
+        def _scores(stats) -> dict[str, float]:
+            raw = getattr(stats, "task_scores", None) if stats is not None else None
+            if not raw:
                 return {}
-            return getattr(stats, "task_scores", None) or {}
+            if isinstance(raw, dict):  # legacy shape
+                return {str(k): float(v) for k, v in raw.items()}
+            out: dict[str, float] = {}
+            for entry in raw:  # production list-of-rows shape
+                if not isinstance(entry, dict):
+                    continue
+                tid = entry.get("task_id")
+                if tid is None:
+                    continue
+                val = entry.get(
+                    "score",
+                    entry.get("root_cause_accuracy", entry.get("task_complete", 0.0)),
+                )
+                out[str(tid)] = float(val)
+            return out
 
         base = _scores(baseline_stats)
         cand = _scores(candidate_stats)
+        if not base and not cand:
+            return
         improved = [
             t
             for t in predicted

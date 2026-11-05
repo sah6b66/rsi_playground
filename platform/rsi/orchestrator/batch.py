@@ -251,6 +251,7 @@ class BatchRunner:
         self._envs[batch_id] = env
 
         verdicts: list[Verdict] = []
+        verdict_task_ids: list[str] = []
         status = "finalized"
         consecutive_env_failures = 0
         self.last_status = "running"
@@ -290,6 +291,7 @@ class BatchRunner:
                     _, verdict, run_id = hit
                     logger.debug("run_batch.cache_hit", task_id=task.task_id, run_id=run_id)
                     verdicts.append(verdict)
+                    verdict_task_ids.append(task.task_id)
                     self.last_run_ids[task.task_id] = run_id
                     completed.append(
                         {
@@ -323,6 +325,7 @@ class BatchRunner:
                     seq,
                 )
                 verdicts.append(verdict)
+                verdict_task_ids.append(task.task_id)
                 run_status = (
                     RunStatus.ENV_FAILED if verdict.missing else RunStatus.DONE
                 )
@@ -399,7 +402,7 @@ class BatchRunner:
         self.last_status = status
         await self.event_bus.publish("batch", batch_id, "running", status)
         # 4. aggregate verdicts -> BatchStats
-        stats = self.stats_agg.aggregate(verdicts)
+        stats = self.stats_agg.aggregate(verdicts, task_ids=verdict_task_ids)
         logger.debug(
             "run_batch.exit", batch_id=batch_id, status=status, n=stats.n
         )

@@ -53,6 +53,7 @@ AUDIT_ACTIONS: frozenset[str] = frozenset({
     "iteration.archive",
     "gate.confirm_direction", "gate.hypothesis", "gate.review",
     "gate.decision",
+    "decision.record",
     # labs / instances
     "lab.create", "lab.destroy", "lab.reset", "lab.snapshot", "lab.restore",
     "lab.exec_readonly",

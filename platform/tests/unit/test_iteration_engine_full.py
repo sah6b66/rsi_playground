@@ -30,14 +30,17 @@ from rsi.orchestrator.iteration import IterationEngine
 # -- shared stub rig -----------------------------------------------------------
 
 
-class ScoredStats(BatchStats):
-    """BatchStats subclass carrying per-task scores (task_id -> score)."""
-
-    task_scores: dict[str, float] = {}
-
-
-def _stats(task_complete: float, rca: float = 0.8, task_scores: dict | None = None):
-    stats = ScoredStats(
+def _stats(
+    task_complete: float,
+    rca: float = 0.8,
+    task_scores: dict[str, float] | None = None,
+):
+    # F8/D-9: real BatchStats.task_scores rows (production aggregator shape)
+    rows = [
+        {"task_id": tid, "score": float(score), "task_complete": score, "missing": False}
+        for tid, score in (task_scores or {}).items()
+    ]
+    return BatchStats(
         metrics={"task_complete": task_complete, "root_cause_accuracy": rca},
         n=2,
         missing=0,
@@ -45,9 +48,8 @@ def _stats(task_complete: float, rca: float = 0.8, task_scores: dict | None = No
         tool_calls=2,
         wall_time_s=1.0,
         tokens_estimated=False,
-        task_scores=task_scores or {},
+        task_scores=rows,
     )
-    return stats
 
 
 def _task() -> TaskRecord:

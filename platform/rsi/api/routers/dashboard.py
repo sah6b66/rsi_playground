@@ -106,7 +106,14 @@ async def noise_bands(
     evalset_id: str | None = None,
     user: Claims = Depends(get_current_user),
 ) -> NoiseBandsOut:
-    """噪声带标定状态（ADR-17，§9.17）。读 NoiseBandCalibrator 最近一次标定。"""
+    """噪声带标定状态（ADR-17，§9.17）。
+
+    D-8: prefer persisted ``noise_bands`` rows ( orchestrated calibration
+    writes them); fall back to the in-process calibrator's last result.
+    """
+    db_items = _noise_bands_from_db(request, evalset_id)
+    if db_items is not None:
+        return NoiseBandsOut(items=db_items)
     calibrator = request.app.state.services.get("noise_band")
     items: list[NoiseBandItem] = []
     if calibrator is not None:
@@ -129,3 +136,40 @@ async def noise_bands(
                 )
             )
     return NoiseBandsOut(items=items)
+
+
+def _noise_bands_from_db(
+    request: Request, evalset_id: str | None
+) -> list[NoiseBandItem] | None:
+    """Read persisted noise_bands rows; None when no DB/session is wired."""
+    session_factory = request.app.state.services.get("session_factory")
+    if session_factory is None:
+        return None
+    try:
+        from rsi.db.tables import NoiseBand
+    except Exception:  # pragma: no cover - import guard
+        return None
+    with session_factory() as session:
+        query = session.query(NoiseBand)
+        if evalset_id:
+            query = query.filter(NoiseBand.evalset_id == evalset_id)
+        rows = query.order_by(NoiseBand.evalset_id, NoiseBand.metric).all()
+    if not rows:
+        return None
+    out: list[NoiseBandItem] = []
+    for row in rows:
+        n_pairs = int(getattr(row, "n_pairs", row.k) or row.k)
+        low_conf = bool(row.low_confidence)
+        out.append(
+            NoiseBandItem(
+                metric=row.metric,
+                sigma=float(row.sigma),
+                delta=float(row.delta),
+                k=int(row.k) or None,
+                evalset_hash=row.evalset_hash,
+                low_confidence=low_conf,
+                calibrated_at=row.calibrated_at,
+                valid=(not low_conf) and n_pairs >= 2,
+            )
+        )
+    return out

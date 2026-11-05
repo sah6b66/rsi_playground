@@ -243,14 +243,25 @@ def build_services(
     )
 
     # -- Decision / Optimizer ---------------------------------------------
+    from rsi.decision.significance import SignificanceTester
+
     stats_agg = StatsAggregator()
-    selector = RegularizedSelector()
-    noise_band = NoiseBandCalibrator(factor=settings.decision.noise.factor)
-    decision_recorder = DecisionRecorder()
+    selector = RegularizedSelector(significance=SignificanceTester())
+    noise_band = NoiseBandCalibrator(
+        factor=settings.decision.noise.factor,
+        session_factory=session_factory,
+    )
+    decision_recorder = DecisionRecorder(
+        session_factory=session_factory, audit_log=audit_log
+    )
     attribution_analyzer = AttributionAnalyzer()
     deterministic_critic = DeterministicCritic(target_registry)
     change_applier = ChangeApplier(target_registry, gitstore=git_store)
-    sft_assessor = SftAssessor()
+    sft_assessor = SftAssessor(
+        no_gain_rounds=settings.optimizer.sft.no_gain_rounds,
+        min_samples=settings.optimizer.sft.min_samples,
+        artifacts_dir=settings.artifacts_dir,
+    )
 
     # -- Orchestrator -------------------------------------------------------
     event_bus = EventBus()

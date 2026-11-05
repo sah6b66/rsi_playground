@@ -830,6 +830,47 @@ class TestReports:
         assert items[0]["delta"] == pytest.approx(1.96 * 0.05)
         assert items[0]["valid"] is True
 
+    async def test_noise_bands_reads_db_rows(self, tmp_path, client):
+        """D-8: persisted noise_bands rows take precedence over the
+        in-process calibrator (orchestrated calibration writes them)."""
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+        from sqlmodel import SQLModel, Session as SqlSession
+
+        import rsi.db.tables  # noqa: F401
+        from rsi.db.tables import NoiseBand
+
+        engine = create_engine(f"sqlite:///{tmp_path}/nb.db")
+        SQLModel.metadata.create_all(engine)
+        factory = sessionmaker(bind=engine, class_=SqlSession)
+        with factory() as session:
+            session.add(
+                NoiseBand(
+                    id="nb-1",
+                    evalset_id="es-x-iterate",
+                    evalset_hash="abc123",
+                    metric="root_cause_accuracy",
+                    sigma=0.05,
+                    delta=0.098,
+                    k=3,
+                    low_confidence=0,
+                    calibrated_at="2026-11-05T00:00:00Z",
+                )
+            )
+            session.commit()
+
+        client._transport.app.state.services["session_factory"] = factory
+        h = await h_res(client)
+        resp = await client.get("/api/v1/dashboard/noise-bands", headers=h)
+        assert resp.status_code == 200
+        items = resp.json()["items"]
+        assert len(items) == 1
+        assert items[0]["metric"] == "root_cause_accuracy"
+        assert items[0]["sigma"] == pytest.approx(0.05)
+        assert items[0]["delta"] == pytest.approx(0.098)
+        assert items[0]["evalset_hash"] == "abc123"
+        assert items[0]["valid"] is True
+
 
 # ── §9.20 WS token auth ────────────────────────────────────────────────────
 
