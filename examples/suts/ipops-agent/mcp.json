@@ -1,0 +1,17 @@
+{
+  "$comment": "MCP 工具配置 — mcpServers 下每个键是一个 MCP 服务器。command 是启动命令，args 是参数。平台插桩时会自动包装 pg-mcp-proxy。",
+  "mcpServers": {
+    "netops-ssh": {
+      "command": "npx",
+      "args": ["-y", "@example/netops-ssh-mcp"],
+      "env": {
+        "SSH_TIMEOUT": "30"
+      }
+    },
+    "network-diag": {
+      "command": "python",
+      "args": ["-m", "network_diag_mcp"],
+      "env": {}
+    }
+  }
+}
