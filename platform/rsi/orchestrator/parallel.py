@@ -63,6 +63,15 @@ class ParallelBatchRunner:
         async def _one(spec: dict[str, Any]):
             async with semaphore:
                 runner = copy.copy(self.template)
+                # F9 minimal fix (production bug found by
+                # TestParallelBatchesIsolation): ``last_run_ids`` is keyed by
+                # task_id (not batch-scoped), so a shallow copy would share
+                # the dict and concurrent batches with overlapping task ids
+                # would cross-write each other's run ids. Give each copy a
+                # fresh map; the other per-batch state (_envs /
+                # _instrument_cache) is already keyed by batch_id and the
+                # shared result cache/checkpoint store are keyed externally.
+                runner.last_run_ids = {}
                 logger.debug(
                     "run_many.start", batch_id=spec.get("batch_id"),
                     max_parallel=self.max_parallel,

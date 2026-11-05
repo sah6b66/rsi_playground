@@ -42,3 +42,7 @@ packages = ["rsi"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "sim: simulation-backend cases (S11+, expected to skip until real backends)",
+    "e2e: compose/playwright acceptance cases (expected to skip until E2E phase)",
+]

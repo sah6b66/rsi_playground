@@ -383,3 +383,81 @@ class TestIsValidTransition:
     def test_run_status(self):
         assert is_valid_transition(RunStatus, "sut_running", "sut_timeout")
         assert not is_valid_transition(RunStatus, "done", "pending")
+
+
+# ---------------------------------------------------------------- F9 (TU-001/TU-027)
+# Exhaustive transition matrices: every entry of the table must validate, and
+# every non-entry (src, dst) pair must be rejected. Kept in lockstep with the
+# tables in rsi/core/enums.py.
+
+
+def _assert_exhaustive(enum_cls, table):
+    members = list(enum_cls)
+    for src in members:
+        allowed = table.get(src, frozenset())
+        for dst in members:
+            assert is_valid_transition(enum_cls, src, dst) == (dst in allowed), (
+                f"{src}->{dst} disagrees with the table"
+            )
+    # terminal states declare no outgoing transitions at all
+    for src in members:
+        if src not in table:
+            assert not any(
+                is_valid_transition(enum_cls, src, dst) for dst in members
+            ), f"{src} should be terminal"
+
+
+class TestBatchTransitionMatrix:
+    def test_table_exhaustive(self):
+        _assert_exhaustive(BatchStatus, VALID_BATCH_TRANSITIONS)
+
+    @pytest.mark.parametrize(
+        "src,dst",
+        [
+            (BatchStatus.CREATED, BatchStatus.FINALIZED),  # skip running
+            (BatchStatus.CREATED, BatchStatus.ABORTED),
+            (BatchStatus.CREATED, BatchStatus.FAILED),
+            (BatchStatus.CREATED, BatchStatus.CREATED),  # self-loop
+            (BatchStatus.RUNNING, BatchStatus.FINALIZED),  # skip judging
+            (BatchStatus.RUNNING, BatchStatus.CREATED),  # backwards
+            (BatchStatus.JUDGING, BatchStatus.RUNNING),
+            (BatchStatus.FINALIZED, BatchStatus.RUNNING),  # terminal
+            (BatchStatus.FAILED, BatchStatus.ABORTED),  # terminal
+            (BatchStatus.ABORTED, BatchStatus.JUDGING),  # terminal
+        ],
+    )
+    def test_illegal_transitions_rejected(self, src, dst):
+        assert not is_valid_transition(BatchStatus, src, dst)
+
+
+class TestIterationTransitionMatrix:
+    def test_table_exhaustive(self):
+        _assert_exhaustive(IterationState, VALID_ITERATION_TRANSITIONS)
+
+    @pytest.mark.parametrize(
+        "src,dst",
+        [
+            # happy-loop skips are illegal (no jumping ahead a stage)
+            (IterationState.ATTRIBUTING, IterationState.REVIEWING),
+            (IterationState.ATTRIBUTING, IterationState.APPLYING),
+            (IterationState.ATTRIBUTING, IterationState.VERIFYING),
+            (IterationState.ATTRIBUTING, IterationState.DECIDING),
+            (IterationState.ATTRIBUTING, IterationState.FINISHED),
+            # backwards along the main loop
+            (IterationState.HYPOTHESIZING, IterationState.ATTRIBUTING),
+            (IterationState.APPLYING, IterationState.REVIEWING),
+            (IterationState.VERIFYING, IterationState.APPLYING),
+            # paused cannot resume to a terminal state
+            (IterationState.PAUSED, IterationState.FINISHED),
+            (IterationState.PAUSED, IterationState.ARCHIVED),
+            # finished can only archive; archived/aborted terminal rules
+            (IterationState.FINISHED, IterationState.ATTRIBUTING),
+            (IterationState.ARCHIVED, IterationState.ATTRIBUTING),
+            (IterationState.ARCHIVED, IterationState.ABORTED),
+            # self-loops
+            (IterationState.DECIDING, IterationState.DECIDING),
+            (IterationState.PAUSED, IterationState.PAUSED),
+        ],
+    )
+    def test_illegal_transitions_rejected(self, src, dst):
+        assert not is_valid_transition(IterationState, src, dst)
