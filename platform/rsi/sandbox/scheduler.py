@@ -10,10 +10,13 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 from rsi.core.errors import EnvError
+from rsi.log import get_logger
 from rsi.core.models import EnvSpec
 from rsi.sandbox.backends.base import SandboxBackend
 
 __all__ = ["LabScheduler", "LabSelection"]
+
+logger = get_logger(__name__)
 
 
 class LabSelection(BaseModel):
@@ -26,12 +29,15 @@ class LabScheduler:
         self._backends = backends
 
     def select(self, env: EnvSpec, explicit_key: str | None = None) -> LabSelection:
+        logger.debug("select.entry", env=env.name, explicit_key=explicit_key)
         if explicit_key is not None:
             if explicit_key not in self._backends:
+                logger.debug("select.error", exc_type="EnvError", backend_key=explicit_key)
                 raise EnvError(
                     f"explicit backend {explicit_key!r} not configured",
                     context={"backend_key": explicit_key, "env": env.name},
                 )
+            logger.debug("select.exit", backend_key=explicit_key, reason="explicit")
             return LabSelection(
                 backend_key=explicit_key,
                 reason=f"explicit backend key {explicit_key!r}",
@@ -40,12 +46,17 @@ class LabScheduler:
             k: b for k, b in self._backends.items() if b.kind == env.backend
         }
         if not candidates:
+            logger.debug("select.error", exc_type="EnvError", env_backend=env.backend)
             raise EnvError(
                 f"no backend of kind {env.backend!r} configured",
                 context={"env_backend": env.backend, "env": env.name},
             )
         key = min(
             sorted(candidates), key=lambda k: candidates[k].active_lab_count
+        )
+        logger.debug(
+            "select.exit", backend_key=key, strategy="least_active",
+            active_labs=candidates[key].active_lab_count,
         )
         return LabSelection(
             backend_key=key,

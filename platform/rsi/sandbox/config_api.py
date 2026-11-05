@@ -11,12 +11,15 @@ from typing import Any
 import httpx
 
 from rsi.core.errors import EnvError
+from rsi.log import get_logger
 from rsi.core.models import CallApiParams, EnvSpec
 from rsi.security.credentials import CredentialStore
 
 __all__ = ["ConfigApiCaller"]
 
 BODY_SUMMARY_LEN = 300
+
+logger = get_logger(__name__)
 
 
 class ConfigApiCaller:
@@ -35,9 +38,13 @@ class ConfigApiCaller:
         params: CallApiParams,
         undo: bool = False,
     ) -> dict[str, Any]:
+        logger.debug(
+            "apply.entry", env=env.name, api=api_key, undo=undo, devices=len(params.devices)
+        )
         try:
             cfg = env.config_apis[api_key]
         except KeyError:
+            logger.debug("apply.error", exc_type="EnvError", api=api_key)
             raise EnvError(
                 f"config api {api_key!r} not declared in env {env.name!r}",
                 context={"api": api_key, "env": env.name},
@@ -61,6 +68,7 @@ class ConfigApiCaller:
                 url, json=body, headers=headers, timeout=cfg.timeout_s
             )
         except httpx.HTTPError as exc:
+            logger.debug("apply.error", exc_type=type(exc).__name__, api=api_key)
             raise EnvError(
                 f"config api {api_key!r} request failed: {exc}",
                 context={"api": api_key, "url": url},
@@ -71,14 +79,17 @@ class ConfigApiCaller:
 
         if resp.status_code < 200 or resp.status_code >= 300:
             summary = resp.text[:BODY_SUMMARY_LEN]
+            logger.debug("apply.error", api=api_key, status_code=resp.status_code)
             raise EnvError(
                 f"config api {api_key!r} returned {resp.status_code}: {summary}",
                 context={"api": api_key, "url": url, "status_code": resp.status_code},
             )
         try:
-            return dict(resp.json())
+            result = dict(resp.json())
         except ValueError:
-            return {"raw": resp.text}
+            result = {"raw": resp.text}
+        logger.debug("apply.exit", status_code=resp.status_code, result_type=type(result).__name__)
+        return result
 
     def _auth_headers(self, auth_ref: str | None) -> dict[str, str]:
         """Resolve auth_ref via CredentialStore; None -> no auth header.
