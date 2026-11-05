@@ -21,12 +21,17 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from typing import Any, Callable, Literal
+import time
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from pydantic import BaseModel, ValidationError
 
 from rsi.core.errors import LLMOutputInvalid
 from rsi.core.models import LLMResponse, LLMUsage
+
+if TYPE_CHECKING:
+    from rsi.llm.accounting import Accountant
+    from rsi.llm.prompts import PromptLibrary
 
 __all__ = ["Component", "LLMClient", "Handler"]
 
@@ -53,10 +58,14 @@ class LLMClient:
         max_concurrent_calls: int = 4,
         model: str = "mock",
         prompt_version: str = "v1",
+        prompt_library: PromptLibrary | None = None,
+        accountant: Accountant | None = None,
     ) -> None:
         self._handler: Handler = handler or _default_handler
         self.model = model
         self.prompt_version = prompt_version
+        self.prompt_library = prompt_library
+        self.accountant = accountant
         self.cassette: dict[str, LLMResponse] = {}
         self._semaphore = asyncio.Semaphore(max_concurrent_calls)
 
@@ -77,12 +86,24 @@ class LLMClient:
         if cached is not None:
             return cached
 
+        # prompt construction via the versioned template library (DD-02 §4)
+        prompt_text: str | None = None
+        prompt_version = self.prompt_version
+        if self.prompt_library is not None:
+            prompt_text = self.prompt_library.render(component, prompt_name, vars)
+            v = self.prompt_library.latest_version(component, prompt_name)
+            if v > 0:
+                prompt_version = f"v{v}"
+
         raw: str | None = None
         parsed: Any | None = None
         validation_error: str | None = None
+        started = time.perf_counter()
         async with self._semaphore:
             for _attempt in range(_MAX_SCHEMA_RETRIES + 1):
                 call_vars = dict(vars)
+                if prompt_text is not None:
+                    call_vars.setdefault("prompt", prompt_text)
                 if validation_error is not None:
                     call_vars["validation_error"] = validation_error
                 raw = await asyncio.to_thread(
@@ -104,15 +125,29 @@ class LLMClient:
                         "last_output": raw,
                     },
                 )
+        latency_ms = int((time.perf_counter() - started) * 1000)
 
         resp = LLMResponse(
             content=raw or "",
             parsed=parsed,
             usage=LLMUsage(),
             model=self.model,
-            prompt_version=self.prompt_version,
+            prompt_version=prompt_version,
         )
         self.cassette[key] = resp
+
+        # usage accounting for budget control (DD-02 §4)
+        if self.accountant is not None:
+            self.accountant.record(
+                component=component,
+                model=self.model,
+                prompt_version=prompt_version,
+                input_tokens=max(len(prompt_text or "") // 4, 1),
+                output_tokens=max(len(raw or "") // 4, 1),
+                latency_ms=latency_ms,
+                run_id=run_id,
+                batch_id=batch_id,
+            )
         return resp
 
     # -- internals ------------------------------------------------------------------
