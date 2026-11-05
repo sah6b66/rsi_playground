@@ -76,6 +76,8 @@ STORE_KEYS = [
     "labs",
     "instances",
     "experiments",
+    "hypotheses",
+    "credentials",
     "settings",
     "system",
     "metrics",
@@ -94,6 +96,8 @@ def default_stores() -> dict[str, Any]:
         "labs": {},
         "instances": {},
         "experiments": {},
+        "hypotheses": {},
+        "credentials": {},
         "settings": {
             "judge.llm.model": {"value": "default", "mutable": True},
             "budget.llm.daily": {"value": 100, "mutable": True},
