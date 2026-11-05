@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from rsi.api.deps import audit, get_current_user, get_store, require_perms
 from rsi.api.pagination import DEFAULT_LIMIT, paginate
@@ -22,11 +22,18 @@ _TERMINAL = {BatchStatus.FINALIZED, BatchStatus.FAILED, BatchStatus.ABORTED}
 
 
 class BatchCreate(BaseModel):
-    evalset_id: str
-    sut_id: str
-    purpose: Literal["iterate", "holdout", "smoke", "compare"]
-    profile_id: str | None = None
-    params: dict[str, Any] = {}
+    evalset_id: str = Field(json_schema_extra={"example": "es-abc12345"})
+    sut_id: str = Field(json_schema_extra={"example": "sut-1a2b3c4d"})
+    purpose: Literal["iterate", "holdout", "smoke", "compare"] = Field(
+        json_schema_extra={"example": "iterate"}
+    )
+    profile_id: str | None = Field(
+        default=None, json_schema_extra={"example": "prof-9f8e7d6c"}
+    )
+    params: dict[str, Any] = Field(
+        default={},
+        json_schema_extra={"example": {"max_parallel": 4, "timeout_s": 1800}},
+    )
 
 
 class BatchOut(BaseModel):

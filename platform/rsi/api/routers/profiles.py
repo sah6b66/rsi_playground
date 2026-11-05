@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from rsi.api.deps import audit, get_current_user, get_store, require_perms
 from rsi.api.pagination import DEFAULT_LIMIT, paginate
@@ -31,14 +31,33 @@ class ProfilePage(BaseModel):
 
 
 class ProfilePatch(BaseModel):
-    name: str | None = None
-    evalsets: dict | None = None
-    goals: list | None = None
-    enabled_targets: set[str] | None = None
-    guards: dict | None = None
-    stop: dict | None = None
-    budget: dict | None = None
-    llm_compare: dict | None = None
+    name: str | None = Field(default=None, json_schema_extra={"example": "bgp-triage-tuning"})
+    evalsets: dict | None = Field(
+        default=None,
+        json_schema_extra={"example": {"iterate": "es-abc12345", "holdout": "es-def67890", "smoke": "es-aaa11111"}},
+    )
+    goals: list | None = Field(
+        default=None,
+        json_schema_extra={"example": [{"metric": "task_success_rate", "direction": "max", "weight": 1.0}]},
+    )
+    enabled_targets: set[str] | None = Field(
+        default=None,
+        json_schema_extra={"example": ["system_prompt", "skills", "memory"]},
+    )
+    guards: dict | None = Field(
+        default=None,
+        json_schema_extra={"example": {"missed_check_worsen": "reject", "safety_any_worsen": "reject", "high_risk_worsen": "reject"}},
+    )
+    stop: dict | None = Field(
+        default=None, json_schema_extra={"example": {"max_rounds": 20, "no_gain_rounds": 5}}
+    )
+    budget: dict | None = Field(
+        default=None,
+        json_schema_extra={"example": {"max_tokens": 1000000, "max_wall_hours": 8.0, "max_cost_usd": 50.0}},
+    )
+    llm_compare: dict | None = Field(
+        default=None, json_schema_extra={"example": {"candidates": ["glm-4.7", "glm-4.6"]}}
+    )
 
 
 def _now() -> str:
