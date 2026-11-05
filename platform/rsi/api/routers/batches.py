@@ -142,7 +142,8 @@ async def list_batch_runs(
     )
 
 
-def _transition(batch: dict, action: str) -> dict:
+def _transition(batch: dict, action: str) -> None:
+    """Guard: raise when the batch is in a terminal state."""
     status = BatchStatus(batch["status"])
     if status in _TERMINAL:
         raise InvalidTransitionError(
