@@ -79,6 +79,7 @@ class BatchRunner:
         settings=None,
         task_timeout_s: float | None = None,
         host: str = "main",
+        result_cache: dict[tuple[str, str, str], tuple[Verdict, str]] | None = None,
     ) -> None:
         self.sandbox = sandbox
         self.carrier = carrier
@@ -105,6 +106,11 @@ class BatchRunner:
             settings.sandbox.ready_timeout_s if settings is not None else 600
         )
         self.host = host
+        # H6: per-(task, env, config_version) verdict cache shared across
+        # runner instances; a hit skips instance creation + SUT execution.
+        self.result_cache: dict[tuple[str, str, str], tuple[Verdict, str]] = (
+            result_cache if result_cache is not None else {}
+        )
         self._envs: dict[str, Any] = {}
         # introspection for tests/ops: latest batch status and task->run_id map
         self.last_status: str = "created"
@@ -178,7 +184,40 @@ class BatchRunner:
                     )
                     break
 
-                # c. run task (9-step pipeline)
+                # c. cache hit (H6): identical (task_id, env, config_version)
+                # -> reuse the cached verdict, skip execution entirely
+                cache_key = (
+                    task.task_id,
+                    getattr(env, "name", ""),
+                    config_version_id,
+                )
+                hit = self.result_cache.get(cache_key)
+                if hit is not None:
+                    verdict, run_id = hit
+                    logger.debug("run_batch.cache_hit", task_id=task.task_id, run_id=run_id)
+                    verdicts.append(verdict)
+                    self.last_run_ids[task.task_id] = run_id
+                    completed.append(
+                        {
+                            "task_id": task.task_id,
+                            "run_id": run_id,
+                            "status": "cached",
+                        }
+                    )
+                    await self.ckpt.save(
+                        batch_id,
+                        {
+                            "batch_id": batch_id,
+                            "lab_id": lab.lab_id,
+                            "snap0_id": snap0.snapshot_id,
+                            "completed": completed,
+                            "cursor_seq": seq + 1,
+                        },
+                    )
+                    await self.event_bus.publish("run", run_id, "judging", "cached")
+                    continue
+
+                # d. run task (9-step pipeline)
                 result, verdict = await self.run_task(
                     batch_id,
                     task,
@@ -227,6 +266,11 @@ class BatchRunner:
                     0.0,
                     verdict.efficiency.wall_time_s,
                 )
+                if not verdict.missing:
+                    self.result_cache[cache_key] = (
+                        verdict,
+                        self.last_run_ids.get(task.task_id, ""),
+                    )
                 await self.ckpt.save(
                     batch_id,
                     {
