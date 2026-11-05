@@ -6,7 +6,11 @@ import asyncio
 import time
 from typing import Any
 
+from rsi.log import get_logger
+
 _QUEUE_MAXSIZE = 256
+
+logger = get_logger(__name__)
 
 
 class EventBus:
@@ -24,6 +28,13 @@ class EventBus:
         self, object_type: str, object_id: str, from_: str, to: str
     ) -> None:
         """Publish ``{object_type}.status_changed`` to all subscribers."""
+        logger.debug(
+            "publish.entry",
+            object_type=object_type,
+            object_id=object_id,
+            from_=from_,
+            to=to,
+        )
         msg = {
             "event": f"{object_type}.status_changed",
             "ts": time.time(),
@@ -35,6 +46,10 @@ class EventBus:
         self, severity: str, message: str, scope: str | None = None
     ) -> None:
         """Publish a ``system.alert`` event (F4 v1.1) for SSE toast/badge."""
+        logger.debug(
+            "publish_alert.entry", severity=severity, scope=scope,
+            message=message[:200] if len(message) > 200 else message,
+        )
         msg = {
             "event": "system.alert",
             "ts": time.time(),

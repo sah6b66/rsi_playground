@@ -11,8 +11,11 @@ from __future__ import annotations
 import re
 
 from rsi.core.errors import TargetViolationError
+from rsi.log import get_logger
 
 __all__ = ["FROZEN_PATHS", "TARGET_PATHS", "TargetRegistry"]
+
+logger = get_logger(__name__)
 
 # 优化项 -> suts/<id>/ path regex; {id} matches one path segment.
 TARGET_PATHS: dict[str, str] = {
@@ -59,18 +62,22 @@ class TargetRegistry:
 
     def validate(self, path: str, enabled_targets: set[str]) -> None:
         """Raise ``TargetViolationError`` unless *path* is an enabled, unfrozen target."""
+        logger.debug("validate.entry", path=path, enabled_targets=sorted(enabled_targets))
         if self.is_frozen(path):
+            logger.debug("validate.violation", reason="frozen_domain", path=path)
             raise TargetViolationError(
                 f"path {path!r} is in a frozen domain",
                 context={"path": path, "reason": "frozen_domain"},
             )
         target = self.match_target(path)
         if target is None:
+            logger.debug("validate.violation", reason="path_out_of_domain", path=path)
             raise TargetViolationError(
                 f"path {path!r} matches no optimization target",
                 context={"path": path, "reason": "path_out_of_domain"},
             )
         if target not in enabled_targets:
+            logger.debug("validate.violation", reason="target_not_enabled", path=path, target=target)
             raise TargetViolationError(
                 f"path {path!r} belongs to target {target!r} which is not enabled",
                 context={

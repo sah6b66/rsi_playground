@@ -16,8 +16,11 @@ Pure function over :class:`DecisionCtx`; no IO. Rules short-circuit in order:
 from __future__ import annotations
 
 from rsi.core.models import Decision, DecisionCtx
+from rsi.log import get_logger
 
 __all__ = ["RegularizedSelector"]
+
+logger = get_logger(__name__)
 
 _GUARD_METRICS: tuple[str, ...] = (
     "missed_check",  # guards.missed_check_worsen
@@ -28,9 +31,16 @@ _GUARD_METRICS: tuple[str, ...] = (
 
 class RegularizedSelector:
     def decide(self, ctx: DecisionCtx) -> Decision:
+        logger.debug(
+            "decide.entry",
+            cand_n=ctx.cand_stats.n,
+            cand_missing=ctx.cand_stats.missing,
+            hack_or_fatal=ctx.hack_or_fatal,
+        )
         # Rule 0: excessive missing-trial rate is an environment anomaly.
         n = ctx.cand_stats.n
         if n > 0 and (ctx.cand_stats.missing / n) > 0.30:
+            logger.debug("decide.exit", rule_hit=0, action="ADVISE_MANUAL")
             return Decision(
                 action="ADVISE_MANUAL",
                 rule_hit=0,
@@ -47,6 +57,7 @@ class RegularizedSelector:
 
         # Rule 1: hack or fatal verdict anywhere in the candidate batch.
         if ctx.hack_or_fatal:
+            logger.debug("decide.exit", rule_hit=1, action="REJECT")
             return Decision(
                 action="REJECT",
                 rule_hit=1,
@@ -59,6 +70,7 @@ class RegularizedSelector:
         cand = ctx.cand_stats.metrics
         for key in _GUARD_METRICS:
             if cand.get(key, 0.0) > base.get(key, 0.0):
+                logger.debug("decide.exit", rule_hit=2, action="REJECT", guard_metric=key)
                 return Decision(
                     action="REJECT",
                     rule_hit=2,
@@ -76,6 +88,7 @@ class RegularizedSelector:
         s = self._weighted_score(ctx)
         delta = ctx.noise_delta if ctx.noise_delta is not None else 0.0
         if s <= delta:
+            logger.debug("decide.exit", rule_hit=3, action="REVERT")
             return Decision(
                 action="REVERT",
                 rule_hit=3,
@@ -91,6 +104,7 @@ class RegularizedSelector:
         gain = s - delta
         cost_penalty = float(ctx.cost.get("cost_penalty", 0.0))
         if gain < cost_penalty:
+            logger.debug("decide.exit", rule_hit=4, action="REJECT")
             return Decision(
                 action="REJECT",
                 rule_hit=4,
@@ -109,6 +123,7 @@ class RegularizedSelector:
         # Rule 5: significance requires a calibrated noise band (ADR-17);
         # without calibration we cannot claim significance -> rule 6.
         if ctx.noise_delta is not None:
+            logger.debug("decide.exit", rule_hit=5, action="PROMOTE")
             return Decision(
                 action="PROMOTE",
                 rule_hit=5,
@@ -125,6 +140,7 @@ class RegularizedSelector:
             )
 
         # Rule 6
+        logger.debug("decide.exit", rule_hit=6, action="ADVISE_MANUAL")
         return Decision(
             action="ADVISE_MANUAL",
             rule_hit=6,

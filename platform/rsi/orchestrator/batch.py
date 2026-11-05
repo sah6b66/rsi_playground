@@ -29,8 +29,11 @@ from rsi.core.models import (
     Verdict,
 )
 from rsi.core.naming import new_id
+from rsi.log import get_logger
 
 __all__ = ["BatchRunner"]
+
+logger = get_logger(__name__)
 
 _PREPARE_ATTEMPTS = 3  # 1 initial + 2 retries (DD-12 §5.2 step 3)
 _MAX_CONSECUTIVE_ENV_FAILURES = 3  # F1 circuit breaker (DD-12 §5.1)
@@ -103,6 +106,13 @@ class BatchRunner:
         image_ref: str,
         permission: str = "read-only",
     ) -> BatchStats:
+        logger.debug(
+            "run_batch.entry",
+            batch_id=batch_id,
+            tasks=len(tasks),
+            image_ref=image_ref,
+            permission=permission,
+        )
         # 1-2. build lab once per batch, wait ready, snapshot snap0
         lab = await self.sandbox.build_lab(env)
         self._envs[batch_id] = env
@@ -121,6 +131,7 @@ class BatchRunner:
                 # a. stop file -> abort
                 if self.budget.check_stop_file():
                     status = "aborted"
+                    logger.debug("run_batch.abort", reason="stop_file", seq=seq)
                     break
                 # b. budget -> abort
                 try:
@@ -129,6 +140,7 @@ class BatchRunner:
                     )
                 except BudgetExceeded:
                     status = "aborted"
+                    logger.debug("run_batch.abort", reason="budget", seq=seq)
                     break
 
                 # c. run task (9-step pipeline)
@@ -159,6 +171,11 @@ class BatchRunner:
                     consecutive_env_failures += 1
                     if consecutive_env_failures >= _MAX_CONSECUTIVE_ENV_FAILURES:
                         status = "failed"
+                        logger.debug(
+                            "run_batch.circuit_breaker",
+                            consecutive=consecutive_env_failures,
+                            seq=seq,
+                        )
                         break
                 else:
                     consecutive_env_failures = 0
@@ -191,7 +208,11 @@ class BatchRunner:
         self.last_status = status
         await self.event_bus.publish("batch", batch_id, "running", status)
         # 4. aggregate verdicts -> BatchStats
-        return self.stats_agg.aggregate(verdicts)
+        stats = self.stats_agg.aggregate(verdicts)
+        logger.debug(
+            "run_batch.exit", batch_id=batch_id, status=status, n=stats.n
+        )
+        return stats
 
     # -- task pipeline (§5.2) --------------------------------------------------
 
@@ -208,6 +229,7 @@ class BatchRunner:
     ) -> tuple[TaskResult, Verdict]:
         run_id = new_id("run")
         self.last_run_ids[task.task_id] = run_id
+        logger.debug("run_task.entry", run_id=run_id, task_id=task.task_id, seq=seq)
 
         # 1. prepare (backup + exec_cli/call_api), retry <= 2, then env_failed
         applied = []
@@ -217,9 +239,13 @@ class BatchRunner:
                 applied = await self.sandbox.prepare(lab, task.task_id, task.prepare)
                 prepared = True
                 break
-            except EnvError:
+            except EnvError as exc:
+                logger.debug(
+                    "run_task.prepare_retry", task_id=task.task_id, exc_type=type(exc).__name__
+                )
                 continue
         if not prepared:
+            logger.debug("run_task.exit", run_id=run_id, status="env_failed")
             result = TaskResult(task_complete=False)
             return result, _env_failed_verdict()
 
@@ -267,6 +293,12 @@ class BatchRunner:
         # 9. destroy instance
         self.carrier.destroy(instance)
 
+        logger.debug(
+            "run_task.exit",
+            run_id=run_id,
+            task_complete=result.task_complete,
+            missing=verdict.missing,
+        )
         return result, verdict
 
     # -- helpers ----------------------------------------------------------------

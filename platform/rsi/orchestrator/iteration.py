@@ -20,8 +20,11 @@ from rsi.core.models import (
     TaskRecord,
 )
 from rsi.core.naming import new_id
+from rsi.log import get_logger
 
 __all__ = ["IterationEngine"]
+
+logger = get_logger(__name__)
 
 _STATES = (
     "ATTRIBUTING",
@@ -76,6 +79,13 @@ class IterationEngine:
         noise_delta: float | None = None,
     ) -> dict[str, Any]:
         """One iteration round (P0): state machine + data flow, no real LLM."""
+        logger.debug(
+            "iterate_once.entry",
+            sut_id=sut_id,
+            profile=profile.name,
+            tasks=len(tasks),
+            round=self.round + 1,
+        )
         self.round += 1
         iteration_id = new_id("iter")
         self.last_iteration_id = iteration_id
@@ -150,6 +160,11 @@ class IterationEngine:
             guards=profile.guards,
         )
         decision = self.selector.decide(ctx)
+        logger.debug(
+            "iterate_once.decision",
+            action=decision.action,
+            rule_hit=decision.rule_hit,
+        )
 
         await self._advance(iteration_id, from_, "FINISHED")
         self.last_state = "FINISHED"
@@ -162,6 +177,12 @@ class IterationEngine:
             baseline_stats.wall_time_s + candidate_stats.wall_time_s,
         )
 
+        logger.debug(
+            "iterate_once.exit",
+            iteration_id=iteration_id,
+            decision=decision.action,
+            clusters=len(report.clusters),
+        )
         return {
             "round": self.round,
             "iteration_id": iteration_id,

@@ -20,8 +20,11 @@ from typing import Any
 
 from rsi.core.enums import EventType
 from rsi.core.models import AttributionCluster, AttributionReport, TraceEvent
+from rsi.log import get_logger
 
 __all__ = ["AttributionAnalyzer"]
+
+logger = get_logger(__name__)
 
 _FAILED_DECISIONS = frozenset({"reverted", "advise_manual", "rejected"})
 _SUCCESS_DECISIONS = frozenset({"promoted", "promote", "accepted"})
@@ -72,6 +75,12 @@ class AttributionAnalyzer:
         sut_config: dict[str, str],
         opt_history: list[dict],
     ) -> AttributionReport:
+        logger.debug(
+            "analyze.entry",
+            failed_runs=len(failed_runs),
+            config_files=len(sut_config),
+            opt_history=len(opt_history),
+        )
         # Layer 1+2: features and per-run (failure_mode, signature, defect class)
         classified: list[tuple[_RunFeatures, str, tuple[str, ...], str, list[str]]] = []
         for run in failed_runs:
@@ -109,7 +118,7 @@ class AttributionAnalyzer:
         ]
         clusters.sort(key=lambda item: item[0], reverse=True)
 
-        return AttributionReport(
+        report = AttributionReport(
             clusters=[
                 AttributionCluster(
                     failure_mode=key[0],
@@ -121,6 +130,12 @@ class AttributionAnalyzer:
                 for _, key, runs in clusters
             ]
         )
+        logger.debug(
+            "analyze.exit",
+            clusters=len(report.clusters),
+            top_mode=report.clusters[0].failure_mode if report.clusters else None,
+        )
+        return report
 
     # -- classification ---------------------------------------------------------
 
