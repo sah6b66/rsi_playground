@@ -12,7 +12,11 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from rsi.carrier.hosts import HostPool
 
+from rsi.log import get_logger
+
 TRACE_NET = "trace"
+
+logger = get_logger(__name__)
 
 
 class NetPolicy:
@@ -30,23 +34,33 @@ class NetPolicy:
 
     def ensure_lab_net(self, host: str, lab_id: str) -> str:
         """Create/get the lab network ``lab-<lab_id>`` on the given host."""
+        logger.debug("ensure_lab_net.entry", host=host, lab_id=lab_id)
         self._ensure(host, f"lab-{lab_id}")
+        logger.debug("ensure_lab_net.exit", network=f"lab-{lab_id}")
         return f"lab-{lab_id}"
 
     def ensure_trace_net(self, host: str) -> str:
         """Create/get the 'trace' network on the given host."""
+        logger.debug("ensure_trace_net.entry", host=host)
         self._ensure(host, TRACE_NET)
+        logger.debug("ensure_trace_net.exit", network=TRACE_NET)
         return TRACE_NET
 
     def attach(self, host: str, container_id: str, networks: list[str]) -> None:
         """Record container membership in each named network on the host."""
+        logger.debug(
+            "attach.entry", host=host, container_id=container_id, networks=networks
+        )
         for name in networks:
             self._ensure(host, name).add(container_id)
+        logger.debug("attach.exit", count=len(networks))
 
     def detach(self, container_id: str) -> None:
         """Remove container from all networks on all hosts."""
+        logger.debug("detach.entry", container_id=container_id)
         for members in self._networks.values():
             members.discard(container_id)
+        logger.debug("detach.exit", container_id=container_id)
 
     def is_attached(self, container_id: str, network: str) -> bool:
         """Check membership in ``network`` on any host."""

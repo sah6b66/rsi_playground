@@ -19,8 +19,11 @@ from rsi.carrier.scheduler import InstanceScheduler
 from rsi.carrier.overlay import OverlayBuilder
 from rsi.core.models import LabHandle, TaskResult, TaskSpec
 from rsi.core.naming import new_id
+from rsi.log import get_logger
 
 __all__ = ["HostService", "InstanceHandle", "RunHandle"]
+
+logger = get_logger(__name__)
 
 
 class InstanceHandle(BaseModel):
@@ -73,7 +76,15 @@ class HostService:
 
         ``host=None`` → auto-select least-loaded host via InstanceScheduler.
         """
+        logger.debug(
+            "create_instance.entry",
+            image_ref=image_ref,
+            lab_id=lab.lab_id,
+            instrument=instrument,
+            host=host,
+        )
         selected_host = self.scheduler.select(host)
+        logger.debug("create_instance.host_selected", host=selected_host)
         # Touch the host's Docker client (P0: offline pool returns None;
         # adapter-driven mode tolerates a daemon-less dev environment).
         try:
@@ -86,6 +97,7 @@ class HostService:
         # P0: skip GitStore export — config_version_id is a placeholder path.
         config_dir = Path(config_version_id)
         if instrument and config_dir.exists():
+            logger.debug("create_instance.overlay", source=str(config_dir))
             config_dir = OverlayBuilder.build(config_dir)
         handle = InstanceHandle(
             instance_id=instance_id,
@@ -100,30 +112,49 @@ class HostService:
         self.net_policy.attach(selected_host, handle.container_id, [lab_net, trace_net])
         self.host_pool.increment(selected_host)
         self._instances[instance_id] = handle
+        logger.debug("create_instance.exit", instance_id=instance_id, host=selected_host)
         return handle
 
     def submit_task(self, instance: InstanceHandle, task: TaskSpec) -> RunHandle:
         """Dispatch the task prompt to the instance's carrier adapter."""
+        logger.debug(
+            "submit_task.entry",
+            instance_id=instance.instance_id,
+            prompt_len=len(task.prompt),
+            tool_constraints=len(task.tool_constraints),
+        )
         adapter = self._adapter_for(instance.host)
-        return adapter.submit_task(instance, task)
+        result = adapter.submit_task(instance, task)
+        logger.debug("submit_task.exit", result_type=type(result).__name__)
+        return result
 
     def collect(self, handle: RunHandle, timeout_s: float = 1800) -> TaskResult:
         """Collect stdout and extract the FINAL_JSON result."""
+        logger.debug("collect.entry", instance_id=handle.instance_id, timeout_s=timeout_s)
         instance = self._instances.get(handle.instance_id)
         adapter = (
             self._adapter_for(instance.host) if instance else self._default_adapter
         )
         try:
             stdout = adapter.collect_result(handle, timeout_s)
-        except Exception:
+        except Exception as exc:
+            logger.debug("collect.instance_crashed", exc_type=type(exc).__name__)
             return TaskResult(task_complete=False, instance_crashed=True)
-        return extract_task_result(stdout)
+        result = extract_task_result(stdout)
+        logger.debug(
+            "collect.exit",
+            task_complete=result.task_complete,
+            parse_error=result.parse_error,
+        )
+        return result
 
     def destroy(self, instance: InstanceHandle) -> None:
         """Detach networks, release the host slot and stop tracking."""
+        logger.debug("destroy.entry", instance_id=instance.instance_id, host=instance.host)
         self.net_policy.detach(instance.container_id)
         self.host_pool.decrement(instance.host)
         self._instances.pop(instance.instance_id, None)
+        logger.debug("destroy.exit", instance_id=instance.instance_id)
 
     def destroy_stale(self, host: str) -> int:
         """Clean up leftover instances on a host; returns count removed."""

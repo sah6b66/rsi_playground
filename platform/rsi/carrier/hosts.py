@@ -16,8 +16,11 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from rsi.core.errors import CarrierError
+from rsi.log import get_logger
 
 __all__ = ["HostConfig", "HostPool", "HostStatus"]
+
+logger = get_logger(__name__)
 
 
 class HostConfig(BaseModel):
@@ -58,7 +61,9 @@ class HostPool:
 
     def client(self, host: str) -> Any:
         """Get or create (and cache) the DockerClient for host."""
+        logger.debug("client.entry", host=host, offline=self._offline)
         if host not in self._configs:
+            logger.debug("client.error", exc_type="CarrierError", host=host)
             raise CarrierError(f"host not configured: {host}")
         if self._offline:
             return None
@@ -71,23 +76,31 @@ class HostPool:
             elif url.startswith("ssh://"):
                 self._clients[host] = docker.DockerClient(base_url=url)
             else:
+                logger.debug("client.error", exc_type="CarrierError", host=host, url=url)
                 raise CarrierError(f"unsupported docker URL for host {host}: {url}")
         return self._clients[host]
 
     def check_reach(self, host: str) -> bool:
         """Ping the host daemon; True/False. Offline stub: True."""
+        logger.debug("check_reach.entry", host=host)
         if host not in self._configs:
+            logger.debug("check_reach.exit", host=host, reachable=False, reason="not_configured")
             return False
         if self._offline:
+            logger.debug("check_reach.exit", host=host, reachable=True, reason="offline_stub")
             return True
         try:
-            return bool(self.client(host).ping())
-        except Exception:
+            reachable = bool(self.client(host).ping())
+        except Exception as exc:
+            logger.debug("check_reach.error", host=host, exc_type=type(exc).__name__)
             return False
+        logger.debug("check_reach.exit", host=host, reachable=reachable)
+        return reachable
 
     def statuses(self) -> list[HostStatus]:
         """All hosts with reachability and instance-load snapshot."""
-        return [
+        logger.debug("statuses.entry", hosts=len(self._configs))
+        result = [
             HostStatus(
                 host=host,
                 docker_url=cfg.docker,
@@ -97,6 +110,8 @@ class HostPool:
             )
             for host, cfg in self._configs.items()
         ]
+        logger.debug("statuses.exit", count=len(result))
+        return result
 
     def max_instances(self, host: str) -> int | None:
         """Per-host max override, or None if unset (use global default)."""
