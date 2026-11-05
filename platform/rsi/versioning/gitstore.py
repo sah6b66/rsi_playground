@@ -24,6 +24,7 @@ from pathlib import Path
 import git
 
 from rsi.core.errors import GitStoreError, NotFastForwardError
+from rsi.versioning.hooks import install_hooks
 from rsi.versioning.changeset import (
     Changeset,
     FileChange,
@@ -78,6 +79,8 @@ class GitStore:
             self.worktrees = Worktrees(self.worktree_root, repo=repo)
             # Touch staging so it exists from the start.
             self.worktrees.staging()
+            # Server-side guard rails (DD-09 §5.2).
+            install_hooks(self.repo_path)
 
     def _require(self) -> tuple[git.Repo, Worktrees, Path]:
         if self.repo is None or self.worktrees is None:

@@ -109,7 +109,26 @@ def get_store(name: str) -> Callable[[Request], dict]:
 def get_current_user(
     request: Request, token: str = Depends(oauth2_scheme)
 ) -> Claims:
-    auth = request.app.state.services["auth_service"]
+    """Authenticate the request and enforce the per-request disabled check.
+
+    Delegates to ``AuthService.get_current_user`` (DD-03 §4, ADR-19) when a
+    users store is registered on the DI container; the users service maps
+    username -> record, so it is re-keyed by user_id here. Without a users
+    store, only JWT verification applies (backward-compatible P0 mode).
+    """
+    services = request.app.state.services
+    auth = services["auth_service"]
+    users = services.get("users") or {}
+    users_store: dict[str, dict] = {}
+    for username, record in users.items():
+        if isinstance(record, dict) and "user_id" in record:
+            users_store[record["user_id"]] = {
+                "disabled": bool(record.get("disabled", False)),
+                "username": record.get("username", username),
+                "role": record.get("role", ""),
+            }
+    if users_store:
+        auth.get_current_user(token, users_store)
     return auth.verify(token)
 
 
