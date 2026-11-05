@@ -1,0 +1,54 @@
+# ============================================================
+# 优化配置方案样例（OptimizationProfile）
+# ============================================================
+# 使用方法：
+#   1. 复制此文件，修改 name/evalsets/goals/enabled_targets
+#   2. 通过 WEB /optimization 页面或 POST /profiles 导入
+#   3. 启动迭代时选择此 Profile
+# ============================================================
+
+# 方案名（同一 SUT 下唯一）
+name: bgp-accuracy-first
+
+# 四分评测集绑定（三集各自的 evalset_id）
+evalsets:
+  iterate: bgp-faults-iterate       # 迭代集：日常归因+候选预筛
+  holdout: bgp-faults-holdout       # 主评测集：晋升判定唯一依据（冻结）
+  smoke: core-smoke                  # 冒烟集：候选活性检查（每域 3-5 条）
+
+# 优化目标与权重（多目标加权，总和无须=1 但建议）
+# metric 可选：root_cause_accuracy | task_complete | diagnostic_steps |
+#              missed_check | false_positive | tokens | tool_calls | wall_time_s
+# direction 可选：max（越大越好）| min（越小越好）
+goals:
+  - {metric: root_cause_accuracy, direction: max, weight: 0.7}   # 准确率权重 70%
+  - {metric: avg_tokens,          direction: min, weight: 0.3}   # token 成本权重 30%
+
+# 允许优化的项（白名单八项内勾选，未勾选项被强制排除）
+enabled_targets:
+  - system_prompt      # 系统提示词
+  - skills             # Skill 文件
+  - knowledge          # 知识库
+  - model_config       # LLM 模型配置（switch_model）
+
+# 非补偿守卫（任一分项恶化即一票否决，不允许总分补偿）
+guards:
+  missed_check_worsen: reject
+  safety_any_worsen: reject
+  high_risk_worsen: reject
+
+# 终止条件
+stop:
+  max_rounds: 20              # 单次运行最大迭代轮数
+  no_gain_rounds: 5           # 连续 N 轮无显著收益 → 收敛停机
+
+# 本方案预算（覆盖 orchestrator.budget.default_iteration）
+budget:
+  max_tokens: 50000000        # 5000 万 token
+  max_wall_hours: 8
+
+# switch_model 假设的候选模型池（FR6.3/FR1.8）
+llm_compare:
+  candidates:
+    - claude-sonnet-4-6
+    - glm-5

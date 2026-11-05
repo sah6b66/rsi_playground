@@ -1,0 +1,9 @@
+{
+  "$comment": "LLM 模型配置 — 切换模型只需修改此文件并重启实例，无需重建镜像。provider 是提供商类型，model 是模型名，推理参数可选。",
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-6",
+  "inference": {
+    "temperature": 0.0,
+    "max_tokens": 8192
+  }
+}
