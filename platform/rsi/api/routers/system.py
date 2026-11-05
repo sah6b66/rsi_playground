@@ -68,6 +68,16 @@ _DEFAULT_DEPS = [
 ]
 
 
+@router.get("/system/doctor")
+async def run_doctor() -> dict:
+    """Run full self-diagnostic and return structured results."""
+    from rsi.doctor import Doctor
+
+    doctor = Doctor()
+    report = await doctor.run_all()
+    return report.model_dump()
+
+
 @router.get("/system/health")
 async def health() -> dict:
     """Liveness probe (public, no auth)."""

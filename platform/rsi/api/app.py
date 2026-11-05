@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import asyncio
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -14,13 +16,27 @@ from rsi.api.routers import ALL_ROUTERS
 API_PREFIX = "/api/v1"
 
 
-def create_app(services: dict[str, Any]) -> FastAPI:
+def create_app(services: dict[str, Any], run_doctor: bool = False) -> FastAPI:
     """Assemble the API app: DI container, routers, error handlers, middleware.
 
     ``services`` keys (P0): ``auth_service``, ``audit_log``, ``users``,
     optional ``batch_runner`` and ``stores`` (in-memory data; defaults
     created when absent).
+
+    If ``run_doctor`` is true, run the startup self-diagnostic first,
+    print the report and abort startup on blocking errors.
     """
+    if run_doctor:
+        from rsi.doctor import Doctor
+
+        doctor = Doctor()
+        report = asyncio.run(doctor.run_all())
+        doctor.print_report(report)
+        if report.has_errors:
+            raise SystemExit(
+                "启动中止：自检存在阻塞项 (fail)，请修复后重试。"
+                "可运行 python -m rsi.doctor 查看详情。"
+            )
     app = FastAPI(
         title="RSI Platform API",
         version="0.1.0",
