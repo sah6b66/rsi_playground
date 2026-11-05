@@ -73,7 +73,11 @@ class OpenCodeWiretapParser:
             }
             # H8: no usage data in the frame -> estimate input tokens from the
             # system + message text (~4 chars/token) and mark them estimated.
-            if frame.get("usage") is None:
+            # C-3: when the frame carries real usage (e.g. the final
+            # ``--format json`` frame), keep it verbatim with estimated=False
+            # so measured usage overrides the estimate (DD-07 §5.2).
+            frame_usage = frame.get("usage")
+            if frame_usage is None:
                 text = "\n".join(system) + "\n" + "\n".join(
                     _message_text(m) for m in messages
                 )
@@ -83,8 +87,26 @@ class OpenCodeWiretapParser:
                         "input_tokens": tokens,
                         "estimated": True,
                     }
+            elif isinstance(frame_usage, dict):
+                usage = dict(frame_usage)
+                usage.setdefault("estimated", False)
+                data["usage"] = usage
         elif ftype == "http" and kind == "primary":
             data = {"body": frame.get("body")}
+            # C-2: protocol probing from the request body (DD-07 §5.1):
+            # "messages" -> chat_completions, "input" -> responses;
+            # anything else (or unparseable) leaves protocol unset.
+            body = frame.get("body")
+            if isinstance(body, str):
+                try:
+                    body = json.loads(body)
+                except json.JSONDecodeError:
+                    body = None
+            if isinstance(body, dict):
+                if "messages" in body:
+                    data["protocol"] = "chat_completions"
+                elif "input" in body:
+                    data["protocol"] = "responses"
         if data is None:
             return None
 

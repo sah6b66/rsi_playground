@@ -164,8 +164,11 @@ def build_services(
     collector.attach_store(trace_store)
 
     # -- LLM (offline mock handler; real providers plug in via handler) ---
-    prompt_library = PromptLibrary()
-    accountant = Accountant()  # in-memory P0; DB persistence is the F7 slice
+    from pathlib import Path as _Path
+
+    _prompts_dir = _Path(__file__).parent / "judge" / "prompts"
+    prompt_library = PromptLibrary(template_dir=_prompts_dir, component="judge")
+    accountant = Accountant(session_factory=session_factory)  # C-7: llm_calls rows
     llm_client = LLMClient(
         handler=_offline_llm_handler,
         max_concurrent_calls=settings.llm.max_concurrent_calls,
@@ -174,6 +177,11 @@ def build_services(
         else "mock",
         prompt_library=prompt_library,
         accountant=accountant,
+        temperature=float(
+            settings.llm.defaults.get("judge").temperature
+            if settings.llm.defaults.get("judge")
+            else 0.0
+        ),
     )
 
     # -- Judge (session_factory wired -> judgments table persistence) -----
@@ -185,6 +193,8 @@ def build_services(
         antihack=AntiHackDetector(),
         agg=VerdictAggregator(),
         session_factory=session_factory,
+        # C-1: freeze-audit fingerprint of the judge prompt actually used
+        prompt_hash_fn=lambda: llm_client.prompt_hash("judge", "root_cause"),
     )
 
     # -- Carrier -----------------------------------------------------------

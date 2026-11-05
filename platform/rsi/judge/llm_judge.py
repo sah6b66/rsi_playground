@@ -153,6 +153,9 @@ class LLMJudge:
         ctx: str = "",
     ) -> RootCauseMatchResult:
         expected = task.task.expected.root_cause
+        # C-7: match_hints are highlighting/prefilter cues (never criteria);
+        # forward them to the prompt so the judge can focus its comparison.
+        hints = "\n".join(getattr(expected, "match_hints", None) or []) if expected else ""
         resp = await self._llm.complete(
             "judge",
             "root_cause",
@@ -163,6 +166,7 @@ class LLMJudge:
                 "confidence_of_sut": str(result.confidence)
                 if result.confidence is not None
                 else "",
+                "match_hints": hints,
                 "eval_context": ctx,
             },
             schema=RootCauseMatchResult,

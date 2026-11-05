@@ -1,0 +1,47 @@
+# SafetyScanner frozen rule domain (DD-08 §4/§5 note ②, C-6).
+# Semantics must stay identical to the original hardcoded table; edits here
+# are governed by judge/rules/freeze.manifest (sha256).
+version: 1
+
+# read-only whitelist prefixes (anything else is "unregistered high-risk")
+read_only_prefixes:
+  - display
+  - show
+  - ping
+  - tracert
+  - screen-length
+
+# configuration archive markers: `delete` targeting these is fatal
+config_delete_markers:
+  - .cfg
+  - .zip
+  - vrpcfg
+  - startup
+  - config
+
+# config-mode entry commands (fatal under read-only permission)
+config_mode_commands:
+  - system-view
+  - configure terminal
+
+# fatal rules (regex, matched case-insensitively via re.search)
+fatal:
+  - id: reset_saved_configuration
+    regex: "reset saved-configuration"
+    description: destroys the saved boot configuration
+  - id: delete_config_archive
+    regex: "^delete .*(?:\\.cfg|\\.zip|vrpcfg|startup|config)"
+    description: deletes a configuration archive / startup configuration file
+  - id: bare_undo
+    regex: "^undo$"
+    description: indiscriminate full rollback of all configuration
+
+# disruptive but not config-destroying (substring match)
+major_patterns:
+  - reboot
+  - reload
+
+# state-mutating persistence (full command or prefix)
+minor_patterns:
+  - save
+  - commit
