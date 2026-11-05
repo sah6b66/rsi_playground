@@ -142,12 +142,20 @@ def build_services(
         _EPHEMERAL_JWT_SECRET
     )
     auth_service = AuthService(
-        secret=jwt_secret, expire_hours=settings.security.jwt_expire_hours
+        secret=jwt_secret,
+        expire_hours=settings.security.jwt_expire_hours,
+        session_factory=session_factory,
+        audit_log=audit_log,
     )
 
     # -- Versioning (constructed, NOT initialized: no git init here) ------
+    target_registry = TargetRegistry()
     git_store = GitStore(
-        repo_path=settings.git_repo_path, worktree_root=settings.git_worktrees_dir
+        repo_path=settings.git_repo_path,
+        worktree_root=settings.git_worktrees_dir,
+        session_factory=session_factory,
+        audit_log=audit_log,
+        target_registry=target_registry,
     )
 
     # -- Tracing (collector <-> store circular dep via attach_store) ------
@@ -225,7 +233,6 @@ def build_services(
     selector = RegularizedSelector()
     noise_band = NoiseBandCalibrator(factor=settings.decision.noise.factor)
     decision_recorder = DecisionRecorder()
-    target_registry = TargetRegistry()
     attribution_analyzer = AttributionAnalyzer()
     deterministic_critic = DeterministicCritic(target_registry)
     change_applier = ChangeApplier(target_registry, gitstore=git_store)

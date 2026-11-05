@@ -96,9 +96,13 @@ class CredentialStore:
                 select(Credential).where(Credential.name == name)
             ).first()
             if row is not None:
-                entry = (row.id, row.kind, row.cipher_blob.decode())
+                token = row.cipher_blob.decode()
+                # _by_id maps id -> (name, kind, token) — same shape as the
+                # in-memory put() path, so rotate()/fingerprints_of work on
+                # credentials loaded from the DB (A-4).
+                entry = (row.id, row.kind, token)
                 self._by_name[name] = entry  # type: ignore[assignment]
-                self._by_id[row.id] = entry  # type: ignore[assignment]
+                self._by_id[row.id] = (row.name, row.kind, token)
         if entry is None:
             raise RsiError(f"unknown credential: {name!r}", name=name)
         return self._decrypt(entry[2])

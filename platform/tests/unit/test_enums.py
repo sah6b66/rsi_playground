@@ -246,13 +246,16 @@ class TestHypothesisTransitions:
         )
 
     def test_any_active_state_to_withdrawn(self):
-        # "任意→withdrawn（人工）" applies to any non-terminal (active) state;
-        # terminal outcomes cannot be withdrawn.
+        # "任意→withdrawn（人工）" applies to any non-withdrawn state,
+        # including the ACCEPTED / REJECTED terminal outcomes (manual
+        # withdrawal of a decided hypothesis remains possible).
         for state in (
             HypothesisStatus.DRAFT,
             HypothesisStatus.PROPOSED,
             HypothesisStatus.CRITIC_PASSED,
             HypothesisStatus.APPLIED,
+            HypothesisStatus.ACCEPTED,
+            HypothesisStatus.REJECTED,
         ):
             assert (
                 HypothesisStatus.WITHDRAWN
@@ -260,12 +263,13 @@ class TestHypothesisTransitions:
             ), state
 
     def test_terminal_states(self):
-        for terminal in (
-            HypothesisStatus.ACCEPTED,
-            HypothesisStatus.REJECTED,
-            HypothesisStatus.WITHDRAWN,
-        ):
-            assert terminal not in VALID_HYPOTHESIS_TRANSITIONS
+        # Only WITHDRAWN is terminal; ACCEPTED/REJECTED can still be
+        # withdrawn manually.
+        assert HypothesisStatus.WITHDRAWN not in VALID_HYPOTHESIS_TRANSITIONS
+        for decided in (HypothesisStatus.ACCEPTED, HypothesisStatus.REJECTED):
+            assert set(VALID_HYPOTHESIS_TRANSITIONS[decided]) == {
+                HypothesisStatus.WITHDRAWN
+            }
 
 
 class TestIterationTransitions:

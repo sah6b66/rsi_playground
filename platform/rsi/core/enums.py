@@ -143,7 +143,11 @@ VALID_HYPOTHESIS_TRANSITIONS: Mapping[
     HypothesisStatus.APPLIED: frozenset(
         {HypothesisStatus.ACCEPTED, HypothesisStatus.REJECTED, HypothesisStatus.WITHDRAWN}
     ),
-    # ACCEPTED / REJECTED / WITHDRAWN are terminal.
+    # DD-01 §3.11 "任意→withdrawn（人工）": ACCEPTED/REJECTED are also
+    # human-withdrawable; only WITHDRAWN itself is terminal.
+    HypothesisStatus.ACCEPTED: frozenset({HypothesisStatus.WITHDRAWN}),
+    HypothesisStatus.REJECTED: frozenset({HypothesisStatus.WITHDRAWN}),
+    # WITHDRAWN is terminal.
 }
 
 VALID_ITERATION_TRANSITIONS: Mapping[IterationState, frozenset[IterationState]] = {

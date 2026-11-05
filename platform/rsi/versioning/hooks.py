@@ -4,7 +4,8 @@ The hook enforces, at the repository boundary:
 1. optimizer-identity pushes cannot touch ``judge/`` or ``prompts/``;
 2. baseline tags (``suts/*/baseline/*``) and freeze tags
    (``evalsets/*/freeze/*``) can be created but never deleted or modified;
-3. optimizer-identity pushes cannot modify frozen ``evalsets/`` paths.
+3. optimizer-identity pushes cannot write any ``evalsets/<id>/**`` path
+   for which a freeze tag already exists.
 """
 
 from __future__ import annotations
@@ -13,18 +14,23 @@ from pathlib import Path
 
 PRE_RECEIVE_SCRIPT = """#!/bin/bash
 # RSI Playground pre-receive hook
+ZERO=0000000000000000000000000000000000000000
 while read oldrev newrev refname; do
-    # Skip branch deletions
-    [ "$newrev" = "0000000000000000000000000000000000000000" ] && continue
-
-    # Check if ref is a tag we should protect
+    # Rule 2 (checked BEFORE the deletion skip): protected tags can never
+    # be deleted (newrev=0) or modified (oldrev!=0). Creation is allowed.
     if [[ "$refname" == refs/tags/suts/*/baseline/* ]] || [[ "$refname" == refs/tags/evalsets/*/freeze/* ]]; then
-        # Allow creation, block deletion (oldrev != 0000...)
-        if [ "$oldrev" != "0000000000000000000000000000000000000000" ]; then
+        if [ "$newrev" = "$ZERO" ]; then
+            echo "ERROR: Cannot delete protected tag: $refname" >&2
+            exit 1
+        fi
+        if [ "$oldrev" != "$ZERO" ]; then
             echo "ERROR: Cannot modify protected tag: $refname" >&2
             exit 1
         fi
     fi
+
+    # Skip branch deletions (non-protected refs only reach here)
+    [ "$newrev" = "$ZERO" ] && continue
 
     # Check commit author for restricted paths
     author=$(git log --format='%an' -1 "$newrev" 2>/dev/null || echo "")
@@ -35,9 +41,25 @@ while read oldrev newrev refname; do
             echo "ERROR: optimizer identity cannot modify judge/ or prompts/" >&2
             exit 1
         fi
-        if echo "$changed_files" | grep -qE "^evalsets/.*(/freeze/|^freeze)"; then
-            echo "ERROR: optimizer identity cannot modify frozen evalsets/" >&2
-            exit 1
+        # Rule 3: an evalset that already has a freeze tag is fully frozen —
+        # reject any optimizer write under evalsets/<that id>/** (not just
+        # the freeze tag path itself).
+        frozen_ids=$(git tag -l 'evalsets/*/freeze/*' | sed -E 's#^evalsets/([^/]+)/freeze/.*$#\\1#' | sort -u)
+        if [ -n "$frozen_ids" ]; then
+            while IFS= read -r f; do
+                [ -z "$f" ] && continue
+                case "$f" in
+                    evalsets/*)
+                        es_id=$(printf '%s\\n' "$f" | sed -E 's#^evalsets/([^/]+)/.*$#\\1#')
+                        if printf '%s\\n' "$frozen_ids" | grep -qx "$es_id"; then
+                            echo "ERROR: optimizer identity cannot modify frozen evalsets/ (evalset $es_id is frozen)" >&2
+                            exit 1
+                        fi
+                        ;;
+                esac
+            done <<EOF
+$(printf '%s\\n' "$changed_files")
+EOF
         fi
     fi
 done
@@ -50,8 +72,8 @@ def install_hooks(repo_path: Path) -> Path:
 
     The script rejects:
     1. optimizer-identity pushes to judge/**, prompts/**
-    2. Any push that deletes baseline or freeze tags
-    3. optimizer-identity pushes to frozen evalsets/**
+    2. Any push that deletes or modifies baseline or freeze tags
+    3. optimizer-identity pushes to any frozen evalsets/<id>/**
 
     Returns the path of the installed hook.
     """

@@ -113,8 +113,17 @@ class TestFreeze:
         assert record.frozen_at
         tag_names = [t.name for t in gitstore.repo.tags]
         assert "evalsets/test-es/freeze/v1" in tag_names
-        # second freeze increments N
+        # second freeze with identical content is idempotent: same tag reused
         record2 = gitstore.freeze_evalset("test-es")
+        assert record2.content_hash == record.content_hash
+        assert "evalsets/test-es/freeze/v2" not in [
+            t.name for t in gitstore.repo.tags
+        ]
+        # changed content -> a new freeze tag
+        (es_dir / "cases.yaml").write_text("cases: [c1]")
+        gitstore._commit_staging("edit evalset")
+        record3 = gitstore.freeze_evalset("test-es")
+        assert record3.content_hash != record.content_hash
         assert "evalsets/test-es/freeze/v2" in [t.name for t in gitstore.repo.tags]
 
     def test_freeze_missing_evalset(self, gitstore):
