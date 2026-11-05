@@ -48,6 +48,7 @@ from rsi.orchestrator.batch import BatchRunner
 from rsi.orchestrator.budget import BudgetController
 from rsi.orchestrator.checkpoint import CheckpointStore
 from rsi.orchestrator.event_bus import EventBus
+from rsi.orchestrator.health import HealthMonitor, build_checkers
 from rsi.orchestrator.iteration import IterationEngine
 from rsi.sandbox.backends.fake import FakeSandboxBackend
 from rsi.sandbox.config_api import ConfigApiCaller
@@ -170,7 +171,7 @@ def build_services(
     # -- Judge (session_factory wired -> judgments table persistence) -----
     llm_judge = LLMJudge(llm_client, TraceSummarizer())
     judge_service = JudgeService(
-        det=DeterministicJudge(),
+        det=DeterministicJudge(timeout_s=float(settings.judge.det_timeout_s)),
         safety=SafetyScanner(),
         llm=llm_judge,
         antihack=AntiHackDetector(),
@@ -232,7 +233,9 @@ def build_services(
 
     # -- Orchestrator -------------------------------------------------------
     event_bus = EventBus()
-    checkpoint_store = CheckpointStore()
+    checkpoint_store = CheckpointStore(
+        interval_s=float(settings.orchestrator.checkpoint_interval_s)
+    )
     budget_controller = BudgetController(
         stop_file=settings.stop_file,
         scope_limits={},
@@ -261,13 +264,9 @@ def build_services(
         ckpt=checkpoint_store,
     )
 
-    logger.info(
-        "bootstrap.assembled",
-        services="full",
-        ephemeral_creds=ephemeral_creds,
-        ephemeral_jwt=jwt_secret == _EPHEMERAL_JWT_SECRET,
-    )
-    return {
+    # -- HealthMonitor (D-1, DD-12 §4.7) -----------------------------------
+    # built last so every probed component is already in the services dict.
+    services: dict[str, Any] = {
         # infra
         "settings": settings,
         "engine": engine,
@@ -316,3 +315,17 @@ def build_services(
         # api compatibility (users store for per-request disable checks)
         "users": {},
     }
+    health_monitor = HealthMonitor(
+        checkers=build_checkers(services),
+        interval_s=float(settings.orchestrator.health_monitor_interval_s),
+        event_bus=event_bus,
+    )
+    services["health_monitor"] = health_monitor
+
+    logger.info(
+        "bootstrap.assembled",
+        services="full",
+        ephemeral_creds=ephemeral_creds,
+        ephemeral_jwt=jwt_secret == _EPHEMERAL_JWT_SECRET,
+    )
+    return services

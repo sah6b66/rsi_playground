@@ -8,6 +8,7 @@ counts ``critical_steps`` evidence hits against the run's trace events
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import TYPE_CHECKING, Any
 
@@ -57,6 +58,11 @@ def _event_texts(event: "TraceEvent") -> str:
 
 
 class DeterministicJudge:
+    def __init__(self, timeout_s: float | None = None) -> None:
+        # D-11: judge.det_timeout_s consumer — bounds each read-only assert
+        # execution; None keeps the unbounded legacy behavior.
+        self.timeout_s = timeout_s
+
     async def evaluate(
         self,
         task: "EvalTask",
@@ -74,7 +80,9 @@ class DeterministicJudge:
         )
         results: list[StateAssertResult] = []
         for sa in task.task.expected.final_state:
-            results.append(self._check_state(sa, lab, sandbox))
+            results.append(
+                await self._check_state_bounded(sa, lab, sandbox)
+            )
 
         hit_steps: list[str] = []
         for step in task.task.expected.critical_steps or []:
@@ -114,6 +122,34 @@ class DeterministicJudge:
         if item and any(item in a.action.strip().lower() for a in result.actions):
             return True
         return False
+
+    async def _check_state_bounded(
+        self, sa: StateAssert, lab: LabHandle, sandbox: "SandboxService"
+    ) -> StateAssertResult:
+        """_check_state with the det_timeout_s bound (D-11).
+
+        exec_readonly is blocking; run it in a worker thread under
+        asyncio.wait_for. A timeout degrades to a failed assertion (the
+        assert counts as not passed) instead of hanging the judge.
+        """
+        if self.timeout_s is None:
+            return self._check_state(sa, lab, sandbox)
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._check_state, sa, lab, sandbox),
+                timeout=self.timeout_s,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "det.assert_timeout", device=sa.device, timeout_s=self.timeout_s
+            )
+            return StateAssertResult(
+                device=sa.device,
+                cli=sa.cli,
+                passed=False,
+                matched=[],
+                absent_ok=True,
+            )
 
     def _check_state(
         self, sa: StateAssert, lab: LabHandle, sandbox: "SandboxService"

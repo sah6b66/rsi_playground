@@ -278,7 +278,13 @@ async def rerun_batch(
         "created_at": _now(),
     }
     runner = request.app.state.services.get("batch_runner")
-    if runner is not None and hasattr(runner, "trigger"):
-        runner.trigger(rerun)
+    if runner is not None:
+        # D-4: propagate the bypass flag into run_batch (runner default, so
+        # the rerun batch skips cache reads AND writes).
+        if body.bypass_cache:
+            runner.bypass_cache = True
+        trigger = getattr(runner, "trigger", None)
+        if trigger is not None:
+            trigger(rerun)
     store[rerun["id"]] = rerun
     return Response(status_code=204)

@@ -298,6 +298,7 @@ class OrchestratorSettings(BaseModel):
     model_config = _C
     max_parallel_batches: int = 2
     checkpoint_interval_s: int = 5
+    health_monitor_interval_s: float = 30.0  # DD-12 §4.7 poll period
     budget: OrchestratorBudgetSettings = OrchestratorBudgetSettings()
 
 

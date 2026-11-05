@@ -9,6 +9,8 @@ and StatsAggregator. Pure orchestration: no device/container IO of its own.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 from datetime import UTC, datetime
 from typing import Any
 
@@ -77,6 +79,35 @@ def _utcnow_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
 
 
+def _sha16(payload: str) -> str:
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _cache_key(task: TaskRecord, env: Any, config_version_id: str) -> tuple[str, str]:
+    """ADR-5 content-hash cache key: (task_content_hash, env_content_hash).
+
+    Both hashes are sha256[:16] over the canonical (sort_keys) JSON dump of
+    the full model: the task hash covers prompt/prepare/expected/metrics —
+    every field that can change the verdict — and the env hash covers
+    devices/topology/ssh_access/config_apis (ssh_access kept in: conservative
+    site-override policy per the ADR-5 erratum). ``config_version_id`` (the
+    sut_config_git_sha slot in ADR-5) is compared at hit time instead of
+    being part of the tuple, so a config change cannot silently reuse a
+    verdict recorded under a different version.
+    """
+    task_json = json.dumps(
+        task.model_dump(mode="json"), sort_keys=True, ensure_ascii=False,
+        default=str,
+    )
+    env_json = json.dumps(
+        env.model_dump(mode="json"), sort_keys=True, ensure_ascii=False,
+        default=str,
+    ) if hasattr(env, "model_dump") else json.dumps(
+        repr(env), sort_keys=True, ensure_ascii=False
+    )
+    return _sha16(task_json), _sha16(env_json)
+
+
 def _env_failed_verdict() -> Verdict:
     """Zero-score verdict; env-failed runs stay in the denominator (缺试计0)."""
     return Verdict(
@@ -112,7 +143,7 @@ class BatchRunner:
         settings=None,
         task_timeout_s: float | None = None,
         host: str = "main",
-        result_cache: dict[tuple[str, str, str], tuple[Verdict, str]] | None = None,
+        result_cache: dict[tuple[str, str], tuple[str, Verdict, str]] | None = None,
         credential_resolver=None,
     ) -> None:
         # credential_resolver (audit T2-1/B-8): object exposing
@@ -145,11 +176,15 @@ class BatchRunner:
             settings.sandbox.ready_timeout_s if settings is not None else 600
         )
         self.host = host
-        # H6: per-(task, env, config_version) verdict cache shared across
-        # runner instances; a hit skips instance creation + SUT execution.
-        self.result_cache: dict[tuple[str, str, str], tuple[Verdict, str]] = (
+        # H6/ADR-5: per-(task_content_hash, env_content_hash) verdict cache
+        # shared across runner instances; a hit skips instance creation + SUT
+        # execution. Value = (config_version_id, verdict, run_id) so a config
+        # change invalidates without key churn.
+        self.result_cache: dict[tuple[str, str], tuple[str, Verdict, str]] = (
             result_cache if result_cache is not None else {}
         )
+        # D-4: default cache bypass (set by :rerun wiring / noise calibration)
+        self.bypass_cache: bool = False
         self._envs: dict[str, Any] = {}
         # introspection for tests/ops: latest batch status and task->run_id map
         self.last_status: str = "created"
@@ -165,7 +200,14 @@ class BatchRunner:
         config_version_id: str,
         image_ref: str,
         permission: str = "read-only",
+        bypass_cache: bool | None = None,
     ) -> BatchStats:
+        # D-4: None -> runner default; noise-calibration batches force bypass
+        # (ADR-17) so repeated runs always execute.
+        if bypass_cache is None:
+            bypass_cache = self.bypass_cache
+        if self._batch_purpose(batch_id) == "noise_calibration":
+            bypass_cache = True
         logger.debug(
             "run_batch.entry",
             batch_id=batch_id,
@@ -223,16 +265,15 @@ class BatchRunner:
                     )
                     break
 
-                # c. cache hit (H6): identical (task_id, env, config_version)
-                # -> reuse the cached verdict, skip execution entirely
-                cache_key = (
-                    task.task_id,
-                    getattr(env, "name", ""),
-                    config_version_id,
-                )
-                hit = self.result_cache.get(cache_key)
+                # c. cache hit (H6/ADR-5): identical task+env content hashes
+                # recorded under the same config version -> reuse the cached
+                # verdict, skip execution entirely
+                cache_key = _cache_key(task, env, config_version_id)
+                hit = None if bypass_cache else self.result_cache.get(cache_key)
+                if hit is not None and hit[0] != config_version_id:
+                    hit = None  # same content, different config version
                 if hit is not None:
-                    verdict, run_id = hit
+                    _, verdict, run_id = hit
                     logger.debug("run_batch.cache_hit", task_id=task.task_id, run_id=run_id)
                     verdicts.append(verdict)
                     self.last_run_ids[task.task_id] = run_id
@@ -305,11 +346,24 @@ class BatchRunner:
                     0.0,
                     verdict.efficiency.wall_time_s,
                 )
-                if not verdict.missing:
+                if not verdict.missing and not bypass_cache:
                     self.result_cache[cache_key] = (
+                        config_version_id,
                         verdict,
                         self.last_run_ids.get(task.task_id, ""),
                     )
+                # D-5: global budget circuit breaker — tier-2 check after each
+                # task; a breach writes the STOP file + alert (inside
+                # check_global) and aborts the batch like the stop file does.
+                try:
+                    await self.budget.check_global()
+                except BudgetExceeded:
+                    status = "aborted"
+                    logger.debug("run_batch.abort", reason="global_budget", seq=seq)
+                    await self._publish_alert(
+                        "critical", "全局预算超限，批次中止", scope=batch_id
+                    )
+                    break
                 await self.ckpt.save(
                     batch_id,
                     {

@@ -57,8 +57,50 @@ def create_app(
             services=sorted(services.keys()),
             default_assembly=True,
         )
+        # startup: HealthMonitor polling (D-1, DD-12 §4.7) — one sweep
+        # immediately so /system/dependencies has data, then interval polls.
+        monitor = services.get("health_monitor")
+        if monitor is not None and hasattr(monitor, "start"):
+            try:
+                await asyncio.to_thread(monitor.check_all)
+            except Exception:  # noqa: BLE001 - first sweep is best-effort
+                pass
+            await monitor.start()
+        # startup: STOP-file polling (D-5) — in-process safety net calling
+        # budget.check_global() every 30s; a breach writes the STOP file +
+        # publishes the alert (inside check_global) even without batches.
+        stop_task: asyncio.Task | None = None
+        budget = services.get("budget_controller")
+        if budget is not None and hasattr(budget, "check_global"):
+
+            async def _stop_poll() -> None:
+                cfg = services.get("settings")
+                interval = (
+                    float(cfg.orchestrator.health_monitor_interval_s)
+                    if cfg is not None else 30.0
+                )
+                while True:
+                    try:
+                        await budget.check_global()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 - poller must not die
+                        pass  # BudgetExceeded already wrote STOP + alerted
+                    await asyncio.sleep(interval)
+
+            stop_task = asyncio.create_task(_stop_poll(), name="stop-polling")
         yield
-        # shutdown: reclaim pooled resources (idempotent, failure-tolerant)
+        # shutdown: stop background pollers, then reclaim pooled resources
+        if stop_task is not None:
+            stop_task.cancel()
+        if monitor is not None and hasattr(monitor, "stop"):
+            try:
+                await monitor.stop()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "api.shutdown", component="health_monitor",
+                    exc_type=type(exc).__name__,
+                )
         sandbox = services.get("sandbox_service")
         if sandbox is not None and hasattr(sandbox, "close"):
             try:
