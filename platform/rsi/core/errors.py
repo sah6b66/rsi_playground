@@ -88,6 +88,18 @@ class UnknownDeviceError(RsiError):
     """Referenced device not present in the site inventory."""
 
 
+class NotFoundError(RsiError):
+    """Referenced resource does not exist (API 404)."""
+
+
+class ConflictError(RsiError):
+    """State conflict: duplicate resource or illegal concurrent update (API 409)."""
+
+
+class ValidationError(RsiError):
+    """Semantically invalid input beyond schema shape (API 422)."""
+
+
 __all__ = [
     "RsiError",
     "ConfigError",
@@ -106,4 +118,7 @@ __all__ = [
     "AuthError",
     "InvalidTransitionError",
     "UnknownDeviceError",
+    "NotFoundError",
+    "ConflictError",
+    "ValidationError",
 ]
