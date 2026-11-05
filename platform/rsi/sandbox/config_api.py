@@ -29,7 +29,10 @@ class ConfigApiCaller:
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._store = credential_store
-        self._client = client  # None: per-call client (P0; S11 reuses a pool)
+        self._client = client
+        # M6: when no client is injected, lazily create ONE client on first
+        # call and reuse it (connection pooling) instead of one per call.
+        self._owns_client = client is None
 
     async def apply(
         self,
@@ -62,7 +65,10 @@ class ConfigApiCaller:
         }
         url = cfg.base_url.rstrip("/") + "/apply"
 
-        client = self._client or httpx.AsyncClient()
+        client = self._client
+        if client is None:
+            client = httpx.AsyncClient()
+            self._client = client
         try:
             resp = await client.post(
                 url, json=body, headers=headers, timeout=cfg.timeout_s
@@ -73,9 +79,6 @@ class ConfigApiCaller:
                 f"config api {api_key!r} request failed: {exc}",
                 context={"api": api_key, "url": url},
             ) from exc
-        finally:
-            if self._client is None:
-                await client.aclose()
 
         if resp.status_code < 200 or resp.status_code >= 300:
             summary = resp.text[:BODY_SUMMARY_LEN]
@@ -90,6 +93,12 @@ class ConfigApiCaller:
             result = {"raw": resp.text}
         logger.debug("apply.exit", status_code=resp.status_code, result_type=type(result).__name__)
         return result
+
+    async def aclose(self) -> None:
+        """Close the owned client (M6); injected clients stay with the owner."""
+        if self._owns_client and self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     def _auth_headers(self, auth_ref: str | None) -> dict[str, str]:
         """Resolve auth_ref via CredentialStore; None -> no auth header.

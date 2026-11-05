@@ -10,6 +10,7 @@ L2 (lab reset + snap0 restore).
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +29,7 @@ from rsi.sandbox.backends.base import BackendStatus, SandboxBackend
 from rsi.sandbox.config_api import ConfigApiCaller
 from rsi.sandbox.readiness import ReadyReport
 from rsi.sandbox.scheduler import LabScheduler
+from rsi.sandbox.sshpool import DeviceSession, SessionKey, SshPool
 
 __all__ = ["READONLY_PREFIXES", "OpsJournal", "SandboxService"]
 
@@ -80,6 +82,7 @@ class SandboxService:
         config_api: ConfigApiCaller | None = None,
         scheduler: LabScheduler | None = None,
         settings=None,
+        ssh_pool: SshPool | None = None,
     ) -> None:
         self._backends = backends
         self.labs_dir = Path(labs_dir)
@@ -94,6 +97,10 @@ class SandboxService:
         self._envs: dict[str, EnvSpec] = {}
         self._snapshots: dict[str, list[SnapRef]] = {}
         self._journals: dict[str, OpsJournal] = {}
+        # M1: device commands route through the SSH pool when available;
+        # None keeps the pure-backend behavior (backward compatible).
+        self._ssh_pool = ssh_pool
+        self._closed = False
 
     # -- lab lifecycle ---------------------------------------------------------
 
@@ -352,6 +359,24 @@ class SandboxService:
                 f"device {device!r} not present in lab {lab.lab_id!r}",
                 context={"device": device, "lab_id": lab.lab_id},
             )
+        session = self._pool_session(lab, device)
+        if session is not None:
+            result = _run_sync(session.exec_cli(cli))
+            logger.debug(
+                "exec_readonly.pool_exit", ok=result.ok, output_len=len(result.output)
+            )
+            if not result.ok:
+                raise DeviceError(
+                    f"cli {cli!r} failed on {device!r} via ssh session",
+                    context={
+                        "device": device,
+                        "lab_id": lab.lab_id,
+                        "cli": cli,
+                        "matched_errors": result.matched_errors,
+                        "output": result.output,
+                    },
+                )
+            return result.output
         try:
             output = self._backend(lab).exec(lab, device, cli)
         except EnvError as exc:
@@ -366,6 +391,21 @@ class SandboxService:
             logger.debug("health_check.exit", healthy=False, reason="no_endpoints")
             return False
         device = next(iter(lab.endpoints))
+        session = self._pool_session(lab, device)
+        if session is not None:
+            # H1: run the probe on the runner loop via the same bridge as
+            # exec_readonly — awaiting a pooled session coroutine on the
+            # caller's loop would bind DeviceSession.lock to that loop and
+            # later collide with the runner loop ("bound to a different
+            # event loop").
+            try:
+                result = _run_sync(session.exec_cli("display clock"))
+            except Exception as exc:  # noqa: BLE001 — probe must not raise
+                logger.debug("health_check.exit", healthy=False, exc_type=type(exc).__name__)
+                return False
+            healthy = result.ok and bool(result.output.strip())
+            logger.debug("health_check.exit", healthy=healthy, via="ssh_pool")
+            return healthy
         try:
             output = self._backend(lab).exec(lab, device, "display clock")
         except EnvError as exc:
@@ -388,6 +428,27 @@ class SandboxService:
 
     def snapshots(self, lab_id: str) -> list[SnapRef]:
         return list(self._snapshots.get(lab_id, []))
+
+    def close(self) -> None:
+        """Reclaim pooled SSH sessions and the owned config-api client.
+
+        Idempotent: subsequent calls are no-ops. Each step is closed
+        independently: a failure in one (logged, not raised) never leaves
+        the other unclosed. Note: cross-loop ``aclose`` of an idle client
+        is a known S11 concern, tracked for the real executor phase.
+        """
+        if self._closed:
+            return
+        self._closed = True
+        if self._ssh_pool is not None:
+            try:
+                _run_sync(self._ssh_pool.close_all())
+            except Exception as exc:  # noqa: BLE001 — close must not raise
+                logger.warning("close.ssh_pool_failed", error=str(exc))
+        try:
+            _run_sync(self._config_api.aclose())
+        except Exception as exc:  # noqa: BLE001 — close must not raise
+            logger.warning("close.config_api_failed", error=str(exc))
 
     # -- internals ----------------------------------------------------------------
 
@@ -426,6 +487,72 @@ class SandboxService:
                 context={"device": device, "lab_id": lab.lab_id, "env": env.name},
             )
         return device
+
+    def _pool_session(self, lab: LabHandle, device: str) -> DeviceSession | None:
+        """Resolve a pooled SSH session for the device, or None to fall back.
+
+        M1 (DD-04 §4.1/4.2): when a SshPool is wired and the device ssh
+        context is constructible (endpoint address + known vendor), device
+        commands go through the pooled session (connection reuse, per-session
+        lock, alive probing). Otherwise the backend path is unchanged.
+        """
+        if self._ssh_pool is None:
+            return None
+        access = lab.endpoints.get(device)
+        if access is None:
+            return None
+        env = self._envs.get(lab.lab_id)
+        vendor = (
+            next((d.type for d in env.devices if d.name == device), None)
+            if env is not None
+            else None
+        )
+        if vendor is None:
+            return None
+        key = SessionKey(ip=access.ip, port=access.port, lab_id=lab.lab_id)
+        return _run_sync(self._ssh_pool.device(key, access, vendor))
+
+
+class _LoopRunner:
+    """One daemon thread with one event loop for sync-initiated coroutines.
+
+    Keeps all pool coroutines invoked from sync code (exec_readonly/close)
+    on a single loop, so session locks never hop between event loops.
+    """
+
+    def __init__(self) -> None:
+        import threading
+
+        self._lock = threading.Lock()
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def run(self, coro):
+        with self._lock:
+            if self._loop is None:
+                self._loop = asyncio.new_event_loop()
+                import threading as _t
+
+                _t.Thread(
+                    target=self._loop.run_forever, daemon=True, name="ssh-pool-loop"
+                ).start()
+        try:
+            # L1: bounded wait — a hung runner thread must not deadlock the
+            # caller forever.
+            return asyncio.run_coroutine_threadsafe(coro, self._loop).result(
+                timeout=30
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                "sandbox runner loop coroutine did not finish within 30s"
+            ) from exc
+
+
+_RUNNER = _LoopRunner()
+
+
+def _run_sync(coro):
+    """Run a coroutine to completion from sync code (safe inside async too)."""
+    return _RUNNER.run(coro)
 
 
 def _capture_cmd(env: EnvSpec, device: str) -> str:

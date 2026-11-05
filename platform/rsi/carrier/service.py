@@ -39,6 +39,35 @@ class InstanceHandle(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
 
 
+def build_dev_env(cred: Any) -> dict[str, str]:
+    """Derive DEV_<DEV>_* / OPENCODE_API_KEY env vars from a cred payload (M3).
+
+    Accepted shape: ``{"api_key": ..., "devices": {"R1": {"user": ...,
+    "pass": ..., "host": ..., "port": ...}}}`` (CredentialResolver output).
+    Missing keys are skipped; unknown cred types yield an empty env.
+    """
+    if not isinstance(cred, dict):
+        return {}
+    env: dict[str, str] = {}
+    devices = cred.get("devices")
+    if isinstance(devices, dict):
+        for name, dev in devices.items():
+            if not isinstance(dev, dict):
+                continue
+            prefix = f"DEV_{str(name).upper()}_"
+            for key, suffix in (
+                ("user", "USER"),
+                ("pass", "PASS"),
+                ("host", "HOST"),
+                ("port", "PORT"),
+            ):
+                if dev.get(key) is not None:
+                    env[f"{prefix}{suffix}"] = str(dev[key])
+    if cred.get("api_key") is not None:
+        env["OPENCODE_API_KEY"] = str(cred["api_key"])
+    return env
+
+
 class HostService:
     """Instance create/submit/collect/destroy over pluggable carriers."""
 
@@ -112,7 +141,7 @@ class HostService:
             container_id=instance_id,
             status="running",
             config_dir=config_dir,
-            env={"RSI_LAB_ID": lab.lab_id, "RSI_RUN_ID": run_id},
+            env={"RSI_LAB_ID": lab.lab_id, "RSI_RUN_ID": run_id, **build_dev_env(cred)},
         )
         self.net_policy.attach(selected_host, handle.container_id, [lab_net, trace_net])
         self.host_pool.increment(selected_host)

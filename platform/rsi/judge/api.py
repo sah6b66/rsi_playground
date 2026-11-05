@@ -2,21 +2,27 @@
 
 ``judge_run`` runs DeterministicJudge and SafetyScanner in parallel
 (asyncio.gather), then LLMJudge sequentially (LLM rate limits), then
-AntiHackDetector, then VerdictAggregator. Persistence (judgments rows) lands
-with the orchestrator slice; this class returns the Verdict only.
+AntiHackDetector, then VerdictAggregator. If ``session_factory`` is provided,
+the aggregated judgment (three-layer raw outputs + Verdict) is persisted to
+the ``judgments`` table; persistence failures are logged and never block the
+evaluation flow (M5).
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Literal
+import uuid
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Callable, Literal
 
 from rsi.core.enums import EventType, RunStatus
 from rsi.core.models import Efficiency
 from rsi.log import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
+    from sqlalchemy.orm import Session
     from rsi.core.models import EvalTask, LabHandle, TaskResult, TraceEvent, Verdict
+    from rsi.db.tables import Judgment
     from rsi.judge.aggregate import VerdictAggregator
     from rsi.judge.antihack import AntiHackDetector
     from rsi.judge.deterministic import DetScores, DeterministicJudge
@@ -40,12 +46,14 @@ class JudgeService:
         llm: "LLMJudge",
         antihack: "AntiHackDetector",
         agg: "VerdictAggregator",
+        session_factory: 'Callable[["Session"]] | None' = None,
     ) -> None:
         self._det = det
         self._safety = safety
         self._llm = llm
         self._antihack = antihack
         self._agg = agg
+        self._session_factory = session_factory
 
     async def judge_run(
         self,
@@ -81,12 +89,55 @@ class JudgeService:
         eff = efficiency if efficiency is not None else self._efficiency(events)
         missing = self._missing(result, run_status)
         verdict = self._agg.aggregate(det_scores, safety_verdict, sem, hack, eff, missing)
+        self._persist_judgment(
+            run_id=events[0].run_id if events else "",
+            verdict=verdict,
+            det_scores=det_scores,
+            safety_verdict=safety_verdict,
+            sem=sem,
+            hack=hack,
+        )
         logger.debug(
             "judge_run.exit",
             task_complete=verdict.scores.task_complete,
             missing=verdict.missing,
         )
         return verdict
+
+    def _persist_judgment(
+        self,
+        run_id: str,
+        verdict: "Verdict",
+        det_scores: "DetScores",
+        safety_verdict,
+        sem: "SemanticScores",
+        hack,
+    ) -> None:
+        if self._session_factory is None:
+            return
+        try:
+            from rsi.db.tables import Judgment
+
+            def _j(obj) -> str | None:
+                return obj.model_dump_json() if obj is not None else None
+
+            row = Judgment(
+                id=str(uuid.uuid4()),
+                run_id=run_id,
+                det_json=_j(det_scores),
+                safety_json=_j(safety_verdict),
+                llm_json=_j(sem),
+                verdict_json=verdict.model_dump_json(),
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            with self._session_factory() as session:
+                session.add(row)
+                session.commit()
+            logger.debug("judgment.persisted", run_id=run_id)
+        except Exception as exc:  # noqa: BLE001 - persistence must not block judging
+            logger.warning(
+                "judgment.persist_failed", run_id=run_id, exc_type=type(exc).__name__
+            )
 
     # -- internals ----------------------------------------------------------------
 

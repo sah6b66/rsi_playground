@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:  # runtime import would be circular (service imports adapters)
     from rsi.carrier.service import InstanceHandle
@@ -25,6 +25,9 @@ class RunHandle(BaseModel):
     instance_id: str
     cmd: list[str]
     stdout: str | None = None
+    # Extra env for the S11 real executor to inject when spawning the task
+    # (e.g. OPENCODE_WIRETAP_FILE for per-run trace attribution).
+    env: dict[str, str] = Field(default_factory=dict)
 
 
 class CarrierAdapter(ABC):
