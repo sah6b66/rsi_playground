@@ -8,12 +8,12 @@ aggregator routes indeterminate verdicts to the human queue (DD-08 §5.3 rule 4)
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from rsi.core.models import PathQuality
+from rsi.judge.summarizer import TraceSummarizer
 from rsi.llm.client import LLMClient
 from rsi.log import get_logger
 
@@ -58,19 +58,14 @@ class PathQualityResult(_M):
     reasoning: str
 
 
-def _event_texts(events: "list[TraceEvent]") -> str:
-    parts: list[str] = []
-    for e in events:
-        try:
-            parts.append(json.dumps(e.data, ensure_ascii=False, default=str))
-        except (TypeError, ValueError):  # pragma: no cover - defensive
-            parts.append(str(e.data))
-    return "\n".join(parts)
-
-
 class LLMJudge:
-    def __init__(self, llm_client: LLMClient) -> None:
+    def __init__(
+        self,
+        llm_client: LLMClient,
+        summarizer: TraceSummarizer | None = None,
+    ) -> None:
         self._llm = llm_client
+        self._summarizer = summarizer or TraceSummarizer()
 
     async def judge(
         self,
@@ -153,7 +148,7 @@ class LLMJudge:
             "judge",
             "path_quality",
             vars={
-                "steps_summary": _event_texts(events)[:8000],
+                "steps_summary": self._summarizer.summarize(events),
                 "critical_steps": "\n".join(s.evidence for s in critical),
                 "checklist_items": "\n".join(ci.item for ci in checklist),
                 "sut_actions": "\n".join(a.action for a in result.actions),

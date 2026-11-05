@@ -6,6 +6,7 @@ from rsi.judge.api import JudgeService
 from rsi.judge.deterministic import DetScores, DeterministicJudge, StateAssertResult
 from rsi.judge.llm_judge import LLMJudge, SemanticScores
 from rsi.judge.safety import SafetyScanner
+from rsi.judge.summarizer import TraceSummarizer
 
 __all__ = [
     "AntiHackDetector",
@@ -15,6 +16,7 @@ __all__ = [
     "JudgeService",
     "LLMJudge",
     "SafetyScanner",
+    "TraceSummarizer",
     "SemanticScores",
     "StateAssertResult",
     "VerdictAggregator",
