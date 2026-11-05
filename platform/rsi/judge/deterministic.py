@@ -17,7 +17,7 @@ from rsi.core.models import CriticalStep, LabHandle, StateAssert, TaskResult
 from rsi.log import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
-    from rsi.core.models import EvalTask, TraceEvent
+    from rsi.core.models import CheckItem, EvalTask, TraceEvent
     from rsi.sandbox.service import SandboxService
 
 __all__ = ["DetScores", "DeterministicJudge", "StateAssertResult"]
@@ -45,6 +45,7 @@ class DetScores(_M):
     final_state_results: list[StateAssertResult] = []
     critical_steps_hit: list[str] = []
     diagnostic_steps: int = 0
+    checklist_missed: list[str] = []
 
 
 def _event_texts(event: "TraceEvent") -> str:
@@ -80,17 +81,39 @@ class DeterministicJudge:
             if any(step.evidence in _event_texts(e) for e in events):
                 hit_steps.append(step.evidence)
 
+        missed: list[str] = [
+            ci.item
+            for ci in task.task.expected.checklist or []
+            if not self._checklist_hit(ci, events, result)
+        ]
+
         scores = DetScores(
             final_state_results=results,
             critical_steps_hit=hit_steps,
             diagnostic_steps=len(hit_steps),
+            checklist_missed=missed,
         )
         logger.debug(
             "evaluate.exit",
             state_asserts_passed=sum(1 for r in results if r.passed),
             critical_steps_hit=len(hit_steps),
+            checklist_missed=len(missed),
         )
         return scores
+
+    @staticmethod
+    def _checklist_hit(
+        ci: "CheckItem", events: "list[TraceEvent]", result: TaskResult
+    ) -> bool:
+        """A checklist item is a hit when its evidence_cli appears in any
+        event data (same containment logic as critical_steps) or when its
+        description fuzzily matches a reported SUT action."""
+        if ci.evidence_cli and any(ci.evidence_cli in _event_texts(e) for e in events):
+            return True
+        item = ci.item.strip().lower()
+        if item and any(item in a.action.strip().lower() for a in result.actions):
+            return True
+        return False
 
     def _check_state(
         self, sa: StateAssert, lab: LabHandle, sandbox: "SandboxService"

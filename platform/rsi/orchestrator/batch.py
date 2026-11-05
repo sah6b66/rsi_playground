@@ -76,8 +76,10 @@ class BatchRunner:
         event_bus,
         stats_agg,
         *,
-        task_timeout_s: float = 1800.0,
+        settings=None,
+        task_timeout_s: float | None = None,
         host: str = "main",
+        result_cache: dict[tuple[str, str, str], tuple[Verdict, str]] | None = None,
     ) -> None:
         self.sandbox = sandbox
         self.carrier = carrier
@@ -88,8 +90,27 @@ class BatchRunner:
         self.budget = budget
         self.event_bus = event_bus
         self.stats_agg = stats_agg
+        self.settings = settings
+        if task_timeout_s is None:
+            task_timeout_s = (
+                float(settings.carrier.task_timeout_s)
+                if settings is not None
+                else 1800.0
+            )
         self.task_timeout_s = task_timeout_s
+        # settings wiring (H1): build retry limit + ready timeout from settings
+        self.prepare_attempts = (
+            settings.sandbox.build_retry + 1 if settings is not None else _PREPARE_ATTEMPTS
+        )
+        self.ready_timeout_s = (
+            settings.sandbox.ready_timeout_s if settings is not None else 600
+        )
         self.host = host
+        # H6: per-(task, env, config_version) verdict cache shared across
+        # runner instances; a hit skips instance creation + SUT execution.
+        self.result_cache: dict[tuple[str, str, str], tuple[Verdict, str]] = (
+            result_cache if result_cache is not None else {}
+        )
         self._envs: dict[str, Any] = {}
         # introspection for tests/ops: latest batch status and task->run_id map
         self.last_status: str = "created"
@@ -113,25 +134,42 @@ class BatchRunner:
             image_ref=image_ref,
             permission=permission,
         )
-        # 1-2. build lab once per batch, wait ready, snapshot snap0
-        lab = await self.sandbox.build_lab(env)
+        # 0. resume from checkpoint (DD-12 §5.1): skip already-completed tasks
+        state = await self.ckpt.resume(batch_id)
+        completed: list[dict[str, str]] = []
+        completed_task_ids: set[str] = set()
+        if state is not None:
+            prev = state.get("completed", [])
+            completed = [dict(c) for c in prev]
+            completed_task_ids = {
+                c["task_id"] if isinstance(c, dict) else str(c) for c in prev
+            }
+            logger.info(
+                "batch.resume",
+                batch_id=batch_id,
+                completed_count=len(completed_task_ids),
+            )
+        pending = [t for t in tasks if t.task_id not in completed_task_ids]
+
+        # 1-2. build lab once per batch (or reuse the checkpointed one), snap0
+        lab, snap0 = await self._build_or_reuse_lab(env, state)
         self._envs[batch_id] = env
-        await self.sandbox.wait_ready(lab)
-        snap0 = await self.sandbox.snapshot(lab, "snap0")
 
         verdicts: list[Verdict] = []
-        completed: list[dict[str, str]] = []
         status = "finalized"
         consecutive_env_failures = 0
         self.last_status = "running"
         await self.event_bus.publish("batch", batch_id, "created", "running")
 
         try:
-            for seq, task in enumerate(tasks):
+            for seq, task in enumerate(pending):
                 # a. stop file -> abort
                 if self.budget.check_stop_file():
                     status = "aborted"
                     logger.debug("run_batch.abort", reason="stop_file", seq=seq)
+                    await self._publish_alert(
+                        "warning", "STOP 熔断文件检测到，批次中止", scope=batch_id
+                    )
                     break
                 # b. budget -> abort
                 try:
@@ -141,9 +179,45 @@ class BatchRunner:
                 except BudgetExceeded:
                     status = "aborted"
                     logger.debug("run_batch.abort", reason="budget", seq=seq)
+                    await self._publish_alert(
+                        "critical", "预算超限，批次中止", scope=batch_id
+                    )
                     break
 
-                # c. run task (9-step pipeline)
+                # c. cache hit (H6): identical (task_id, env, config_version)
+                # -> reuse the cached verdict, skip execution entirely
+                cache_key = (
+                    task.task_id,
+                    getattr(env, "name", ""),
+                    config_version_id,
+                )
+                hit = self.result_cache.get(cache_key)
+                if hit is not None:
+                    verdict, run_id = hit
+                    logger.debug("run_batch.cache_hit", task_id=task.task_id, run_id=run_id)
+                    verdicts.append(verdict)
+                    self.last_run_ids[task.task_id] = run_id
+                    completed.append(
+                        {
+                            "task_id": task.task_id,
+                            "run_id": run_id,
+                            "status": "cached",
+                        }
+                    )
+                    await self.ckpt.save(
+                        batch_id,
+                        {
+                            "batch_id": batch_id,
+                            "lab_id": lab.lab_id,
+                            "snap0_id": snap0.snapshot_id,
+                            "completed": completed,
+                            "cursor_seq": seq + 1,
+                        },
+                    )
+                    await self.event_bus.publish("run", run_id, "judging", "cached")
+                    continue
+
+                # d. run task (9-step pipeline)
                 result, verdict = await self.run_task(
                     batch_id,
                     task,
@@ -176,6 +250,11 @@ class BatchRunner:
                             consecutive=consecutive_env_failures,
                             seq=seq,
                         )
+                        await self._publish_alert(
+                            "critical",
+                            f"沙箱离线: 连续 {consecutive_env_failures} 个任务环境失败",
+                            scope=batch_id,
+                        )
                         break
                 else:
                     consecutive_env_failures = 0
@@ -187,6 +266,11 @@ class BatchRunner:
                     0.0,
                     verdict.efficiency.wall_time_s,
                 )
+                if not verdict.missing:
+                    self.result_cache[cache_key] = (
+                        verdict,
+                        self.last_run_ids.get(task.task_id, ""),
+                    )
                 await self.ckpt.save(
                     batch_id,
                     {
@@ -234,7 +318,7 @@ class BatchRunner:
         # 1. prepare (backup + exec_cli/call_api), retry <= 2, then env_failed
         applied = []
         prepared = False
-        for _attempt in range(_PREPARE_ATTEMPTS):
+        for _attempt in range(self.prepare_attempts):
             try:
                 applied = await self.sandbox.prepare(lab, task.task_id, task.prepare)
                 prepared = True
@@ -302,6 +386,41 @@ class BatchRunner:
         return result, verdict
 
     # -- helpers ----------------------------------------------------------------
+
+    async def _publish_alert(
+        self, severity: str, message: str, scope: str | None = None
+    ) -> None:
+        """system.alert publisher (H2): no-op when the bus lacks publish_alert."""
+        publish_alert = getattr(self.event_bus, "publish_alert", None)
+        if publish_alert is not None:
+            await publish_alert(severity, message, scope=scope)
+
+    async def _build_or_reuse_lab(self, env, state: dict | None):
+        """Build a fresh lab, or reuse the checkpointed one if still alive."""
+        if state is not None and state.get("lab_id"):
+            candidate = LabHandle(
+                lab_id=state["lab_id"],
+                host=self.host,
+                backend=env.backend,
+                endpoints=dict(env.ssh_access or {}),
+            )
+            try:
+                alive = await self.sandbox.health_check(candidate)
+            except Exception:
+                alive = False  # unknown lab / backend gone (fresh process)
+            if alive:
+                logger.info(
+                    "batch.lab_reused", lab_id=candidate.lab_id, batch=state.get("batch_id")
+                )
+                snap0_id = state.get("snap0_id")
+                for snap in self.sandbox.snapshots(candidate.lab_id):
+                    if snap.snapshot_id == snap0_id:
+                        return candidate, snap
+                return candidate, await self.sandbox.snapshot(candidate, "snap0")
+            logger.info("batch.lab_dead", lab_id=state.get("lab_id"))
+        lab = await self.sandbox.build_lab(env)
+        await self.sandbox.wait_ready(lab, self.ready_timeout_s)
+        return lab, await self.sandbox.snapshot(lab, "snap0")
 
     @staticmethod
     def _trace_events(

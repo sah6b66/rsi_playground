@@ -48,12 +48,17 @@ class HostService:
         net_policy: NetPolicy,
         adapters: dict[str, CarrierAdapter],
         scheduler: InstanceScheduler | None = None,
+        settings=None,
     ) -> None:
         if not adapters:
             raise ValueError("at least one CarrierAdapter is required")
         self.host_pool = host_pool
         self.net_policy = net_policy
-        self.scheduler = scheduler or InstanceScheduler(host_pool)
+        # settings wiring (H1): scheduler default from carrier.max_instances_per_host
+        default_max = (
+            settings.carrier.max_instances_per_host if settings is not None else 10
+        )
+        self.scheduler = scheduler or InstanceScheduler(host_pool, default_max)
         self.adapters = adapters
         self._default_adapter = next(iter(adapters.values()))
         self._instances: dict[str, InstanceHandle] = {}

@@ -245,3 +245,59 @@ class TestRunBatch:
         names = [e["event"] for e in events]
         assert "run.status_changed" in names
         assert "batch.status_changed" in names
+
+    async def test_checkpoint_resume_skips_completed_tasks(self, tmp_path):
+        # simulate a crash mid-batch: task 1 done, task 2 raises, lab left
+        # behind (destroy suppressed, as a hard kill would)
+        rig = Rig(tmp_path)
+        tasks = [_task(1), _task(2), _task(3)]
+        orig_run_task = rig.runner.run_task
+        destroyed: list[str] = []
+
+        async def run_task_crash(batch_id, task, lab, *a, **kw):
+            if task.task_id.endswith("02"):
+                raise RuntimeError("simulated crash")
+            return await orig_run_task(batch_id, task, lab, *a, **kw)
+
+        async def keep_lab(lab):
+            destroyed.append(lab.lab_id)
+
+        rig.runner.run_task = run_task_crash
+        rig.sandbox.destroy = keep_lab
+        with pytest.raises(RuntimeError):
+            await rig.runner.run_batch("batch-1", _env(), tasks, "cfg-v1", "sut-img")
+        assert len(rig.judge.calls) == 1  # only task 1 judged before the crash
+
+        # resume: same batch id, runner repaired
+        rig.runner.run_task = orig_run_task
+        judge_calls_before = len(rig.judge.calls)
+        stats = await rig.runner.run_batch("batch-1", _env(), tasks, "cfg-v1", "sut-img")
+        # completed task 1 was skipped; only tasks 2+3 ran
+        assert len(rig.judge.calls) - judge_calls_before == 2
+        assert [c["task_id"] for c in rig.judge.calls[judge_calls_before:]] == [
+            "fault/demo-02", "fault/demo-03",
+        ]
+        assert stats.n == 2
+        state = await rig.ckpt.resume("batch-1")
+        assert [c["task_id"] for c in state["completed"]] == [
+            "fault/demo-01", "fault/demo-02", "fault/demo-03",
+        ]
+
+    async def test_checkpoint_resume_reuses_live_lab(self, tmp_path):
+        rig = Rig(tmp_path)
+        tasks = [_task(1), _task(2)]
+
+        async def keep_lab(lab):
+            pass
+
+        rig.sandbox.destroy = keep_lab
+        stats1 = await rig.runner.run_batch("batch-1", _env(), tasks, "cfg-v1", "sut-img")
+        assert stats1.n == 2
+        labs_after_first = rig.backend.active_lab_count
+
+        # a resumed batch whose tasks are all complete must not even build a lab
+        # task run: reuse path -> health check passes on the kept lab
+        stats2 = await rig.runner.run_batch("batch-1", _env(), tasks, "cfg-v1", "sut-img")
+        assert stats2.n == 0  # everything skipped
+        assert rig.backend.active_lab_count == labs_after_first
+        assert len(rig.judge.calls) == 2  # no task re-run on resume

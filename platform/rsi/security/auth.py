@@ -91,5 +91,22 @@ class AuthService:
         except Exception:
             raise AuthError("invalid token claims") from None
 
+    def get_current_user(
+        self, token: str, users_store: dict[str, dict]
+    ) -> dict:
+        """Verify JWT -> check user disabled -> return user info.
+
+        ``users_store`` maps user_id -> {"disabled": bool, "username": str,
+        "role": str}. Raises AuthError if the token is invalid/expired, the
+        user is not found, or the account is disabled (DD-03 §4, ADR-19).
+        """
+        claims = self.verify(token)
+        user = users_store.get(claims.sub)
+        if user is None:
+            raise AuthError("User not found")
+        if user.get("disabled", False):
+            raise AuthError("Account disabled")
+        return {"id": claims.sub, "username": user["username"], "role": claims.role}
+
 
 __all__ = ["AuthService", "Claims"]

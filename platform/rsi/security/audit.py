@@ -9,10 +9,14 @@ from __future__ import annotations
 
 import functools
 import inspect
+import json
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field
+from sqlmodel import Session
+
+from rsi.db.tables import AuditLogEntry
 
 # Body-summary keys stripped recursively before audit detail is stored.
 SENSITIVE_FIELDS = frozenset({"password", "secret", "token", "api_key"})
@@ -28,10 +32,16 @@ class AuditEntry(BaseModel):
 
 
 class AuditLog:
-    """In-memory audit trail (P0); swap the sink for audit_log later."""
+    """Audit trail: in-memory list (P0), plus optional ``audit_log`` table.
 
-    def __init__(self) -> None:
+    When an optional SQLModel ``session`` is supplied, ``record()`` also
+    persists each entry to the database (DD-03 §6); the in-memory list is
+    always kept for backward compatibility.
+    """
+
+    def __init__(self, session: Session | None = None) -> None:
         self.entries: list[AuditEntry] = []
+        self._session = session
 
     def record(
         self,
@@ -41,16 +51,27 @@ class AuditLog:
         object_id: str,
         detail: dict[str, Any] | None = None,
     ) -> None:
-        self.entries.append(
-            AuditEntry(
-                ts=datetime.now(timezone.utc).isoformat(),
-                actor=actor,
-                action=action,
-                object_type=object_type,
-                object_id=object_id,
-                detail=detail or {},
-            )
+        entry = AuditEntry(
+            ts=datetime.now(timezone.utc).isoformat(),
+            actor=actor,
+            action=action,
+            object_type=object_type,
+            object_id=object_id,
+            detail=detail or {},
         )
+        self.entries.append(entry)
+        if self._session is not None:
+            self._session.add(
+                AuditLogEntry(
+                    ts=entry.ts,
+                    actor=actor,
+                    action=action,
+                    object_type=object_type,
+                    object_id=object_id,
+                    detail_json=json.dumps(entry.detail, default=str),
+                )
+            )
+            self._session.commit()
 
     def audited(
         self,

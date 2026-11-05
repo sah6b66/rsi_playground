@@ -145,6 +145,7 @@ class CarrierHostSettings(BaseModel):
     model_config = _C
     docker: str = "local"
     subnets: list[str] = Field(default_factory=list)
+    max_instances: Optional[int] = None  # per-host override (None → global default)
 
 
 class CarrierSettings(BaseModel):
@@ -152,6 +153,7 @@ class CarrierSettings(BaseModel):
 
     model_config = _C
     task_timeout_s: int = 1800
+    max_instances_per_host: int = 10  # scheduler default (per-host override wins)
     adapters: dict[str, CarrierAdapterSettings] = Field(default_factory=lambda: {
         "claude_code": CarrierAdapterSettings(image_base="rsi/claude-code-runtime:1.x"),
         "opencode": CarrierAdapterSettings(image_base="rsi/opencode-runtime:1.x"),

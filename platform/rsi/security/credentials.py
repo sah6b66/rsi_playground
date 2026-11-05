@@ -11,14 +11,17 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+from datetime import datetime, timezone
 from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 from pydantic import BaseModel, Field
+from sqlmodel import Session, select
 
 from rsi.core.errors import AuthError, RsiError
 from rsi.core.models import EnvSpec
 from rsi.core.naming import new_id
+from rsi.db.tables import Credential
 
 CREDENTIAL_KINDS = ("device_ssh", "nms_api", "llm_api", "backend_ssh")
 
@@ -39,9 +42,14 @@ class ResolvedCreds(BaseModel):
 
 
 class CredentialStore:
-    """In-memory Fernet-encrypted credential store."""
+    """Fernet-encrypted credential store.
 
-    def __init__(self, master_key: str) -> None:
+    In-memory by default (P0). When an optional SQLModel ``session`` is
+    supplied, credentials are also persisted to the ``credentials`` table
+    (DD-03 §4); the in-memory dicts then act as a cache.
+    """
+
+    def __init__(self, master_key: str, session: Session | None = None) -> None:
         try:
             raw = base64.b64decode(master_key, validate=True)
         except Exception as exc:
@@ -53,6 +61,7 @@ class CredentialStore:
             )
         # Fernet expects the urlsafe-base64 encoding of the 32-byte key.
         self._fernet = Fernet(base64.urlsafe_b64encode(raw))
+        self._session = session
         self._by_name: dict[str, tuple[str, str, str]] = {}  # name -> (id, kind, token)
         self._by_id: dict[str, tuple[str, str, str]] = {}  # id -> (name, kind, token)
 
@@ -66,11 +75,30 @@ class CredentialStore:
         token = self._fernet.encrypt(secret.encode()).decode()
         self._by_name[name] = (cred_id, kind, token)
         self._by_id[cred_id] = (name, kind, token)
+        if self._session is not None:
+            self._session.add(
+                Credential(
+                    id=cred_id,
+                    name=name,
+                    kind=kind,
+                    cipher_blob=token.encode(),
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                )
+            )
+            self._session.commit()
         return cred_id
 
     def resolve(self, name: str) -> str:
         """Decrypt and return the secret stored under ``name``."""
         entry = self._by_name.get(name)
+        if entry is None and self._session is not None:
+            row = self._session.exec(
+                select(Credential).where(Credential.name == name)
+            ).first()
+            if row is not None:
+                entry = (row.id, row.kind, row.cipher_blob.decode())
+                self._by_name[name] = entry  # type: ignore[assignment]
+                self._by_id[row.id] = entry  # type: ignore[assignment]
         if entry is None:
             raise RsiError(f"unknown credential: {name!r}", name=name)
         return self._decrypt(entry[2])
@@ -84,6 +112,12 @@ class CredentialStore:
         token = self._fernet.encrypt(new_secret.encode()).decode()
         self._by_name[name] = (cred_id, kind, token)
         self._by_id[cred_id] = (name, kind, token)
+        if self._session is not None:
+            row = self._session.get(Credential, cred_id)
+            if row is not None:
+                row.cipher_blob = token.encode()
+                self._session.add(row)
+                self._session.commit()
 
     def resolve_id(self, name: str) -> str:
         entry = self._by_name.get(name)

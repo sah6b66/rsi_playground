@@ -1,0 +1,10 @@
+#!/bin/sh
+# pg-mcp-proxy (placeholder shell wrapper for non-Node environments).
+#
+# DD-06 §5.3 / C9: when Node.js is unavailable, install a minimal
+# line-tapping wrapper here (e.g. socat + jq, or a static busybox build).
+# Until then, exec the MCP server unproxied so the harness keeps working.
+#
+# Env honored by the .mjs implementation: PG_PROXY_SINK, RSI_RUN_ID.
+
+exec "$@"

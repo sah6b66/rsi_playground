@@ -28,9 +28,15 @@ logger = get_logger(__name__)
 
 
 class TraceCollector:
-    def __init__(self, seq_alloc: SeqAllocator, store: TraceStore | None) -> None:
+    def __init__(
+        self,
+        seq_alloc: SeqAllocator,
+        store: TraceStore | None,
+        persistence_dir: Path | None = None,
+    ) -> None:
         self._seq_alloc = seq_alloc
         self._store = store
+        self._persistence_dir = Path(persistence_dir) if persistence_dir else None
         self._events: dict[str, list[TraceEvent]] = {}
         self._meta: dict[str, dict[str, Any]] = {}
         self._finalized: set[str] = set()
@@ -52,7 +58,17 @@ class TraceCollector:
                 }
             )
             self._events.setdefault(ev.run_id, []).append(ev)
+            self._persist_event(ev)
             self._publish(ev.run_id, ev)
+
+    def _persist_event(self, ev: TraceEvent) -> None:
+        """H7: append each event as an NDJSON line (when persistence is on)."""
+        if self._persistence_dir is None:
+            return
+        run_dir = self._persistence_dir / ev.run_id
+        run_dir.mkdir(parents=True, exist_ok=True)
+        with (run_dir / "events.ndjson").open("a", encoding="utf-8") as fh:
+            fh.write(ev.model_dump_json() + "\n")
 
     def _publish(self, run_id: str, ev: TraceEvent) -> None:
         for queue in self._subscribers.get(run_id, []):
@@ -81,6 +97,21 @@ class TraceCollector:
             "finalized": True,
         }
         self._meta[run_id] = meta
+        if self._persistence_dir is not None:
+            # H7: persist run meta as {persistence_dir}/{run_id}/meta.json
+            run_dir = self._persistence_dir / run_id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "meta.json").write_text(
+                json.dumps(
+                    {
+                        "event_count": meta["event_count"],
+                        "first_ts": meta["first_ts"],
+                        "last_ts": meta["last_ts"],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
         if self._store is not None:
             self._store.set_meta(run_id, meta)
         # Close WS subscribers for the finalized run (DD-07 §4 finalize-5).

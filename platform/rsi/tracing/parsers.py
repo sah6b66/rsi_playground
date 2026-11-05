@@ -11,12 +11,32 @@ from rsi.core.enums import EventType
 from rsi.core.models import TraceEvent
 from rsi.log import get_logger
 
-__all__ = ["NdjsonEventParser", "OpenCodeWiretapParser"]
+__all__ = ["NdjsonEventParser", "OpenCodeWiretapParser", "estimate_tokens"]
 
 logger = get_logger(__name__)
 
 # Non-main-loop kinds filtered out (never llm_request; DD-07 §5.1).
 _FILTERED_KINDS = frozenset({"title", "compaction", "generate"})
+
+
+def estimate_tokens(text: str) -> tuple[int, bool]:
+    """Estimate token count from character count. Returns (count, is_estimated)."""
+    if not text:
+        return 0, False
+    return len(text) // 4, True  # ~4 chars per token heuristic
+
+
+def _message_text(message: Any) -> str:
+    """Best-effort textual content of one wiretap message entry."""
+    if isinstance(message, str):
+        return message
+    if isinstance(message, dict):
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if content is not None:
+            return json.dumps(content, ensure_ascii=False)
+    return ""
 
 
 class OpenCodeWiretapParser:
@@ -44,11 +64,25 @@ class OpenCodeWiretapParser:
 
         data: dict[str, Any] | None = None
         if ftype == "assembled" and kind == "context":
+            system = [s.get("text", "") for s in frame.get("system", [])]
+            messages = frame.get("messages", [])
             data = {
-                "system": [s.get("text", "") for s in frame.get("system", [])],
-                "messages": frame.get("messages", []),
+                "system": system,
+                "messages": messages,
                 "tools": frame.get("tools", []),
             }
+            # H8: no usage data in the frame -> estimate input tokens from the
+            # system + message text (~4 chars/token) and mark them estimated.
+            if frame.get("usage") is None:
+                text = "\n".join(system) + "\n" + "\n".join(
+                    _message_text(m) for m in messages
+                )
+                tokens, is_estimated = estimate_tokens(text)
+                if is_estimated:
+                    data["usage"] = {
+                        "input_tokens": tokens,
+                        "estimated": True,
+                    }
         elif ftype == "http" and kind == "primary":
             data = {"body": frame.get("body")}
         if data is None:
