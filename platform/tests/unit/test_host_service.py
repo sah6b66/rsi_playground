@@ -172,3 +172,80 @@ class TestTracking:
         assert n == 2
         assert svc._instances == {}
         assert svc.destroy_stale("main") == 0
+
+
+class TestCrossHost:
+    """HostService over a configured multi-host pool (R1-R3)."""
+
+    @staticmethod
+    def _multi_service(tmp_path, responses=None):
+        from unittest.mock import MagicMock
+
+        from rsi.carrier.scheduler import InstanceScheduler
+
+        pool = HostPool(
+            {
+                "main": {"docker": "local"},
+                "remote-1": {"docker": "ssh://mock@host1"},
+            }
+        )
+        pool.client = MagicMock(return_value=MagicMock(ping=lambda: True))  # type: ignore[method-assign]
+        svc = HostService(
+            host_pool=pool,
+            net_policy=NetPolicy(host_pool=pool),
+            scheduler=InstanceScheduler(pool),
+            adapters={"fake": FakeCarrier(responses or {})},
+        )
+        svc._tmp_path = tmp_path
+        return svc
+
+    def test_create_auto_selects_host(self, tmp_path) -> None:
+        svc = self._multi_service(tmp_path)
+        inst = svc.create_instance(
+            "sut", "cv", _lab(), "restricted", False, None, None, "r1"
+        )
+        assert inst.host == "main"
+        assert svc.host_pool._instance_counts["main"] == 1
+
+    def test_create_auto_spreads_to_least_loaded(self, tmp_path) -> None:
+        svc = self._multi_service(tmp_path)
+        svc.host_pool.increment("main")
+        inst = svc.create_instance(
+            "sut", "cv", _lab(), "restricted", False, None, None, "r1"
+        )
+        assert inst.host == "remote-1"
+
+    def test_create_explicit_host(self, tmp_path) -> None:
+        svc = self._multi_service(tmp_path)
+        inst = svc.create_instance(
+            "sut", "cv", _lab(), "restricted", False, "remote-1", None, "r1"
+        )
+        assert inst.host == "remote-1"
+        assert svc.net_policy.is_attached_on("remote-1", inst.container_id, "lab-L1")
+        assert svc.net_policy.is_attached_on("remote-1", inst.container_id, "trace")
+        assert not svc.net_policy.is_attached_on("main", inst.container_id, "lab-L1")
+
+    def test_destroy_decrements_count(self, tmp_path) -> None:
+        svc = self._multi_service(tmp_path)
+        inst = svc.create_instance(
+            "sut", "cv", _lab(), "restricted", False, None, None, "r1"
+        )
+        assert svc.host_pool._instance_counts["main"] == 1
+        svc.destroy(inst)
+        assert svc.host_pool._instance_counts["main"] == 0
+        assert not svc.net_policy.is_attached(inst.container_id, "lab-L1")
+
+    def test_instances_tracked_independently_per_host(self, tmp_path) -> None:
+        svc = self._multi_service(tmp_path)
+        a = svc.create_instance("sut", "cv", _lab("A"), "restricted", False, "main", None, "r1")
+        b = svc.create_instance(
+            "sut", "cv", _lab("B"), "restricted", False, "remote-1", None, "r2"
+        )
+        assert {a.host, b.host} == {"main", "remote-1"}
+        assert svc.host_pool._instance_counts == {"main": 1, "remote-1": 1}
+        # same lab id on different hosts = separate per-host networks
+        svc.create_instance("sut", "cv", _lab("A"), "restricted", False, "remote-1", None, "r3")
+        assert svc.host_pool._instance_counts["remote-1"] == 2
+        assert svc.destroy_stale("remote-1") == 2
+        assert svc.host_pool._instance_counts["remote-1"] == 0
+        assert svc.host_pool._instance_counts["main"] == 1
