@@ -654,6 +654,7 @@ class IterationEngine:
         files = hyp.get("changeset_files") or []
         if not files:
             return None  # nothing deterministic to check
+        failures: list = []
         for round_i in range(self.critic_max_repair_rounds):
             failures = self.critic.check(
                 files, set(profile.enabled_targets or ())
