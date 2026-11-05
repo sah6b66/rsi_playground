@@ -31,7 +31,22 @@ SERVICE_KEYS = [
     "stores",
 ]
 
-STORE_KEYS = ["suts", "evalsets", "profiles", "batches", "runs", "traces"]
+STORE_KEYS = [
+    "suts",
+    "evalsets",
+    "profiles",
+    "batches",
+    "runs",
+    "traces",
+    # Extended API stores (DD-13 Task 4/5, P0 in-memory)
+    "iterations",
+    "labs",
+    "instances",
+    "experiments",
+    "settings",
+    "system",
+    "metrics",
+]
 
 
 def default_stores() -> dict[str, Any]:
@@ -42,6 +57,17 @@ def default_stores() -> dict[str, Any]:
         "batches": {},
         "runs": {},
         "traces": {},
+        "iterations": {},
+        "labs": {},
+        "instances": {},
+        "experiments": {},
+        "settings": {
+            "judge.llm.model": {"value": "default", "mutable": True},
+            "budget.llm.daily": {"value": 100, "mutable": True},
+            "platform.static_item": {"value": "static", "mutable": False},
+        },
+        "system": {"stopped": False, "frozen": False},
+        "metrics": {},
     }
 
 
