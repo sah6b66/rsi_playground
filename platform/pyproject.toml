@@ -16,6 +16,7 @@ dependencies = [
     "fastapi>=0.111",
     "scipy>=1.12",
     "docker>=7.0",
+    "pyyaml>=6.0.3",
 ]
 
 [project.optional-dependencies]
