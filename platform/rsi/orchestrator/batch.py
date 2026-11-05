@@ -113,21 +113,35 @@ class BatchRunner:
             image_ref=image_ref,
             permission=permission,
         )
-        # 1-2. build lab once per batch, wait ready, snapshot snap0
-        lab = await self.sandbox.build_lab(env)
+        # 0. resume from checkpoint (DD-12 §5.1): skip already-completed tasks
+        state = await self.ckpt.resume(batch_id)
+        completed: list[dict[str, str]] = []
+        completed_task_ids: set[str] = set()
+        if state is not None:
+            prev = state.get("completed", [])
+            completed = [dict(c) for c in prev]
+            completed_task_ids = {
+                c["task_id"] if isinstance(c, dict) else str(c) for c in prev
+            }
+            logger.info(
+                "batch.resume",
+                batch_id=batch_id,
+                completed_count=len(completed_task_ids),
+            )
+        pending = [t for t in tasks if t.task_id not in completed_task_ids]
+
+        # 1-2. build lab once per batch (or reuse the checkpointed one), snap0
+        lab, snap0 = await self._build_or_reuse_lab(env, state)
         self._envs[batch_id] = env
-        await self.sandbox.wait_ready(lab)
-        snap0 = await self.sandbox.snapshot(lab, "snap0")
 
         verdicts: list[Verdict] = []
-        completed: list[dict[str, str]] = []
         status = "finalized"
         consecutive_env_failures = 0
         self.last_status = "running"
         await self.event_bus.publish("batch", batch_id, "created", "running")
 
         try:
-            for seq, task in enumerate(tasks):
+            for seq, task in enumerate(pending):
                 # a. stop file -> abort
                 if self.budget.check_stop_file():
                     status = "aborted"
@@ -302,6 +316,33 @@ class BatchRunner:
         return result, verdict
 
     # -- helpers ----------------------------------------------------------------
+
+    async def _build_or_reuse_lab(self, env, state: dict | None):
+        """Build a fresh lab, or reuse the checkpointed one if still alive."""
+        if state is not None and state.get("lab_id"):
+            candidate = LabHandle(
+                lab_id=state["lab_id"],
+                host=self.host,
+                backend=env.backend,
+                endpoints=dict(env.ssh_access or {}),
+            )
+            try:
+                alive = await self.sandbox.health_check(candidate)
+            except Exception:
+                alive = False  # unknown lab / backend gone (fresh process)
+            if alive:
+                logger.info(
+                    "batch.lab_reused", lab_id=candidate.lab_id, batch=state.get("batch_id")
+                )
+                snap0_id = state.get("snap0_id")
+                for snap in self.sandbox.snapshots(candidate.lab_id):
+                    if snap.snapshot_id == snap0_id:
+                        return candidate, snap
+                return candidate, await self.sandbox.snapshot(candidate, "snap0")
+            logger.info("batch.lab_dead", lab_id=state.get("lab_id"))
+        lab = await self.sandbox.build_lab(env)
+        await self.sandbox.wait_ready(lab)
+        return lab, await self.sandbox.snapshot(lab, "snap0")
 
     @staticmethod
     def _trace_events(
