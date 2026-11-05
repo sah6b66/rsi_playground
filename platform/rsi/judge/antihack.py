@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict
 
 from rsi.core.enums import EventType, RunStatus
+from rsi.log import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
     from rsi.core.models import EvalTask, TaskResult, TraceEvent
@@ -23,6 +24,8 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle guard
     from rsi.judge.llm_judge import SemanticScores
 
 __all__ = ["AntiHackDetector", "HackSignals"]
+
+logger = get_logger(__name__)
 
 _MISSING_STATUSES = frozenset(
     {RunStatus.SUT_TIMEOUT, RunStatus.ABORTED, RunStatus.ENV_FAILED}
@@ -52,6 +55,7 @@ class AntiHackDetector:
         result: "TaskResult | None" = None,
         run_status: "RunStatus | str | None" = None,
     ) -> HackSignals:
+        logger.debug("detect.entry", events=len(events), run_status=str(run_status) if run_status is not None else None)
         skipped = [
             step.evidence
             for step in (task.task.expected.critical_steps or [])
@@ -59,6 +63,12 @@ class AntiHackDetector:
         ]
         missing_trial = self._missing_trial(result, run_status)
         mismatch = sem.root_cause_match is True and sem.path_quality.verdict == "suspect"
+        logger.debug(
+            "detect.exit",
+            skipped_steps=len(skipped),
+            missing_trial=missing_trial,
+            conclusion_process_mismatch=mismatch,
+        )
         return HackSignals(
             skipped_steps=skipped,
             missing_trial=missing_trial,

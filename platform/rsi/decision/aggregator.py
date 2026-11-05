@@ -8,8 +8,11 @@ arrives with both ``missing=True`` and nonzero scores, the 0 is enforced here.
 from __future__ import annotations
 
 from rsi.core.models import BatchStats, Verdict
+from rsi.log import get_logger
 
 __all__ = ["StatsAggregator"]
+
+logger = get_logger(__name__)
 
 _MEAN_METRICS: tuple[tuple[str, str], ...] = (
     # (BatchStats.metrics key, Verdict source accessor)
@@ -23,6 +26,7 @@ _MEAN_METRICS: tuple[tuple[str, str], ...] = (
 
 class StatsAggregator:
     def aggregate(self, verdicts: list[Verdict]) -> BatchStats:
+        logger.debug("aggregate.entry", verdicts=len(verdicts))
         n = len(verdicts)
         metrics: dict[str, float] = {}
         if n:
@@ -38,7 +42,7 @@ class StatsAggregator:
                     values.append(float(obj))
                 metrics[name] = sum(values) / n
 
-        return BatchStats(
+        stats = BatchStats(
             metrics=metrics,
             n=n,
             missing=sum(1 for v in verdicts if v.missing),
@@ -47,3 +51,5 @@ class StatsAggregator:
             wall_time_s=round(sum(v.efficiency.wall_time_s for v in verdicts), 3),
             tokens_estimated=any(v.efficiency.estimated for v in verdicts),
         )
+        logger.debug("aggregate.exit", n=stats.n, missing=stats.missing)
+        return stats

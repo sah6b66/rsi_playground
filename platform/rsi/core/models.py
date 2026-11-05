@@ -468,15 +468,15 @@ class AttributionReport(_M):
 
 
 class Goal(_M):
-    metric: str
-    direction: Literal["max", "min"]
-    weight: float = Field(gt=0)
+    metric: str = Field(json_schema_extra={"example": "task_success_rate"})
+    direction: Literal["max", "min"] = Field(json_schema_extra={"example": "max"})
+    weight: float = Field(gt=0, json_schema_extra={"example": 1.0})
 
 
 class EvalsetBinding(_M):
-    iterate: str
-    holdout: str
-    smoke: str
+    iterate: str = Field(json_schema_extra={"example": "es-abc12345"})
+    holdout: str = Field(json_schema_extra={"example": "es-def67890"})
+    smoke: str = Field(json_schema_extra={"example": "es-aaa11111"})
 
 
 class GuardPolicy(_M):
@@ -486,22 +486,22 @@ class GuardPolicy(_M):
 
 
 class StopPolicy(_M):
-    max_rounds: int = Field(default=20, ge=1)
-    no_gain_rounds: int = Field(default=5, ge=1)
+    max_rounds: int = Field(default=20, ge=1, json_schema_extra={"example": 20})
+    no_gain_rounds: int = Field(default=5, ge=1, json_schema_extra={"example": 5})
 
 
 class Budget(_M):
-    max_tokens: int = Field(gt=0)
-    max_wall_hours: float = Field(gt=0)
-    max_cost_usd: float | None = None
+    max_tokens: int = Field(gt=0, json_schema_extra={"example": 1000000})
+    max_wall_hours: float = Field(gt=0, json_schema_extra={"example": 8.0})
+    max_cost_usd: float | None = Field(default=None, json_schema_extra={"example": 50.0})
 
 
 class LlmCompare(_M):
-    candidates: list[str] = []
+    candidates: list[str] = Field(default=[], json_schema_extra={"example": ["glm-4.7", "glm-4.6"]})
 
 
 class OptimizationProfile(_M):
-    name: str
+    name: str = Field(json_schema_extra={"example": "bgp-triage-tuning"})
     evalsets: EvalsetBinding
     goals: list[Goal] = Field(min_length=1)
     enabled_targets: set[
@@ -515,7 +515,10 @@ class OptimizationProfile(_M):
             "knowledge",
             "model_config",
         ]
-    ] = Field(min_length=1)
+    ] = Field(
+        min_length=1,
+        json_schema_extra={"example": ["system_prompt", "skills", "memory"]},
+    )
     guards: GuardPolicy = GuardPolicy()
     stop: StopPolicy = StopPolicy()
     budget: Budget | None = None  # None = orchestrator.budget default

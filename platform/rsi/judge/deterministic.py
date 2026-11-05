@@ -14,12 +14,15 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from rsi.core.models import CriticalStep, LabHandle, StateAssert, TaskResult
+from rsi.log import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
     from rsi.core.models import EvalTask, TraceEvent
     from rsi.sandbox.service import SandboxService
 
 __all__ = ["DetScores", "DeterministicJudge", "StateAssertResult"]
+
+logger = get_logger(__name__)
 
 
 class _M(BaseModel):
@@ -62,6 +65,12 @@ class DeterministicJudge:
         events: "list[TraceEvent] | None" = None,
     ) -> DetScores:
         events = events or []
+        logger.debug(
+            "evaluate.entry",
+            task=task.task.title,
+            events=len(events),
+            final_state_asserts=len(task.task.expected.final_state),
+        )
         results: list[StateAssertResult] = []
         for sa in task.task.expected.final_state:
             results.append(self._check_state(sa, lab, sandbox))
@@ -71,11 +80,17 @@ class DeterministicJudge:
             if any(step.evidence in _event_texts(e) for e in events):
                 hit_steps.append(step.evidence)
 
-        return DetScores(
+        scores = DetScores(
             final_state_results=results,
             critical_steps_hit=hit_steps,
             diagnostic_steps=len(hit_steps),
         )
+        logger.debug(
+            "evaluate.exit",
+            state_asserts_passed=sum(1 for r in results if r.passed),
+            critical_steps_hit=len(hit_steps),
+        )
+        return scores
 
     def _check_state(
         self, sa: StateAssert, lab: LabHandle, sandbox: "SandboxService"

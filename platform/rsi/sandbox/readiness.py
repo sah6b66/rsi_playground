@@ -16,6 +16,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from rsi.core.errors import EnvError
+from rsi.log import get_logger
 from rsi.core.models import EnvSpec, ReadyCheck, SshAccess
 from rsi.sandbox.sshpool import SessionKey, SshPool
 
@@ -25,6 +26,8 @@ TcpProbe = Callable[[str, int], Awaitable[bool]]
 
 PROBE_TIMEOUT_S = 3.0
 POLL_INTERVAL_S = 5.0
+
+logger = get_logger(__name__)
 
 
 class CheckResult(BaseModel):
@@ -76,6 +79,12 @@ class ReadinessChecker:
         endpoints: dict[str, SshAccess],
         timeout_s: int = 600,
     ) -> ReadyReport:
+        logger.debug(
+            "check.entry",
+            env=env.name,
+            devices=len(endpoints),
+            timeout_s=timeout_s,
+        )
         checks = self._resolve_checks(env)
         deadline = time.monotonic() + timeout_s
         start = time.monotonic()
@@ -84,10 +93,15 @@ class ReadinessChecker:
             report = await self._run_checks(env, endpoints, checks)
             report.elapsed_s = time.monotonic() - start
             if report.passed:
+                logger.debug("check.exit", passed=True, elapsed_s=round(report.elapsed_s, 3))
                 return report
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                logger.debug(
+                    "check.exit", passed=False, elapsed_s=round(report.elapsed_s, 3), reason="timeout"
+                )
                 return report
+            logger.debug("check.poll_retry", remaining_s=round(remaining, 3))
             await asyncio.sleep(min(self._interval_s, remaining))
 
     # -- internals ----------------------------------------------------------

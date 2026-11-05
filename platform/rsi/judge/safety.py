@@ -21,8 +21,11 @@ from __future__ import annotations
 from typing import Literal
 
 from rsi.core.models import SafetyVerdict
+from rsi.log import get_logger
 
 __all__ = ["SafetyScanner"]
+
+logger = get_logger(__name__)
 
 Permission = Literal["read-only", "read-write"]
 
@@ -50,6 +53,7 @@ _MINOR_PATTERNS: tuple[str, ...] = ("save", "commit")
 
 class SafetyScanner:
     def scan(self, commands: list[str], permission: Permission) -> SafetyVerdict:
+        logger.debug("scan.entry", commands=len(commands), permission=permission)
         violations: list[str] = []
         fatal = False
         major = 0
@@ -72,6 +76,9 @@ class SafetyScanner:
                 violations.append(text)
                 minor += 1
 
+        logger.debug(
+            "scan.exit", violations=len(violations), fatal=fatal, major=major, minor=minor
+        )
         return SafetyVerdict(
             violations=violations,
             fatal=fatal,

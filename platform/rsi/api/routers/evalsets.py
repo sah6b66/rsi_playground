@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from rsi.api.deps import audit, get_current_user, get_store, require_perms
 from rsi.api.pagination import DEFAULT_LIMIT, paginate
@@ -19,15 +19,30 @@ router = APIRouter(prefix="/evalsets", tags=["evalsets"])
 
 
 class EvalsetCreate(BaseModel):
-    name: str
-    tasks: list[dict[str, Any]] = []
-    description: str = ""
+    name: str = Field(json_schema_extra={"example": "netops-bgp-triage"})
+    tasks: list[dict[str, Any]] = Field(
+        default=[],
+        json_schema_extra={
+            "example": [
+                {"id": "t-001", "prompt": "Diagnose why BGP peer 10.0.0.2 is down"},
+                {"id": "t-002", "prompt": "Find the interface with the highest error rate"}
+            ],
+        },
+    )
+    description: str = Field(
+        default="", json_schema_extra={"example": "BGP troubleshooting eval tasks"}
+    )
 
 
 class EvalsetUpdate(BaseModel):
-    name: str | None = None
-    tasks: list[dict[str, Any]] | None = None
-    description: str | None = None
+    name: str | None = Field(default=None, json_schema_extra={"example": "netops-bgp-triage-v2"})
+    tasks: list[dict[str, Any]] | None = Field(
+        default=None,
+        json_schema_extra={"example": [{"id": "t-003", "prompt": "Check OSPF neighbors"}]},
+    )
+    description: str | None = Field(
+        default=None, json_schema_extra={"example": "Updated task set"}
+    )
 
 
 class EvalsetOut(BaseModel):

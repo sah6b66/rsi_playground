@@ -7,7 +7,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from rsi.api.deps import audit, get_current_user, get_store, require_perms
 from rsi.api.pagination import DEFAULT_LIMIT, paginate
@@ -18,17 +18,23 @@ router = APIRouter(prefix="/suts", tags=["suts"])
 
 
 class SutCreate(BaseModel):
-    name: str
-    carrier: str
-    image_ref: str
-    description: str = ""
+    name: str = Field(json_schema_extra={"example": "ipops-agent"})
+    carrier: str = Field(json_schema_extra={"example": "opencode"})
+    image_ref: str = Field(json_schema_extra={"example": "ipops-agent:v1.2"})
+    description: str = Field(
+        default="", json_schema_extra={"example": "Network ops SUT for BGP triage"}
+    )
 
 
 class SutUpdate(BaseModel):
-    name: str | None = None
-    carrier: str | None = None
-    image_ref: str | None = None
-    description: str | None = None
+    name: str | None = Field(default=None, json_schema_extra={"example": "ipops-agent"})
+    carrier: str | None = Field(default=None, json_schema_extra={"example": "opencode"})
+    image_ref: str | None = Field(
+        default=None, json_schema_extra={"example": "ipops-agent:v1.3"}
+    )
+    description: str | None = Field(
+        default=None, json_schema_extra={"example": "Updated description"}
+    )
 
 
 class SutOut(BaseModel):

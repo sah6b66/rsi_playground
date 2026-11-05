@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from rsi.carrier.hosts import HostPool
 from rsi.core.errors import CarrierError
+from rsi.log import get_logger
 
 __all__ = ["InstanceScheduler"]
+
+logger = get_logger(__name__)
 
 
 class InstanceScheduler:
@@ -32,22 +35,30 @@ class InstanceScheduler:
 
     def select(self, explicit_host: str | None = None) -> str:
         """Choose a host: explicit (validated) or least-loaded auto-select."""
+        logger.debug("select.entry", explicit_host=explicit_host)
         if explicit_host is not None:
             if explicit_host not in self.host_pool._configs:
+                logger.debug("select.error", exc_type="CarrierError", host=explicit_host, reason="not_configured")
                 raise CarrierError(f"host not configured: {explicit_host}")
             if self._count(explicit_host) >= self._limit(explicit_host):
+                logger.debug("select.error", exc_type="CarrierError", host=explicit_host, reason="at_max")
                 raise CarrierError(f"host at max_instances: {explicit_host}")
             if not self.host_pool.check_reach(explicit_host):
+                logger.debug("select.error", exc_type="CarrierError", host=explicit_host, reason="unreachable")
                 raise CarrierError(f"host unreachable: {explicit_host}")
+            logger.debug("select.exit", host=explicit_host, strategy="explicit")
             return explicit_host
 
         reachable = [h for h in self._candidates() if self.host_pool.check_reach(h)]
         for host in reachable:
             if self._count(host) < self._limit(host):
+                logger.debug("select.exit", host=host, strategy="least_loaded_reachable")
                 return host
         # Offline/dev fallback: no probeable daemon anywhere — still pick the
         # least-loaded configured host so the adapter-driven P0 path works.
         for host in self._candidates():
             if self._count(host) < self._limit(host):
+                logger.debug("select.exit", host=host, strategy="offline_fallback")
                 return host
+        logger.debug("select.error", exc_type="CarrierError", reason="all_at_max")
         raise CarrierError("all hosts are at max_instances")

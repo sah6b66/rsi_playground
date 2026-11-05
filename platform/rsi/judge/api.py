@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Literal
 
 from rsi.core.enums import EventType, RunStatus
 from rsi.core.models import Efficiency
+from rsi.log import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
     from rsi.core.models import EvalTask, LabHandle, TaskResult, TraceEvent, Verdict
@@ -23,6 +24,8 @@ if TYPE_CHECKING:  # pragma: no cover - import cycle guard
     from rsi.judge.safety import SafetyScanner
 
 __all__ = ["JudgeService"]
+
+logger = get_logger(__name__)
 
 Permission = Literal["read-only", "read-write"]
 
@@ -56,6 +59,13 @@ class JudgeService:
         run_status: "RunStatus | str | None" = None,
         efficiency: Efficiency | None = None,
     ) -> "Verdict":
+        logger.debug(
+            "judge_run.entry",
+            task=task.task.title,
+            events=len(events),
+            permission=permission,
+            run_status=str(run_status) if run_status is not None else None,
+        )
         commands = self._extract_commands(events)
 
         async def safety_scan() -> object:
@@ -69,7 +79,13 @@ class JudgeService:
         hack = self._antihack.detect(task, events, det_scores, sem, result=result, run_status=run_status)
         eff = efficiency if efficiency is not None else self._efficiency(events)
         missing = self._missing(result, run_status)
-        return self._agg.aggregate(det_scores, safety_verdict, sem, hack, eff, missing)
+        verdict = self._agg.aggregate(det_scores, safety_verdict, sem, hack, eff, missing)
+        logger.debug(
+            "judge_run.exit",
+            task_complete=verdict.scores.task_complete,
+            missing=verdict.missing,
+        )
+        return verdict
 
     # -- internals ----------------------------------------------------------------
 

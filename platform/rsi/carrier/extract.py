@@ -14,8 +14,11 @@ import re
 from typing import Any
 
 from rsi.core.models import ActionRecord, TaskResult
+from rsi.log import get_logger
 
 _FINAL_JSON_RE = re.compile(r"<FINAL_JSON>(.*?)</FINAL_JSON>", re.DOTALL)
+
+logger = get_logger(__name__)
 
 
 def _from_dict(data: dict[str, Any]) -> TaskResult:
@@ -61,12 +64,25 @@ def _last_balanced_object(stdout: str) -> dict[str, Any] | None:
 
 def extract_task_result(stdout: str) -> TaskResult:
     """Extract the SUT's final answer from raw stdout."""
+    logger.debug("extract_task_result.entry", stdout_len=len(stdout))
     try:
         data = _last_tag_payload(stdout)
         if data is None:
+            logger.debug("extract_task_result.strategy", strategy="last_balanced_object")
             data = _last_balanced_object(stdout)
         if data is None:
             raise ValueError("no JSON object found in stdout")
-        return _from_dict(data)
-    except Exception:
+        result = _from_dict(data)
+    except Exception as exc:
+        logger.debug(
+            "extract_task_result.parse_error",
+            exc_type=type(exc).__name__,
+            stdout_len=len(stdout),
+        )
         return TaskResult(task_complete=False, parse_error=True)
+    logger.debug(
+        "extract_task_result.exit",
+        task_complete=result.task_complete,
+        actions=len(result.actions),
+    )
+    return result

@@ -15,12 +15,15 @@ import re
 from datetime import UTC, datetime
 
 from rsi.core.errors import EnvError
+from rsi.log import get_logger
 from rsi.core.models import EnvSpec, LabHandle, SnapRef
 from rsi.core.naming import new_id
 from rsi.sandbox.backends.base import SandboxBackend
 from rsi.sandbox.readiness import CheckResult, ReadyReport
 
 __all__ = ["FakeDevice", "FakeSandboxBackend"]
+
+logger = get_logger(__name__)
 
 # commands that manipulate CLI views / persistence but are not configuration
 _VIEW_COMMANDS = frozenset(
@@ -117,11 +120,13 @@ class FakeSandboxBackend(SandboxBackend):
     # -- lifecycle -----------------------------------------------------------
 
     async def build(self, env: EnvSpec) -> LabHandle:
+        logger.debug("build.entry", env=env.name, devices=len(env.devices))
         lab_id = new_id("lab")
         devices = {
             d.name: FakeDevice(d.name, d.type) for d in env.devices
         }
         self._labs[lab_id] = _LabState(lab_id, devices)
+        logger.debug("build.exit", lab_id=lab_id)
         return LabHandle(
             lab_id=lab_id,
             host="fake",
@@ -130,6 +135,7 @@ class FakeSandboxBackend(SandboxBackend):
         )
 
     async def wait_ready(self, lab: LabHandle, timeout_s: int = 600) -> ReadyReport:
+        logger.debug("wait_ready.entry", lab_id=lab.lab_id, timeout_s=timeout_s)
         state = self._require_lab(lab)
         checks = [
             CheckResult(type="ssh_reachable", device=n, passed=True, detail="in-memory")
@@ -138,18 +144,22 @@ class FakeSandboxBackend(SandboxBackend):
         return ReadyReport(passed=True, checks=checks, elapsed_s=0.0)
 
     async def snapshot(self, lab: LabHandle, name: str) -> SnapRef:
+        logger.debug("snapshot.entry", lab_id=lab.lab_id, name=name)
         state = self._require_lab(lab)
         snap_id = new_id("snap")
         self._snaps[snap_id] = {
             n: d.snapshot() for n, d in state.devices.items()
         }
+        logger.debug("snapshot.exit", snapshot_id=snap_id)
         return SnapRef(snapshot_id=snap_id, impl_kind="degraded", backend_ref=name)
 
     async def restore(self, lab: LabHandle, snap: SnapRef) -> None:
+        logger.debug("restore.entry", lab_id=lab.lab_id, snapshot_id=snap.snapshot_id)
         state = self._require_lab(lab)
         try:
             saved = self._snaps[snap.snapshot_id]
         except KeyError:
+            logger.debug("restore.error", exc_type="EnvError", snapshot_id=snap.snapshot_id)
             raise EnvError(
                 f"unknown snapshot {snap.snapshot_id!r}",
                 context={"snapshot_id": snap.snapshot_id, "lab_id": lab.lab_id},
@@ -157,27 +167,41 @@ class FakeSandboxBackend(SandboxBackend):
         for name, device in state.devices.items():
             if name in saved:
                 device.load_from(saved[name])
+        logger.debug("restore.exit", lab_id=lab.lab_id)
 
     async def reset(self, lab: LabHandle) -> None:
+        logger.debug("reset.entry", lab_id=lab.lab_id)
         state = self._require_lab(lab)
         for name, device in state.devices.items():
             device.load_from(state.initial[name])
+        logger.debug("reset.exit", lab_id=lab.lab_id)
 
     async def destroy(self, lab: LabHandle) -> None:
+        logger.debug("destroy.entry", lab_id=lab.lab_id)
         self._labs.pop(lab.lab_id, None)
+        logger.debug("destroy.exit", lab_id=lab.lab_id)
 
     # -- exec ------------------------------------------------------------------
 
     def exec(self, lab: LabHandle, device: str, cli: str) -> str:
+        logger.debug(
+            "exec.entry",
+            lab_id=lab.lab_id,
+            device=device,
+            cli=cli[:200] if len(cli) > 200 else cli,
+        )
         state = self._require_lab(lab)
         try:
             dev = state.devices[device]
         except KeyError:
+            logger.debug("exec.error", exc_type="EnvError", device=device)
             raise EnvError(
                 f"device {device!r} not present in fake lab {lab.lab_id!r}",
                 context={"device": device, "lab_id": lab.lab_id},
             ) from None
-        return dev.exec(cli)
+        output = dev.exec(cli)
+        logger.debug("exec.exit", output_len=len(output))
+        return output
 
     # -- introspection (tests / scheduler) -----------------------------------
 

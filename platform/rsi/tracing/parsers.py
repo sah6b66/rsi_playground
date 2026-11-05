@@ -9,8 +9,11 @@ from pydantic import ValidationError
 
 from rsi.core.enums import EventType
 from rsi.core.models import TraceEvent
+from rsi.log import get_logger
 
 __all__ = ["NdjsonEventParser", "OpenCodeWiretapParser"]
+
+logger = get_logger(__name__)
 
 # Non-main-loop kinds filtered out (never llm_request; DD-07 §5.1).
 _FILTERED_KINDS = frozenset({"title", "compaction", "generate"})
@@ -52,7 +55,7 @@ class OpenCodeWiretapParser:
             return None
 
         try:
-            return TraceEvent(
+            event = TraceEvent(
                 run_id=run_id,
                 task_id=task_id,
                 lab_id=lab_id,
@@ -65,7 +68,12 @@ class OpenCodeWiretapParser:
                 duration_ms=None,
             )
         except ValidationError:
+            logger.debug("parse_line.validation_error", parser="wiretap")
             return None
+        logger.debug(
+            "parse_line.exit", parser="wiretap", ftype=ftype, kind=kind
+        )
+        return event
 
 
 class NdjsonEventParser:
@@ -84,4 +92,5 @@ class NdjsonEventParser:
         try:
             return TraceEvent(**obj)
         except ValidationError:
+            logger.debug("parse_line.validation_error", parser="ndjson_event")
             return None

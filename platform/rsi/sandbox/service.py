@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from rsi.core.errors import DeviceError, EnvError
+from rsi.log import get_logger
 from rsi.core.models import (
     AppliedAction,
     EnvSpec,
@@ -41,6 +42,8 @@ READONLY_PREFIXES: tuple[str, ...] = (
 
 _RESTORE_MAX_ATTEMPTS = 3  # 1 initial + 2 retries (DD-04 §4.1 restore_task)
 _ERROR_OUTPUT_PREFIX = "Error:"
+
+logger = get_logger(__name__)
 
 
 def _utcnow_iso() -> str:
@@ -91,11 +94,19 @@ class SandboxService:
     async def build_lab(
         self, env: EnvSpec, backend_key: str | None = None
     ) -> LabHandle:
+        logger.debug(
+            "build_lab.entry",
+            env=env.name,
+            backend_key=backend_key,
+            devices=len(env.devices),
+        )
         selection = self._scheduler.select(env, backend_key)
+        logger.debug("build_lab.backend_selected", backend_key=selection.backend_key, reason=selection.reason)
         backend = self._backends[selection.backend_key]
         lab = await backend.build(env)
         report = await backend.wait_ready(lab)
         if not report.passed:
+            logger.debug("build_lab.not_ready", lab_id=lab.lab_id, summary=report.summary())
             await backend.destroy(lab)
             raise EnvError(
                 f"lab for env {env.name!r} not ready: {report.summary()}",
@@ -120,6 +131,7 @@ class SandboxService:
         journal.append(
             {"record": "snapshot", "name": "snap0", "snapshot_id": snap0.snapshot_id}
         )
+        logger.debug("build_lab.exit", lab_id=lab.lab_id, snap0=snap0.snapshot_id)
         return lab
 
     async def wait_ready(
@@ -128,35 +140,46 @@ class SandboxService:
         return await self._backend(lab).wait_ready(lab, timeout_s or 600)
 
     async def snapshot(self, lab: LabHandle, name: str) -> SnapRef:
+        logger.debug("snapshot.entry", lab_id=lab.lab_id, name=name)
         snap = await self._backend(lab).snapshot(lab, name)
         self._snapshots.setdefault(lab.lab_id, []).append(snap)
         self._journals[lab.lab_id].append(
             {"record": "snapshot", "name": name, "snapshot_id": snap.snapshot_id}
         )
+        logger.debug("snapshot.exit", snapshot_id=snap.snapshot_id)
         return snap
 
     async def restore(self, lab: LabHandle, snap: SnapRef) -> None:
+        logger.debug("restore.entry", lab_id=lab.lab_id, snapshot_id=snap.snapshot_id)
         await self._backend(lab).restore(lab, snap)
         self._journals[lab.lab_id].append(
             {"record": "restore", "snapshot_id": snap.snapshot_id, "ts": _utcnow_iso()}
         )
+        logger.debug("restore.exit", lab_id=lab.lab_id)
 
     async def reset(self, lab: LabHandle) -> None:
+        logger.debug("reset.entry", lab_id=lab.lab_id)
         await self._backend(lab).reset(lab)
         self._journals[lab.lab_id].append({"record": "reset", "ts": _utcnow_iso()})
+        logger.debug("reset.exit", lab_id=lab.lab_id)
 
     async def destroy(self, lab: LabHandle) -> None:
+        logger.debug("destroy.entry", lab_id=lab.lab_id)
         await self._backend(lab).destroy(lab)
         self._lab_backend.pop(lab.lab_id, None)
         self._envs.pop(lab.lab_id, None)
         self._snapshots.pop(lab.lab_id, None)
         self._journals.pop(lab.lab_id, None)
+        logger.debug("destroy.exit", lab_id=lab.lab_id)
 
     # -- prepare / restore_task (ADR-20) ----------------------------------------
 
     async def prepare(
         self, lab: LabHandle, task_id: str, actions: list[PrepareAction]
     ) -> list[AppliedAction]:
+        logger.debug(
+            "prepare.entry", lab_id=lab.lab_id, task_id=task_id, actions=len(actions)
+        )
         env = self._require_env(lab)
         applied: list[AppliedAction] = []
         for action in actions:
@@ -164,6 +187,7 @@ class SandboxService:
                 applied.append(await self._prepare_exec_cli(lab, task_id, env, action))
             else:
                 applied.append(await self._prepare_call_api(lab, task_id, env, action))
+        logger.debug("prepare.exit", applied_count=len(applied))
         return applied
 
     async def _prepare_exec_cli(
@@ -228,16 +252,23 @@ class SandboxService:
         return applied
 
     async def restore_task(self, lab: LabHandle, applied: list[AppliedAction]) -> None:
+        logger.debug("restore_task.entry", lab_id=lab.lab_id, applied_count=len(applied))
         last: EnvError | None = None
-        for _ in range(_RESTORE_MAX_ATTEMPTS):
+        for attempt in range(_RESTORE_MAX_ATTEMPTS):
             try:
                 await self._recover_once(lab, applied)
                 self._journal(lab).append(
                     {"record": "restore_task", "ts": _utcnow_iso(), "status": "ok"}
                 )
+                logger.debug("restore_task.exit", attempt=attempt + 1, status="ok")
                 return
             except EnvError as exc:
                 last = exc
+                logger.debug(
+                    "restore_task.retry_round",
+                    attempt=attempt + 1,
+                    exc_type=type(exc).__name__,
+                )
         self._journal(lab).append(
             {
                 "record": "restore_task",
@@ -247,6 +278,7 @@ class SandboxService:
             }
         )
         assert last is not None
+        logger.debug("restore_task.exit", status="failed", exc_type=type(last).__name__)
         raise last
 
     async def _recover_once(self, lab: LabHandle, applied: list[AppliedAction]) -> None:
@@ -292,30 +324,42 @@ class SandboxService:
     # -- read-only exec / health -------------------------------------------------
 
     def exec_readonly(self, lab: LabHandle, device: str, cli: str) -> str:
+        cli_logged = cli[:200] if len(cli) > 200 else cli
+        logger.debug("exec_readonly.entry", lab_id=lab.lab_id, device=device, cli=cli_logged)
         if not cli.strip().lower().startswith(READONLY_PREFIXES):
+            logger.debug("exec_readonly.rejected", reason="not_readonly")
             raise DeviceError(
                 f"cli {cli!r} is not in the read-only whitelist",
                 context={"cli": cli, "device": device},
             )
         if device not in lab.endpoints:
+            logger.debug("exec_readonly.rejected", reason="unknown_device", device=device)
             raise DeviceError(
                 f"device {device!r} not present in lab {lab.lab_id!r}",
                 context={"device": device, "lab_id": lab.lab_id},
             )
         try:
-            return self._backend(lab).exec(lab, device, cli)
+            output = self._backend(lab).exec(lab, device, cli)
         except EnvError as exc:
+            logger.debug("exec_readonly.error", exc_type=type(exc).__name__)
             raise DeviceError(str(exc), context=exc.context) from exc
+        logger.debug("exec_readonly.exit", output_len=len(output))
+        return output
 
     async def health_check(self, lab: LabHandle, timeout_s: int = 5) -> bool:
+        logger.debug("health_check.entry", lab_id=lab.lab_id, timeout_s=timeout_s)
         if not lab.endpoints:
+            logger.debug("health_check.exit", healthy=False, reason="no_endpoints")
             return False
         device = next(iter(lab.endpoints))
         try:
             output = self._backend(lab).exec(lab, device, "display clock")
-        except EnvError:
+        except EnvError as exc:
+            logger.debug("health_check.exit", healthy=False, exc_type=type(exc).__name__)
             return False
-        return "error" not in output.lower() and bool(output.strip())
+        healthy = "error" not in output.lower() and bool(output.strip())
+        logger.debug("health_check.exit", healthy=healthy)
+        return healthy
 
     async def backend_status(self) -> list[BackendStatus]:
         return [

@@ -17,6 +17,9 @@ from rsi.instrumentor.planner import Planner
 from rsi.instrumentor.report import CoverageReport, NotInstrumentable, ReportGenerator
 from rsi.instrumentor.scanner import Scanner
 from rsi.instrumentor.verifier import Verifier
+from rsi.log import get_logger
+
+logger = get_logger(__name__)
 
 
 class Instrumentor:
@@ -41,6 +44,7 @@ class Instrumentor:
         smoke_task_result_fn: Callable[[Path], "object"],
     ) -> tuple[Path, CoverageReport]:
         config_dir = Path(config_dir)
+        logger.debug("instrument.entry", config_dir=str(config_dir), carrier=carrier)
 
         scan = Scanner.scan(config_dir, carrier)
         plan = Planner.plan(scan, policy={})
@@ -51,11 +55,14 @@ class Instrumentor:
         overlay_result = smoke_task_result_fn(overlay_dir)
         overlay_events = Instrumentor._read_events(overlay_dir)
         verify = Verifier.verify(base_result, overlay_result, overlay_events)
+        logger.debug("instrument.verify", passed=verify.passed)
 
         report = ReportGenerator.generate(plan, scan, verify)
         if verify.passed:
+            logger.debug("instrument.exit", result="overlay", overlay_dir=str(overlay_dir))
             return overlay_dir, report
 
+        logger.debug("instrument.degrade", reason="verify_failed")
         OverlayBuilder.cleanup(overlay_dir)
         report.not_instrumentable.append(
             NotInstrumentable(

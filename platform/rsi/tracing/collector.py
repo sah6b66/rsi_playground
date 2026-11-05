@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rsi.core.models import TraceEvent
+from rsi.log import get_logger
 from rsi.tracing.parsers import NdjsonEventParser, OpenCodeWiretapParser
 
 if TYPE_CHECKING:
@@ -22,6 +23,8 @@ __all__ = ["TraceCollector"]
 
 # WS subscriber queue bound (DD-07 §7-5): drop-old-keep-new semantics.
 SUBSCRIBER_QUEUE_MAX = 256
+
+logger = get_logger(__name__)
 
 
 class TraceCollector:
@@ -39,6 +42,7 @@ class TraceCollector:
 
     def ingest(self, events: list[TraceEvent]) -> None:
         """Assign seq, buffer per run, publish to WS subscribers."""
+        logger.debug("ingest.entry", events=len(events))
         for ev in events:
             late = ev.run_id in self._finalized
             ev = ev.model_copy(
@@ -65,6 +69,7 @@ class TraceCollector:
     # -- finalize ---------------------------------------------------------
 
     def finalize(self, run_id: str) -> None:
+        logger.debug("finalize.entry", run_id=run_id)
         self._finalized.add(run_id)
         events = self._events.get(run_id, [])
         tss = sorted(e.ts for e in events if e.ts)
@@ -80,6 +85,7 @@ class TraceCollector:
             self._store.set_meta(run_id, meta)
         # Close WS subscribers for the finalized run (DD-07 §4 finalize-5).
         self._subscribers.pop(run_id, None)
+        logger.debug("finalize.exit", run_id=run_id, event_count=len(events))
 
     # -- WS hub -----------------------------------------------------------
 
@@ -102,6 +108,7 @@ class TraceCollector:
         lines (event_type field) and dispatches to the right parser.
         Returns the number of ingested events.
         """
+        logger.debug("tail_ndjson.entry", path=str(path), run_id=run_id)
         ingested: list[TraceEvent] = []
         with open(path, encoding="utf-8") as fh:
             for line in fh:
@@ -126,6 +133,7 @@ class TraceCollector:
                     ingested.append(parsed)
         if ingested:
             self.ingest(ingested)
+        logger.debug("tail_ndjson.exit", ingested=len(ingested))
         return len(ingested)
 
     # -- meta access ------------------------------------------------------

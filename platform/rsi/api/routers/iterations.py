@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from rsi.api.deps import audit, get_current_user, get_store, require_perms
 from rsi.core.enums import IterationState
@@ -29,9 +29,9 @@ _GATES: dict[str, tuple[str, str]] = {
 
 
 class IterationCreate(BaseModel):
-    sut_id: str
-    profile_id: str
-    mode: str = "auto"
+    sut_id: str = Field(json_schema_extra={"example": "sut-1a2b3c4d"})
+    profile_id: str = Field(json_schema_extra={"example": "prof-9f8e7d6c"})
+    mode: str = Field(default="auto", json_schema_extra={"example": "auto"})
 
 
 class IterationOut(BaseModel):
@@ -52,10 +52,19 @@ class GateBody(BaseModel):
     """Generic gate payload; concrete fields depend on the gate."""
     model_config = {"extra": "allow"}
 
-    selected: str | None = None
-    hypothesis: str | None = None
-    approved: bool | None = None
-    decision: str | None = None
+    selected: str | None = Field(
+        default=None, json_schema_extra={"example": "exp-11223344"}
+    )
+    hypothesis: str | None = Field(
+        default=None,
+        json_schema_extra={
+            "example": "Adding explicit verification steps to the system prompt will reduce missed checks"
+        },
+    )
+    approved: bool | None = Field(default=None, json_schema_extra={"example": True})
+    decision: str | None = Field(
+        default=None, json_schema_extra={"example": "apply_exp_exp-11223344"}
+    )
 
 
 def _now() -> str:
