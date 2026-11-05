@@ -90,6 +90,37 @@ class TestSubmitAndTrace:
         h2 = adapter.submit_task(inst, SimpleNamespace(prompt="another"))
         assert h2.cmd[-1] == "another"
 
+    def test_submit_task_env_wiretap_per_run(self, tmp_path) -> None:
+        adapter = OpenCodeAdapter()
+        cfg = tmp_path
+        cid = adapter.start("rsi-opencode-runtime:1.0", cfg, "restricted", None)
+        inst = SimpleNamespace(
+            run_id="run-wt", instance_id=cid, container_id=cid
+        )
+        handle = adapter.submit_task(inst, "task")
+        assert handle.env["OPENCODE_WIRETAP_FILE"] == "/trace/wiretap/run-wt.ndjson"
+
+    def test_submit_task_env_merges_cred_env(self, tmp_path) -> None:
+        adapter = OpenCodeAdapter()
+        cfg = tmp_path
+        cfg.mkdir(exist_ok=True)
+        cred = {"api_key": "sk-y"}
+        cid = adapter.start("rsi-opencode-runtime:1.0", cfg, "restricted", cred)
+        inst = SimpleNamespace(
+            run_id="run-c", instance_id=cid, container_id=cid
+        )
+        handle = adapter.submit_task(inst, "task")
+        assert handle.env["OPENCODE_API_KEY"] == "sk-y"
+        assert handle.env["OPENCODE_WIRETAP_FILE"] == "/trace/wiretap/run-c.ndjson"
+
+    def test_fake_carrier_run_handle_default_env(self) -> None:
+        carrier = FakeCarrier()
+        inst = SimpleNamespace(
+            run_id="r1", instance_id="i1", container_id="c1"
+        )
+        handle = carrier.submit_task(inst, SimpleNamespace(prompt="p"))
+        assert handle.env == {}
+
     def test_collect_result_offline(self, tmp_path) -> None:
         adapter = OpenCodeAdapter()
         cfg = tmp_path

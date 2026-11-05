@@ -393,8 +393,13 @@ class SandboxService:
         device = next(iter(lab.endpoints))
         session = self._pool_session(lab, device)
         if session is not None:
+            # H1: run the probe on the runner loop via the same bridge as
+            # exec_readonly — awaiting a pooled session coroutine on the
+            # caller's loop would bind DeviceSession.lock to that loop and
+            # later collide with the runner loop ("bound to a different
+            # event loop").
             try:
-                result = await session.exec_cli("display clock")
+                result = _run_sync(session.exec_cli("display clock"))
             except Exception as exc:  # noqa: BLE001 — probe must not raise
                 logger.debug("health_check.exit", healthy=False, exc_type=type(exc).__name__)
                 return False
@@ -427,14 +432,23 @@ class SandboxService:
     def close(self) -> None:
         """Reclaim pooled SSH sessions and the owned config-api client.
 
-        Idempotent: subsequent calls are no-ops.
+        Idempotent: subsequent calls are no-ops. Each step is closed
+        independently: a failure in one (logged, not raised) never leaves
+        the other unclosed. Note: cross-loop ``aclose`` of an idle client
+        is a known S11 concern, tracked for the real executor phase.
         """
         if self._closed:
             return
         self._closed = True
         if self._ssh_pool is not None:
-            _run_sync(self._ssh_pool.close_all())
-        _run_sync(self._config_api.aclose())
+            try:
+                _run_sync(self._ssh_pool.close_all())
+            except Exception as exc:  # noqa: BLE001 — close must not raise
+                logger.warning("close.ssh_pool_failed", error=str(exc))
+        try:
+            _run_sync(self._config_api.aclose())
+        except Exception as exc:  # noqa: BLE001 — close must not raise
+            logger.warning("close.config_api_failed", error=str(exc))
 
     # -- internals ----------------------------------------------------------------
 
@@ -521,7 +535,16 @@ class _LoopRunner:
                 _t.Thread(
                     target=self._loop.run_forever, daemon=True, name="ssh-pool-loop"
                 ).start()
-        return asyncio.run_coroutine_threadsafe(coro, self._loop).result()
+        try:
+            # L1: bounded wait — a hung runner thread must not deadlock the
+            # caller forever.
+            return asyncio.run_coroutine_threadsafe(coro, self._loop).result(
+                timeout=30
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                "sandbox runner loop coroutine did not finish within 30s"
+            ) from exc
 
 
 _RUNNER = _LoopRunner()

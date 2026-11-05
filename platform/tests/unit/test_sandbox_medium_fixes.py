@@ -250,3 +250,87 @@ class TestConfigApiClientReuse:
         caller._owns_client = True
         service.close()
         assert caller._client is None
+
+
+# ---------------------------------------------------------------------------
+# H1: health_check must share the runner loop with exec_readonly
+# ---------------------------------------------------------------------------
+
+
+class _LoopRecordingSession:
+    """Session whose exec_cli records the loop it runs on."""
+
+    def __init__(self) -> None:
+        self.loops: list[int] = []
+
+    async def exec_cli(self, cli: str):
+        import asyncio
+
+        self.loops.append(id(asyncio.get_running_loop()))
+
+        class R:
+            ok = True
+            output = "2026-01-01 00:00:00\nUTC\n"
+
+        return R()
+
+
+class _StubPool(SshPool):
+    def __init__(self, session) -> None:  # type: ignore[no-untyped-def]
+        super().__init__()
+        self._session = session
+
+    async def device(self, key, access, vendor):  # type: ignore[override]
+        return self._session
+
+    async def close_all(self) -> None:
+        return None
+
+
+class TestHealthCheckLoopAffinity:
+    @pytest.mark.asyncio
+    async def test_health_check_uses_runner_loop_same_as_exec_readonly(self, tmp_path):
+        session = _LoopRecordingSession()
+        service = SandboxService(
+            backends={"fake-1": FakeSandboxBackend()},
+            labs_dir=tmp_path,
+            ssh_pool=_StubPool(session),
+        )
+        lab = await _build(service)
+        service.exec_readonly(lab, "R1", "display clock")
+        assert await service.health_check(lab) is True
+        assert len(session.loops) == 2
+        # both paths ran on the same (runner) loop — the caller's pytest
+        # loop differs, proving health_check no longer awaits directly.
+        assert session.loops[0] == session.loops[1]
+        import asyncio
+
+        assert session.loops[0] != id(asyncio.get_running_loop())
+
+
+# ---------------------------------------------------------------------------
+# M2b: close() must not leak the config client when pool close fails
+# ---------------------------------------------------------------------------
+
+
+class TestCloseIndependence:
+    @pytest.mark.asyncio
+    async def test_pool_close_failure_still_closes_config_api(self, tmp_path):
+        class BoomPool(SshPool):
+            async def close_all(self) -> None:  # type: ignore[override]
+                raise RuntimeError("pool boom")
+
+        caller = ConfigApiCaller()
+        ca_client = httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200, json={}))
+        )
+        caller._client = ca_client
+        caller._owns_client = True
+        service = SandboxService(
+            backends={"fake-1": FakeSandboxBackend()},
+            labs_dir=tmp_path,
+            ssh_pool=BoomPool(),
+            config_api=caller,
+        )
+        service.close()  # must not raise
+        assert caller._client is None

@@ -57,9 +57,10 @@ class OpenCodeAdapter(CarrierAdapter):
     ) -> str:
         """Write opencode.json into the mounted config dir; record env; offline."""
         provider, model = self._read_model_config(config_dir)
-        # Wiretap file uses a session-level default; per-run attribution is
-        # overridden at submit_task time via OPENCODE_WIRETAP_FILE env
-        # (opencode.json lives in the shared mounted /agent-config).
+        # Wiretap file uses a session-level default in the shared
+        # /agent-config mount; per-run attribution is closed out at
+        # submit_task time via RunHandle.env["OPENCODE_WIRETAP_FILE"],
+        # which the S11 real executor injects into the task process env.
         opencode_config = {
             "provider": provider,
             "model": model,
@@ -98,8 +99,18 @@ class OpenCodeAdapter(CarrierAdapter):
             instance.run_id,
             prompt,
         ]
+        env: dict[str, str] = {
+            # Per-run wiretap file so trace attribution matches
+            # trace_channels (M2a); consumed by the S11 real executor.
+            "OPENCODE_WIRETAP_FILE": f"/trace/wiretap/{instance.run_id}.ndjson"
+        }
+        container_id = getattr(instance, "container_id", None) or instance.instance_id
+        env.update(self.env_for.get(container_id, {}))
         handle = RunHandle(
-            run_id=instance.run_id, instance_id=instance.instance_id, cmd=cmd
+            run_id=instance.run_id,
+            instance_id=instance.instance_id,
+            cmd=cmd,
+            env=env,
         )
         logger.debug("opencode.submit_task", run_id=instance.run_id)
         return handle
