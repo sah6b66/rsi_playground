@@ -39,6 +39,39 @@ _PREPARE_ATTEMPTS = 3  # 1 initial + 2 retries (DD-12 §5.2 step 3)
 _MAX_CONSECUTIVE_ENV_FAILURES = 3  # F1 circuit breaker (DD-12 §5.1)
 _EST_TOKENS_PER_TASK = 50_000
 
+_CRED_SUFFIXES = ("USER", "PASS", "HOST", "PORT")
+
+
+def _cred_payload(resolved: Any) -> dict[str, Any] | None:
+    """Normalize a resolver result into the build_dev_env cred payload.
+
+    Accepts either an already-shaped dict payload (test stubs) or a
+    ``ResolvedCreds`` (device_env maps device -> DEV_<X>_* vars); the latter
+    is inverted into ``{"devices": {name: {user/pass/host/port}}}`` so
+    ``build_dev_env`` derives the DEV_* environment.
+    """
+    if isinstance(resolved, dict):
+        return resolved
+    device_env = getattr(resolved, "device_env", None)
+    if not isinstance(device_env, dict):
+        return None
+    devices: dict[str, dict[str, str]] = {}
+    for name, vars_ in device_env.items():
+        if not isinstance(vars_, dict):
+            continue
+        dev: dict[str, str] = {}
+        for key, value in vars_.items():
+            suffix = key.rsplit("_", 1)[-1]
+            if suffix in _CRED_SUFFIXES and key != "DEV_RW":
+                dev[suffix.lower()] = str(value)
+        if dev:
+            devices[str(name)] = dev
+    payload: dict[str, Any] = {"devices": devices}
+    api_key = getattr(resolved, "nms_token", None)
+    if api_key:
+        payload["api_key"] = api_key
+    return payload
+
 
 def _utcnow_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
@@ -80,7 +113,13 @@ class BatchRunner:
         task_timeout_s: float | None = None,
         host: str = "main",
         result_cache: dict[tuple[str, str, str], tuple[Verdict, str]] | None = None,
+        credential_resolver=None,
     ) -> None:
+        # credential_resolver (audit T2-1/B-8): object exposing
+        # ``resolve_env(env, permission)`` (CredentialResolver) whose result
+        # is converted to the build_dev_env cred payload; None keeps the
+        # legacy cred=None behavior (backward compatible).
+        self.credential_resolver = credential_resolver
         self.sandbox = sandbox
         self.carrier = carrier
         self.collector = collector
@@ -334,6 +373,7 @@ class BatchRunner:
             return result, _env_failed_verdict()
 
         # 4. create SUT instance (P0: one instance per run)
+        cred = self._resolve_cred(batch_id, permission)
         instance = self.carrier.create_instance(
             image_ref=image_ref,
             config_version_id=config_version_id,
@@ -341,7 +381,7 @@ class BatchRunner:
             permission=permission,
             instrument=True,
             host=self.host,
-            cred=None,
+            cred=cred,
             run_id=run_id,
         )
         try:
@@ -386,6 +426,28 @@ class BatchRunner:
         return result, verdict
 
     # -- helpers ----------------------------------------------------------------
+
+    def _resolve_cred(self, batch_id: str, permission: str) -> Any:
+        """Resolve the per-run credential payload for create_instance (T2-1).
+
+        Uses the injected resolver against the batch's EnvSpec; any failure
+        degrades to ``None`` (legacy behavior) rather than failing the run.
+        """
+        if self.credential_resolver is None:
+            return None
+        env = self._envs.get(batch_id)
+        if env is None:
+            return None
+        try:
+            resolved = self.credential_resolver.resolve_env(env, permission)
+        except Exception as exc:  # noqa: BLE001 - creds must not break the batch
+            logger.warning(
+                "cred.resolve_failed",
+                batch_id=batch_id,
+                exc_type=type(exc).__name__,
+            )
+            return None
+        return _cred_payload(resolved)
 
     async def _publish_alert(
         self, severity: str, message: str, scope: str | None = None
