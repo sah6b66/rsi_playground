@@ -625,10 +625,15 @@ class NoiseBandInfo(_M):
 
 
 class DecisionCtx(_M):
-    baseline: BatchStats
-    candidate: BatchStats
-    noise_bands: dict[str, NoiseBandInfo]
-    high_risk: bool = False
+    """RegularizedSelector input (DD-10 §3 / interface §12)."""
+
+    base_stats: BatchStats
+    cand_stats: BatchStats
+    noise_delta: float | None = None  # uncalibrated -> rules degrade with delta 0
+    goals: list[Goal] = Field(min_length=1)
+    guards: GuardPolicy = GuardPolicy()
+    cost: dict[str, Any] = {}  # e.g. {"cost_penalty": 0.1, "tokens": 1200, ...}
+    hack_or_fatal: bool = False
 
 
 # ---------------------------------------------------------------------------

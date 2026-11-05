@@ -466,16 +466,19 @@ class TestDecisionModels:
 
     def test_decision_ctx(self):
         DecisionCtx(
-            baseline=BatchStats(
+            base_stats=BatchStats(
                 metrics={}, n=5, missing=0, tokens=1, tool_calls=1,
                 wall_time_s=1.0, tokens_estimated=False,
             ),
-            candidate=BatchStats(
+            cand_stats=BatchStats(
                 metrics={}, n=5, missing=0, tokens=1, tool_calls=1,
                 wall_time_s=1.0, tokens_estimated=False,
             ),
-            noise_bands={},
-            high_risk=False,
+            noise_delta=None,
+            goals=[Goal(metric="root_cause_accuracy", direction="max", weight=1.0)],
+            guards=GuardPolicy(),
+            cost={"cost_penalty": 0.1},
+            hack_or_fatal=False,
         )
 
 
