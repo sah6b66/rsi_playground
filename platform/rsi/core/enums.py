@@ -154,7 +154,14 @@ VALID_ITERATION_TRANSITIONS: Mapping[IterationState, frozenset[IterationState]] 
         {IterationState.REVIEWING, IterationState.PAUSED, IterationState.ABORTED}
     ),
     IterationState.REVIEWING: frozenset(
-        {IterationState.APPLYING, IterationState.PAUSED, IterationState.ABORTED}
+        {
+            IterationState.APPLYING,
+            # Review-gate rejection records a REVERT decision without any
+            # verification round (DD-12 §5.4 short-circuit at the review gate).
+            IterationState.DECIDING,
+            IterationState.PAUSED,
+            IterationState.ABORTED,
+        }
     ),
     IterationState.APPLYING: frozenset(
         {IterationState.VERIFYING, IterationState.PAUSED, IterationState.ABORTED}

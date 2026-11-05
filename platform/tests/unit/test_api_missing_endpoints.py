@@ -739,6 +739,14 @@ class TestIterationsContract:
         it_id = (await self._make(client, h, sut_id=sut_id)).json()[
             "iteration_id"
         ]
+        # gates are ordered (D-3 current_step check): pass gate 1 first
+        await client.post(f"/api/v1/iterations/{it_id}:pause", headers=h)
+        resp1 = await client.post(
+            f"/api/v1/iterations/{it_id}/confirm-direction",
+            json={"selected": "target-A"},
+            headers=h,
+        )
+        assert resp1.status_code == 204, resp1.text
         await client.post(f"/api/v1/iterations/{it_id}:pause", headers=h)
         resp = await client.post(
             f"/api/v1/iterations/{it_id}/hypothesis",

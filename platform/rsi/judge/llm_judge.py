@@ -72,16 +72,31 @@ class LLMJudge:
         task: "EvalTask",
         result: "TaskResult",
         events: "list[TraceEvent]",
+        *,
+        config_version_id: str | None = None,
+        batch_purpose: str | None = None,
     ) -> SemanticScores:
-        logger.debug("judge.entry", task=task.task.title, events=len(events))
+        """Semantic judgment of one run.
+
+        ``config_version_id`` / ``batch_purpose`` (T2-5) are folded into the
+        prompts as an evaluation-context fragment so the judge can
+        distinguish baseline from candidate configurations.
+        """
+        logger.debug(
+            "judge.entry",
+            task=task.task.title,
+            events=len(events),
+            config_version_id=config_version_id,
+        )
+        ctx = self._ctx_fragment(config_version_id, batch_purpose)
         try:
-            root = await self._judge_root_cause(task, result)
+            root = await self._judge_root_cause(task, result, ctx)
         except Exception as exc:  # noqa: BLE001 - degrade to indeterminate, not raise
             logger.debug("judge.indeterminate", stage="root_cause", exc_type=type(exc).__name__)
             return self._indeterminate("root_cause judgment unavailable")
 
         try:
-            quality = await self._judge_path_quality(task, result, events)
+            quality = await self._judge_path_quality(task, result, events, ctx)
         except Exception as exc:  # noqa: BLE001
             logger.debug("judge.indeterminate", stage="path_quality", exc_type=type(exc).__name__)
             return self._indeterminate("path_quality judgment unavailable")
@@ -119,8 +134,23 @@ class LLMJudge:
 
     # -- internals ----------------------------------------------------------------
 
+    @staticmethod
+    def _ctx_fragment(
+        config_version_id: str | None, batch_purpose: str | None
+    ) -> str:
+        """T2-5: evaluation-context fragment for the judge prompts."""
+        parts: list[str] = []
+        if config_version_id:
+            parts.append(f"config_version={config_version_id}")
+        if batch_purpose:
+            parts.append(f"batch_purpose={batch_purpose}")
+        return " ".join(parts)
+
     async def _judge_root_cause(
-        self, task: "EvalTask", result: "TaskResult"
+        self,
+        task: "EvalTask",
+        result: "TaskResult",
+        ctx: str = "",
     ) -> RootCauseMatchResult:
         expected = task.task.expected.root_cause
         resp = await self._llm.complete(
@@ -133,6 +163,7 @@ class LLMJudge:
                 "confidence_of_sut": str(result.confidence)
                 if result.confidence is not None
                 else "",
+                "eval_context": ctx,
             },
             schema=RootCauseMatchResult,
         )
@@ -140,7 +171,11 @@ class LLMJudge:
         return resp.parsed
 
     async def _judge_path_quality(
-        self, task: "EvalTask", result: "TaskResult", events: "list[TraceEvent]"
+        self,
+        task: "EvalTask",
+        result: "TaskResult",
+        events: "list[TraceEvent]",
+        ctx: str = "",
     ) -> PathQualityResult:
         critical = task.task.expected.critical_steps or []
         checklist = task.task.expected.checklist or []
@@ -149,6 +184,7 @@ class LLMJudge:
             "path_quality",
             vars={
                 "steps_summary": self._summarizer.summarize(events),
+                "eval_context": ctx,
                 "critical_steps": "\n".join(s.evidence for s in critical),
                 "checklist_items": "\n".join(ci.item for ci in checklist),
                 "sut_actions": "\n".join(a.action for a in result.actions),

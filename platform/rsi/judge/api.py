@@ -66,13 +66,23 @@ class JudgeService:
         *,
         run_status: "RunStatus | str | None" = None,
         efficiency: Efficiency | None = None,
+        config_version_id: str | None = None,
+        batch_purpose: str | None = None,
     ) -> "Verdict":
+        """Judge one run.
+
+        ``config_version_id`` / ``batch_purpose`` (T2-5) give the LLM judge
+        the evaluation context so it can tell baseline from candidate
+        configurations; both default to None for backward compatibility.
+        """
         logger.debug(
             "judge_run.entry",
             task=task.task.title,
             events=len(events),
             permission=permission,
             run_status=str(run_status) if run_status is not None else None,
+            config_version_id=config_version_id,
+            batch_purpose=batch_purpose,
         )
         commands = self._extract_commands(events)
 
@@ -83,7 +93,13 @@ class JudgeService:
             self._det.evaluate(task, result, lab, sandbox, events),
             safety_scan(),
         )
-        sem = await self._llm.judge(task, result, events)
+        sem = await self._llm.judge(
+            task,
+            result,
+            events,
+            config_version_id=config_version_id,
+            batch_purpose=batch_purpose,
+        )
         sem = self._merge_checklist(sem, det_scores)
         hack = self._antihack.detect(task, events, det_scores, sem, result=result, run_status=run_status)
         eff = efficiency if efficiency is not None else self._efficiency(events)

@@ -33,6 +33,15 @@ _GATES: dict[str, tuple[str, str]] = {
     "decision": ("awaiting_decision", "deciding"),
 }
 
+# After a gate passes, the iteration pauses next at the following gate's
+# awaiting step (D-3: current_step must match the gate actually reached).
+_GATE_NEXT_STEP: dict[str, str] = {
+    "confirm-direction": "awaiting_hypothesis",
+    "hypothesis": "awaiting_review",
+    "review": "awaiting_decision",
+    "decision": "deciding",
+}
+
 
 class IterationCreate(BaseModel):
     """§9.12：``mode ∈ p1|p2``；p2 在 P2 阶段开放（此前 409）。"""
@@ -184,6 +193,13 @@ async def pause_iteration(
             "iteration is already paused",
             context={"iteration_id": iteration_id, "from_state": it["state"]},
         )
+    # D-3: pausing moves the iteration to its next human gate; current_step
+    # must reflect which gate the iteration is actually waiting at.
+    order = list(_GATES)
+    passed = sum(1 for g in it["gates"])
+    it["current_step"] = (
+        _GATES[order[passed]][0] if passed < len(order) else "deciding"
+    )
     it["paused_from"] = it["state"]
     it["state"] = IterationState.PAUSED.value
     return _out(it)
@@ -235,6 +251,39 @@ async def delete_iteration(
     return Response(status_code=204)
 
 
+async def _engine_gate(engine, name: str, body: GateBody) -> str | None:
+    """Forward a gate submission to a live engine instance (D-3).
+
+    The engine validates state + current_step itself and raises
+    InvalidTransitionError (409) on mismatch. Returns the hypothesis id for
+    gate 2 when the engine produced one.
+    """
+    if name == "confirm-direction":
+        selected = body.selected
+        if selected is None and body.model_extra:
+            selected = body.model_extra.get("selected")
+        selected_list = [selected] if isinstance(selected, str) else list(
+            selected or []
+        )
+        await engine.gate_confirm_direction(selected_list)
+        return None
+    if name == "hypothesis":
+        hyp = {"summary": body.hypothesis or ""}
+        if body.model_extra:
+            for key in ("target", "predicted_effect"):
+                if key in body.model_extra:
+                    hyp[key] = body.model_extra[key]
+        return await engine.gate_hypothesis(hyp)
+    if name == "review":
+        verdict = "pass" if body.approved is not False else "reject"
+        return await engine.gate_review(verdict, [])
+    if name == "decision":
+        return await engine.gate_decision(body.decision or "promote")
+    raise ValidationError(
+        f"unknown gate {name!r}", context={"gate": name}
+    )
+
+
 def _gate_router(name: str, required_step: str, next_step: str):
     status_code = 201 if name == "hypothesis" else 204
 
@@ -247,15 +296,36 @@ def _gate_router(name: str, required_step: str, next_step: str):
         store: dict = Depends(get_store("iterations")),
         hypotheses: dict = Depends(get_store("hypotheses")),
     ) -> Response:
+        from rsi.orchestrator.iteration import RUNNING_ENGINES
+
         it = _get(store, iteration_id)
         if it["state"] != IterationState.PAUSED.value:
             raise InvalidTransitionError(
                 f"gate {name!r} requires paused iteration, got {it['state']}",
                 context={"iteration_id": iteration_id, "from_state": it["state"]},
             )
+        # D-3: the gate must match the step the iteration is actually paused
+        # at — the wrong gate is a 409 even when the state is PAUSED.
+        if it["current_step"] != required_step:
+            raise InvalidTransitionError(
+                f"gate {name!r} expects current_step {required_step!r}, "
+                f"got {it['current_step']!r}",
+                context={
+                    "iteration_id": iteration_id,
+                    "current_step": it["current_step"],
+                    "required_step": required_step,
+                },
+            )
+        engine_hyp_id: str | None = None
+        engine = RUNNING_ENGINES.get(iteration_id)
+        if engine is not None:
+            # D-3 bridge: a live engine instance validates state + step
+            # itself (InvalidTransitionError -> 409 on mismatch).
+            engine_hyp_id = await _engine_gate(engine, name, body)
+        # no engine (iteration not running in-process): store-only fallback
         it["state"] = it["paused_from"] or IterationState.ATTRIBUTING.value
         it["paused_from"] = None
-        it["current_step"] = next_step
+        it["current_step"] = _GATE_NEXT_STEP.get(name, next_step)
         it["gates"].append(
             {"gate": name, "step": required_step, "by": str(user.sub),
              "at": _now()}
@@ -264,7 +334,7 @@ def _gate_router(name: str, required_step: str, next_step: str):
             # 人工门②（§9.12）：写 hypotheses.iteration_id 并推进状态机，
             # 响应 201 + {"hypothesis_id": ...}
             hyp = {
-                "id": f"hyp-{uuid.uuid4().hex[:8]}",
+                "id": engine_hyp_id or f"hyp-{uuid.uuid4().hex[:8]}",
                 "sut_id": it["sut_id"],
                 "iteration_id": it["id"],
                 "statement": body.hypothesis or "",

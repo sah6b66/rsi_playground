@@ -281,6 +281,13 @@ class TestIterationTransitions:
         for i in range(len(path) - 1):
             assert path[i + 1] in VALID_ITERATION_TRANSITIONS[path[i]]
 
+    def test_reviewing_to_deciding_review_reject_short_circuit(self):
+        # Review-gate rejection records a REVERT decision without verification
+        # (DD-12 §5.4 short-circuit at the review gate).
+        assert (
+            IterationState.DECIDING in VALID_ITERATION_TRANSITIONS[IterationState.REVIEWING]
+        )
+
     def test_deciding_to_attributing_next_round(self):
         assert (
             IterationState.ATTRIBUTING

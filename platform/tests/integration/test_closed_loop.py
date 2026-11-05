@@ -149,11 +149,11 @@ class ClosedLoopRig:
 
 
 class _BatchAwareJudge:
-    """Judge mock whose verdict depends on the batch's config_version_id.
+    """Judge mock whose verdict depends on the run's config_version_id.
 
-    BatchRunner does not forward the config version to judge_run, so the
-    verdict is selected per-run by popping from a queue of expected rcas the
-    test configures per batch id prefix.
+    BatchRunner forwards config_version_id to judge_run (T2-5), so the
+    verdict is selected directly from the run context; the queue-based
+    workaround is kept only as a fallback for callers that pass no context.
     """
 
     def __init__(self, rca_by_config: dict[str, float]) -> None:
@@ -165,7 +165,11 @@ class _BatchAwareJudge:
         self._pending = [self.rca_by_config[config_version_id]] * n
 
     async def judge_run(self, task, result, events, lab, sandbox, permission, **kw):
-        rca = self._pending[self.calls % len(self._pending)] if self._pending else 0.0
+        cfg = kw.get("config_version_id")
+        if cfg in self.rca_by_config:
+            rca = self.rca_by_config[cfg]
+        else:
+            rca = self._pending[self.calls % len(self._pending)] if self._pending else 0.0
         self.calls += 1
         return _verdict(rca)
 

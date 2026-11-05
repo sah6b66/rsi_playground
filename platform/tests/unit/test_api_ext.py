@@ -190,6 +190,47 @@ class TestIterations:
         )
         assert resp.status_code == 409
 
+    async def test_gate_wrong_step_409_even_when_paused(self, client):
+        """D-3: PAUSED alone is not enough — the gate must match current_step."""
+        h = await admin_headers(client)
+        sut_id = await make_sut(client, h)
+        it = (
+            await client.post(
+                "/api/v1/iterations",
+                json={"sut_id": sut_id, "profile_id": "p", "mode": "p1"},
+                headers=h,
+            )
+        ).json()["iteration_id"]
+        await client.post(f"/api/v1/iterations/{it}:pause", headers=h)
+        # paused at awaiting_direction: the review gate is the wrong gate
+        resp = await client.post(
+            f"/api/v1/iterations/{it}/review", json={"approved": True}, headers=h
+        )
+        assert resp.status_code == 409
+        assert "current_step" in resp.json()["detail"]
+
+    async def test_second_active_iteration_same_sut_409(self, client):
+        h = await admin_headers(client)
+        sut_id = await make_sut(client, h)
+        body = {"sut_id": sut_id, "profile_id": "p", "mode": "p1"}
+        resp = await client.post("/api/v1/iterations", json=body, headers=h)
+        assert resp.status_code == 201
+        resp = await client.post("/api/v1/iterations", json=body, headers=h)
+        assert resp.status_code == 409
+        # a different SUT is fine
+        resp = await client.post(
+            "/api/v1/suts",
+            json={"name": "sut-y", "carrier": "linux", "image_ref": "img:1"},
+            headers=h,
+        )
+        sut2 = resp.json()["id"]
+        resp = await client.post(
+            "/api/v1/iterations",
+            json={"sut_id": sut2, "profile_id": "p", "mode": "p1"},
+            headers=h,
+        )
+        assert resp.status_code == 201
+
 
 # -- labs ---------------------------------------------------------------------
 

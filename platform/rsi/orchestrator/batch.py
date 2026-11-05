@@ -354,7 +354,9 @@ class BatchRunner:
         self.last_run_ids[task.task_id] = run_id
         logger.debug("run_task.entry", run_id=run_id, task_id=task.task_id, seq=seq)
 
-        # 1. prepare (backup + exec_cli/call_api), retry <= 2, then env_failed
+        # 1. prepare (backup + exec_cli/call_api), retry <= 2, then env_failed.
+        #    DD-12 §5.2 order: restore_task -> prepare between attempts, so a
+        #    partially applied prepare never leaks into the retry.
         applied = []
         prepared = False
         for _attempt in range(self.prepare_attempts):
@@ -366,6 +368,15 @@ class BatchRunner:
                 logger.debug(
                     "run_task.prepare_retry", task_id=task.task_id, exc_type=type(exc).__name__
                 )
+                # best-effort cleanup of the partial prepare before retrying
+                try:
+                    await self.sandbox.restore_task(lab, applied)
+                except Exception as cleanup_exc:  # noqa: BLE001 - retry anyway
+                    logger.debug(
+                        "run_task.prepare_restore_failed",
+                        task_id=task.task_id,
+                        exc_type=type(cleanup_exc).__name__,
+                    )
                 continue
         if not prepared:
             logger.debug("run_task.exit", run_id=run_id, status="env_failed")
@@ -390,6 +401,24 @@ class BatchRunner:
             result = await asyncio.to_thread(
                 self.carrier.collect, handle, self.task_timeout_s
             )
+            # F2 crash classification: a carrier that surfaces the container
+            # exit code (137=OOM / 139=segfault) marks the run infra-crashed
+            # regardless of stdout; FINAL_JSON is meaningless then. Carriers
+            # without an exit_code field are skipped (F6 adds it).
+            exit_code = getattr(handle, "exit_code", None)
+            if exit_code in (137, 139) and not result.instance_crashed:
+                logger.debug(
+                    "run_task.instance_crashed", run_id=run_id, exit_code=exit_code
+                )
+                result = TaskResult(task_complete=False, instance_crashed=True)
+
+            if result.instance_crashed:
+                # infra fault, not an Agent defect: skip judgment entirely
+                # (excluded from attribution samples, counted in infra stats)
+                logger.debug(
+                    "run_task.exit", run_id=run_id, status="instance_crashed"
+                )
+                return result, _env_failed_verdict()
 
             # 6. collect trace events (P0: synthesized from the result actions)
             events = self._trace_events(run_id, task, lab, result)
@@ -408,11 +437,49 @@ class BatchRunner:
             self.sandbox,
             permission,
             run_status=RunStatus.DONE,
+            # T2-5: judge context so the LLM can tell baseline vs candidate
+            config_version_id=config_version_id,
+            batch_purpose=self._batch_purpose(batch_id),
         )
 
         # 8. task-level restore AFTER judgment (final-state asserts need the
-        # fault state present, ADR-20 L1)
-        await self.sandbox.restore_task(lab, applied)
+        # fault state present, ADR-20 L1). restore_task already retries
+        # internally; on persistent failure escalate to L2 environment-level
+        # recovery (lab reset + restore replay), and if even that fails the
+        # TASK is scored env_failed (batch-level failure semantics, DD-12
+        # §5.2) instead of killing the whole batch.
+        restored = False
+        for _attempt in range(3):  # 1 initial + 2 retries (D-13)
+            try:
+                await self.sandbox.restore_task(lab, applied)
+                restored = True
+                break
+            except EnvError as exc:
+                logger.debug(
+                    "run_task.restore_retry",
+                    run_id=run_id,
+                    attempt=_attempt + 1,
+                    exc_type=type(exc).__name__,
+                )
+        if not restored:
+            try:
+                # L2: reset the lab to a clean state and re-run restore
+                # (SandboxService.reset replays device state; a full
+                # ops.jsonl replay rides on the backup re-apply inside
+                # restore_task). No dedicated replay API exists in P0.
+                logger.warning("run_task.restore_l2_recovery", run_id=run_id)
+                await self.sandbox.reset(lab)
+                await self.sandbox.restore_task(lab, applied)
+                restored = True
+            except Exception as exc:  # noqa: BLE001 - task degrades, not batch
+                logger.warning(
+                    "run_task.restore_env_failed",
+                    run_id=run_id,
+                    exc_type=type(exc).__name__,
+                )
+        if not restored:
+            self.carrier.destroy(instance)
+            return result, _env_failed_verdict()
 
         # 9. destroy instance
         self.carrier.destroy(instance)
@@ -426,6 +493,26 @@ class BatchRunner:
         return result, verdict
 
     # -- helpers ----------------------------------------------------------------
+
+    @staticmethod
+    def _batch_purpose(batch_id: str) -> str:
+        """Derive the batch purpose from the batch id prefix (T2-5 context).
+
+        IterationEngine names its verification batches with a
+        ``verify-<tier>-...`` prefix; everything else is a plain eval batch.
+        """
+        lower = batch_id.lower()
+        if lower.startswith("verify-smoke"):
+            return "smoke"
+        if lower.startswith("verify-screen"):
+            return "iterate_screen"
+        if lower.startswith("verify-holdout"):
+            return "candidate_eval"
+        if "baseline" in lower:
+            return "baseline_eval"
+        if "noise" in lower:
+            return "noise_calibration"
+        return "adhoc_eval"
 
     def _resolve_cred(self, batch_id: str, permission: str) -> Any:
         """Resolve the per-run credential payload for create_instance (T2-1).
