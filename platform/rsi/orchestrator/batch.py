@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from rsi.core.enums import RunStatus
@@ -27,6 +28,7 @@ from rsi.core.models import (
     SafetyVerdict,
     TaskRecord,
     TaskResult,
+    TaskSpec,
     TraceEvent,
     Verdict,
 )
@@ -145,6 +147,9 @@ class BatchRunner:
         host: str = "main",
         result_cache: dict[tuple[str, str], tuple[str, Verdict, str]] | None = None,
         credential_resolver=None,
+        instrumentor=None,
+        session_factory=None,
+        carrier_type: str = "opencode",
     ) -> None:
         # credential_resolver (audit T2-1/B-8): object exposing
         # ``resolve_env(env, permission)`` (CredentialResolver) whose result
@@ -186,6 +191,15 @@ class BatchRunner:
         # D-4: default cache bypass (set by :rerun wiring / noise calibration)
         self.bypass_cache: bool = False
         self._envs: dict[str, Any] = {}
+        # B-1: Instrumentor facade (DD-06 §6) — when wired, the exported config
+        # version is instrumented (scan -> plan -> inject -> smoke verify)
+        # before create_instance and the returned overlay dir becomes the
+        # instance config input. None keeps the legacy copy-only overlay.
+        self.instrumentor = instrumentor
+        # B-2: optional DB session factory for instrumentation_reports rows
+        self.session_factory = session_factory
+        self.carrier_type = carrier_type
+        self._instrument_cache: dict[tuple[str, str], tuple[Any, Any]] = {}
         # introspection for tests/ops: latest batch status and task->run_id map
         self.last_status: str = "created"
         self.last_run_ids: dict[str, str] = {}
@@ -439,15 +453,31 @@ class BatchRunner:
 
         # 4. create SUT instance (P0: one instance per run)
         cred = self._resolve_cred(batch_id, permission)
+        effective_config = config_version_id
+        if self.instrumentor is not None and Path(config_version_id).is_dir():
+            # B-1 (DD-06 §6): instrument the exported config version once per
+            # (batch, config_version) and feed the returned overlay dir to
+            # create_instance. Smoke runs on throwaway instances.
+            cache_key = (batch_id, config_version_id)
+            if cache_key not in self._instrument_cache:
+                overlay_dir, report = self.instrumentor.instrument(
+                    Path(config_version_id),
+                    self.carrier_type,
+                    lambda cfg: self._smoke_run(lab, image_ref, cfg),
+                )
+                self._instrument_cache[cache_key] = (overlay_dir, report)
+                self._record_instrumentation(batch_id, config_version_id, report)
+            effective_config = str(self._instrument_cache[cache_key][0])
         instance = self.carrier.create_instance(
             image_ref=image_ref,
-            config_version_id=config_version_id,
+            config_version_id=effective_config,
             lab=lab,
             permission=permission,
             instrument=True,
             host=self.host,
             cred=cred,
             run_id=run_id,
+            carrier_type=self.carrier_type,
         )
         try:
             # 5. submit -> collect (timeout from config)
@@ -547,6 +577,75 @@ class BatchRunner:
         return result, verdict
 
     # -- helpers ----------------------------------------------------------------
+
+    def _smoke_run(self, lab: LabHandle, image_ref: str, config_dir: Path):
+        """B-1 smoke callback for Instrumentor.instrument (DD-06 §4 double run).
+
+        Runs a trivial probe task on a throwaway non-instrumented instance
+        built from ``config_dir``; carriers without a canned response yield a
+        parse-error TaskResult, which is still a comparable signal (base vs
+        overlay equivalence)."""
+        instance = None
+        try:
+            instance = self.carrier.create_instance(
+                image_ref=image_ref,
+                config_version_id=str(config_dir),
+                lab=lab,
+                permission="read-only",
+                instrument=False,
+                host=self.host,
+                cred=None,
+                run_id="instrument-smoke",
+                carrier_type=self.carrier_type,
+            )
+            handle = self.carrier.submit_task(
+                instance, TaskSpec(prompt="instrumentor smoke probe")
+            )
+            return self.carrier.collect(handle, 60.0)
+        except Exception:  # noqa: BLE001 - smoke must degrade, not crash
+            return TaskResult(task_complete=False)
+        finally:
+            if instance is not None:
+                try:
+                    self.carrier.destroy(instance)
+                except Exception:  # noqa: BLE001
+                    pass
+
+    def _record_instrumentation(
+        self, batch_id: str, config_version_id: str, report: Any
+    ) -> None:
+        """B-2: persist the CoverageReport to instrumentation_reports.
+
+        Best effort — a DB failure only logs a warning."""
+        if self.session_factory is None:
+            return
+        try:
+            import uuid
+
+            from rsi.db.tables import InstrumentationReport
+
+            plan_summary = {
+                "carrier": self.carrier_type,
+                "config_version_id": config_version_id,
+                "covered": report.model_dump(mode="json")["covered"],
+            }
+            with self.session_factory() as session:
+                session.add(
+                    InstrumentationReport(
+                        id=str(uuid.uuid4()),
+                        batch_id=batch_id,
+                        plan_json=json.dumps(plan_summary, ensure_ascii=False),
+                        coverage_json=report.model_dump_json(),
+                        created_at=_utcnow_iso(),
+                    )
+                )
+                session.commit()
+        except Exception as exc:  # noqa: BLE001 - report write must not fail runs
+            logger.warning(
+                "instrumentation_report.persist_failed",
+                batch_id=batch_id,
+                error=str(exc),
+            )
 
     @staticmethod
     def _batch_purpose(batch_id: str) -> str:

@@ -191,7 +191,8 @@ class TestInstrumentation:
         assert resp.status_code == 200
         cov = resp.json()
         assert cov["batch_id"] == "b-1"
-        assert "pct" in cov and "files" in cov
+        # B-13: DD-06 CoverageReport shape
+        assert "covered" in cov and "not_instrumentable" in cov
 
     async def test_coverage_404(self, client):
         h = await res_headers(client)

@@ -219,6 +219,8 @@ def build_services(
     backends: dict[str, Any] = {"fake": FakeSandboxBackend()}
     for name in settings.sandbox.backends:
         backends.setdefault(name, FakeSandboxBackend())
+    from rsi.sandbox.readiness import ReadinessChecker
+
     sandbox_service = SandboxService(
         backends=backends,
         labs_dir=settings.labs_dir,
@@ -226,6 +228,8 @@ def build_services(
         scheduler=LabScheduler(backends),
         settings=settings,
         ssh_pool=ssh_pool,
+        session_factory=session_factory,
+        readiness_checker=ReadinessChecker(pool=ssh_pool),
     )
 
     # -- Decision / Optimizer ---------------------------------------------
@@ -249,6 +253,10 @@ def build_services(
         global_limit=settings.orchestrator.budget.global_.max_tokens,
         event_bus=event_bus,
     )
+    # B-1: Instrumentor facade — run_batch instruments exported config
+    # versions (scan -> plan -> inject -> smoke verify) before create_instance.
+    from rsi.instrumentor.facade import Instrumentor
+
     batch_runner = BatchRunner(
         sandbox=sandbox_service,
         carrier=host_service,
@@ -261,6 +269,9 @@ def build_services(
         stats_agg=stats_agg,
         settings=settings,
         credential_resolver=credential_resolver,
+        instrumentor=Instrumentor(),
+        session_factory=session_factory,
+        carrier_type="opencode",
     )
     iteration_engine = IterationEngine(
         batch_runner=batch_runner,

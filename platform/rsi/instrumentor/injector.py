@@ -55,13 +55,17 @@ class Injector:
 
     @staticmethod
     def _init_sink(overlay_dir: Path) -> None:
-        """Create the trace sink and write one bootstrap event so the smoke
-        verifier can confirm the instrumented side produces events (P0 offline)."""
+        """Create the trace sink and write one bootstrap marker event.
+
+        B-12: the marker uses the dedicated ``instrumentation_applied`` event
+        type — the smoke verifier only credits real ``tool_call``/
+        ``tool_result`` events, so this bootstrap line can never satisfy the
+        events-produced criterion on its own."""
         sink = overlay_dir / "trace" / "events.ndjson"
         sink.parent.mkdir(parents=True, exist_ok=True)
         event = {
             "run_id": "instrumentor",
-            "event_type": "tool_call",
+            "event_type": "instrumentation_applied",
             "data": {"bootstrap": "instrumentation applied"},
         }
         with sink.open("a", encoding="utf-8") as fh:

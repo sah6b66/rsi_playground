@@ -319,17 +319,35 @@ async def sut_lineage(
 @router.get("/{sut_id}/verify-image")
 async def verify_image(
     sut_id: str,
+    request: Request,
     user: Claims = Depends(require_perms("sut:manage")),
     store: dict = Depends(get_store("suts")),
 ) -> JSONResponse:
-    """镜像验证（G5）。载体检查器待 S11 实现——路由先按 §9.2 立起，返回 501。"""
-    _get(store, sut_id)
+    """镜像验证（G5 / DD-05 §4）。
+
+    B-5: routed to HostService.verify_image when a host service is present in
+    the DI container; without one (bare test apps) the 501 placeholder stays.
+    """
+    sut = _get(store, sut_id)
+    host_service = request.app.state.services.get("host_service")
+    if host_service is None or not hasattr(host_service, "verify_image"):
+        return JSONResponse(
+            status_code=501,
+            content={
+                "code": "NOT_IMPLEMENTED",
+                "message": "verify-image 待 S11 载体镜像检查（docker inspect + run --version）实现",
+                "detail": {"sut_id": sut_id},
+            },
+        )
+    image_ref = str(sut.get("image_ref") or sut.get("image") or sut_id)
+    check = await host_service.verify_image(image_ref)
     return JSONResponse(
-        status_code=501,
+        status_code=200,
         content={
-            "code": "NOT_IMPLEMENTED",
-            "message": "verify-image 待 S11 载体镜像检查（docker inspect + run --version）实现",
-            "detail": {"sut_id": sut_id},
+            "ok": check.ok,
+            "image_ref": check.image_ref,
+            "checks": check.checks,
+            "detail": check.detail,
         },
     )
 

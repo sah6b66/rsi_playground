@@ -183,7 +183,17 @@ class TestReport:
 
 
 class TestInstrumentorFacade:
-    def _smoke(self, config_dir: Path) -> TaskResult:
+    @staticmethod
+    def _smoke(config_dir: Path) -> TaskResult:
+        # B-12: emit a real tool event from the instrumented side so the
+        # events-produced criterion is satisfied by genuine tool traffic.
+        if (config_dir / "overlay.json").exists():
+            sink = config_dir / "trace" / "events.ndjson"
+            sink.parent.mkdir(parents=True, exist_ok=True)
+            sink.write_text(
+                '{"event_type": "tool_call", "data": {"tool": "netmiko"}}\n',
+                encoding="utf-8",
+            )
         return _ok()
 
     def test_pipeline(self, config_dir: Path):
