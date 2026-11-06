@@ -1,0 +1,5 @@
+# T3-A residual (audit3): the judge frozen domain must hash identically on
+# every platform — force LF for rules and prompts so Windows checkouts do
+# not CRLF-mangle the freeze-verified bytes.
+platform/rsi/judge/rules/** text eol=lf
+platform/rsi/judge/prompts/** text eol=lf

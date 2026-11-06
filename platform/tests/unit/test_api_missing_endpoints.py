@@ -384,6 +384,18 @@ class TestCredentials:
 
     async def test_rotate_204_and_unknown_404(self, client):
         h = await h_admin(client)
+        # N-8 (audit3): rotate requires a credential_store service; without
+        # one it used to silently no-op and still return 204.
+        rotated: list[tuple[str, str]] = []
+
+        class FakeCredStore:
+            def put(self, name, kind, secret):
+                return f"cs-{name}"
+
+            def rotate(self, cred_id, new_secret):
+                rotated.append((cred_id, new_secret))
+
+        client._transport.app.state.services["credential_store"] = FakeCredStore()
         cred = (
             await client.post(
                 "/api/v1/credentials",
@@ -397,10 +409,29 @@ class TestCredentials:
             headers=h,
         )
         assert resp.status_code == 204
+        assert rotated == [(cred["id"], "s2")]
         resp = await client.post(
             "/api/v1/credentials/zz:rotate", json={"secret": "s"}, headers=h
         )
         assert resp.status_code == 404
+
+    async def test_rotate_without_store_503(self, client):
+        h = await h_admin(client)
+        client._transport.app.state.services.pop("credential_store", None)
+        resp = await client.post(
+            "/api/v1/credentials",
+            json={"name": "n", "kind": "llm_api", "secret": "s1"},
+            headers=h,
+        )
+        assert resp.status_code == 201
+        cred = resp.json()
+        resp = await client.post(
+            f"/api/v1/credentials/{cred['id']}:rotate",
+            json={"secret": "s2"},
+            headers=h,
+        )
+        assert resp.status_code == 503, resp.text
+        assert resp.json()["code"] == "SERVICE_UNAVAILABLE"
 
     async def test_researcher_forbidden_403(self, client):
         h = await h_res(client)

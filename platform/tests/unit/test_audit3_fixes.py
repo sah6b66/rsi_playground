@@ -460,3 +460,132 @@ class TestTriggerIsolation:
             runner.__class__.run_batch = orig_run_batch  # type: ignore
         assert r1.last_run_ids == {"shared-task": "run-batch-aa"}
         assert r2.last_run_ids == {"shared-task": "run-batch-bb"}
+
+
+# ── F-2: instance destroyed on every run_task exit path ──────────────────
+
+
+class _DestroyCountingCarrier:
+    """Wraps HostService.destroy to count calls per instance."""
+
+    def __init__(self, carrier) -> None:
+        self._carrier = carrier
+        self.calls: list[str] = []
+
+    def wrap(self):
+        orig = self._carrier.destroy
+
+        def destroy(instance):
+            self.calls.append(instance.instance_id)
+            return orig(instance)
+
+        self._carrier.destroy = destroy
+
+
+class TestInstanceDestroyAllPaths:
+    async def test_destroy_called_once_on_success(self, tmp_path):
+        from tests.unit.test_batch_runner import Rig, _task, _env
+
+        rig = Rig(tmp_path)
+        counter = _DestroyCountingCarrier(rig.carrier)
+        counter.wrap()
+        await rig.runner.run_batch("batch-1", _env(), [_task()], "cfg-v1", "sut-img")
+        assert len(counter.calls) == 1
+        assert rig.carrier._instances == {}
+
+    async def test_destroy_called_once_on_instance_crashed(self, tmp_path):
+        from rsi.core.models import TaskResult
+        from tests.unit.test_batch_runner import Rig, _task, _env
+
+        rig = Rig(tmp_path)
+        counter = _DestroyCountingCarrier(rig.carrier)
+        counter.wrap()
+        orig_collect = rig.carrier.collect
+        rig.carrier.collect = (
+            lambda handle, timeout: TaskResult(
+                task_complete=False, instance_crashed=True
+            )
+        )
+        try:
+            stats = await rig.runner.run_batch(
+                "batch-1", _env(), [_task()], "cfg-v1", "sut-img"
+            )
+        finally:
+            rig.carrier.collect = orig_collect
+        assert stats.missing == 1  # env_failed verdict, batch survived
+        assert len(counter.calls) == 1
+        assert rig.carrier._instances == {}
+
+    async def test_destroy_called_once_when_judge_raises(self, tmp_path):
+        from tests.unit.test_batch_runner import Rig, _task, _env
+
+        rig = Rig(tmp_path)
+        counter = _DestroyCountingCarrier(rig.carrier)
+        counter.wrap()
+
+        async def boom(*a, **kw):
+            raise RuntimeError("judge exploded")
+
+        orig_judge = rig.judge.judge_run
+        rig.judge.judge_run = boom
+        try:
+            with pytest.raises(RuntimeError):
+                await rig.runner.run_batch(
+                    "batch-1", _env(), [_task()], "cfg-v1", "sut-img"
+                )
+        finally:
+            rig.judge.judge_run = orig_judge
+        # judge exceptions still propagate (batch aborts), but the instance
+        # handle must not leak.
+        assert len(counter.calls) == 1
+        assert rig.carrier._instances == {}
+
+
+# ── F-3: _LoopRunner bridge timeout covers device read timeout, raises EnvError ──
+
+
+class TestLoopRunnerBridgeTimeout:
+    def test_timeout_raises_enverror_not_builtin(self):
+        from rsi.core.errors import EnvError
+        from rsi.sandbox.service import _LoopRunner
+
+        runner = _LoopRunner(timeout_s=0.05)
+        with pytest.raises(EnvError) as ei:
+            runner.run(asyncio.sleep(5))
+        assert "did not finish" in str(ei.value)
+        assert ei.value.context["timeout_s"] == 0.05
+
+    def test_default_timeout_covers_device_read_timeout(self):
+        # DeviceSession.exec_cli read_timeout defaults to 120s; the bridge
+        # wait must not fire first (F-3).
+        from rsi.sandbox.service import _LoopRunner
+
+        assert _LoopRunner.DEFAULT_TIMEOUT_S >= 120
+
+    async def test_escaped_timeout_degrades_task_not_batch(self, tmp_path):
+        """A bridge timeout surfacing through sandbox.prepare must be caught
+        by run_task's EnvError handling (env_failed verdict, batch continues
+        to the next task instead of dying with a bare TimeoutError)."""
+        from rsi.core.errors import EnvError
+        from rsi.sandbox.service import _LoopRunner
+        from tests.unit.test_batch_runner import Rig, _env, _task
+
+        runner = _LoopRunner(timeout_s=0.05)
+        rig = Rig(tmp_path)
+        orig_prepare = rig.sandbox.prepare
+
+        async def prepare_timeout(lab, task_id, actions):
+            try:
+                # emulate _run_sync bridging a 5s-hung coroutine: raises
+                # EnvError exactly like _LoopRunner.run does on timeout
+                runner.run(asyncio.sleep(5))
+            except EnvError:
+                raise
+            return await orig_prepare(lab, task_id, actions)
+
+        rig.sandbox.prepare = prepare_timeout
+        tasks = [_task(1), _task(2)]
+        stats = await rig.runner.run_batch("batch-1", _env(), tasks, "cfg-v1", "sut-img")
+        assert stats.n == 2
+        assert stats.missing == 2  # both tasks degrade to env_failed
+        assert rig.runner.last_status == "finalized"  # batch reached a terminal state
