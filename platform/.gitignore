@@ -3,3 +3,14 @@ __pycache__/
 *.pyc
 .pytest_cache/
 var/
+
+# Runtime temp artifacts (OverlayBuilder CoW dirs, hook-test scratch)
+overlay-*/
+hookt_*/
+
+# Session work products (audit reports, review packages)
+.audit*/
+.branch-review.txt
+.review-*.diff
+.f*-report.md
+.r*-report.md
