@@ -8,6 +8,11 @@ var/
 overlay-*/
 hookt_*/
 
+# Runtime SQLite database
+platform.db
+platform.db-shm
+platform.db-wal
+
 # Session work products (audit reports, review packages)
 .audit*/
 .branch-review.txt
