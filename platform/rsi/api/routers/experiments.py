@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 
 from rsi.api.deps import get_current_user, get_store
@@ -83,3 +84,39 @@ async def compare_experiment(
         if a.get(k) != b.get(k)
     }
     return CompareOut(experiment_id=experiment_id, a=a, b=b, diff=diff)
+
+
+@router.get("/{experiment_id}/sft-report")
+async def sft_report(
+    experiment_id: str,
+    request: Request,
+    user: Claims = Depends(get_current_user),
+    store: dict = Depends(get_store("experiments")),
+) -> Response:
+    """SFT 评估报告查看（FR6.9）→ text/markdown。
+
+    输入取实验记录的 ``defect_b_clusters`` / ``opt_history`` /
+    ``failed_sample_count``（文档未定义字段来源，实现取实验记录直存）；
+    调 SftAssessor 生成建议，未达准入条件时输出“无建议”报告。
+    """
+    exp = _get(store, experiment_id)
+    assessor = request.app.state.services.get("sft_assessor")
+    suggestion = None
+    if assessor is not None:
+        suggestion = assessor.assess(
+            exp.get("defect_b_clusters", []),
+            exp.get("opt_history", []),
+            int(exp.get("failed_sample_count", 0)),
+            # f) owner id so the report file lands under the right owner dir
+            # (DD-11 §7④) instead of a shared default.
+            exp_id=experiment_id,
+        )
+    lines = [f"# SFT 评估报告 — {experiment_id}", ""]
+    if suggestion is None:
+        lines.append("未达到 SFT/DPO 准入条件，无建议（FR6.9：只建议，不执行）。")
+    else:
+        lines.append("## 建议")
+        lines.append("```json")
+        lines.append(json.dumps(suggestion, ensure_ascii=False, indent=2))
+        lines.append("```")
+    return Response(content="\n".join(lines), media_type="text/markdown")

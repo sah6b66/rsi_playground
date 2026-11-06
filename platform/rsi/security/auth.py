@@ -33,12 +33,27 @@ class Claims(BaseModel):
 
 
 class AuthService:
-    """Password hashing plus JWT issue/verify."""
+    """Password hashing plus JWT issue/verify.
 
-    def __init__(self, secret: str, expire_hours: float = 12.0) -> None:
+    Optional ``session_factory`` (returns a context-managed SQLModel Session)
+    enables per-request disabled checks against the live ``users`` table
+    (DD-03 §4.1, ADR-19); without it the in-memory ``users_store`` dict is
+    the only source. Optional ``audit_log`` records successful logins as
+    ``user.login`` audit entries.
+    """
+
+    def __init__(
+        self,
+        secret: str,
+        expire_hours: float = 12.0,
+        session_factory=None,
+        audit_log=None,
+    ) -> None:
         self._secret = secret
         self._expire_seconds = int(timedelta(hours=expire_hours).total_seconds())
         self._hasher = PasswordHasher()
+        self._session_factory = session_factory
+        self._audit_log = audit_log
 
     # -- passwords ---------------------------------------------------------
 
@@ -76,6 +91,17 @@ class AuthService:
             jti=str(uuid.uuid4()),
         )
         token = jwt.encode(claims.model_dump(), self._secret, algorithm=_ALGORITHM)
+        if self._audit_log is not None:
+            try:
+                self._audit_log.record(
+                    actor=user_id,
+                    action="user.login",
+                    object_type="user",
+                    object_id=user_id,
+                    detail={"role": role},
+                )
+            except Exception:  # noqa: BLE001 - audit must not break login
+                pass
         return token, claims
 
     def verify(self, token: str) -> Claims:
@@ -101,12 +127,48 @@ class AuthService:
         user is not found, or the account is disabled (DD-03 §4, ADR-19).
         """
         claims = self.verify(token)
+        # DB-first disabled check: a users.disabled change in the DB must
+        # take effect immediately, even when the in-memory dict is stale.
+        db_username: str | None = None
+        if self._session_factory is not None:
+            try:
+                db_username, disabled = self._db_disabled(claims.sub)
+            except Exception:  # noqa: BLE001 - DB hiccup -> memory fallback
+                db_username, disabled = None, None
+            if disabled is True:
+                raise AuthError("Account disabled")
+            if db_username is not None:
+                return {
+                    "id": claims.sub,
+                    "username": db_username,
+                    "role": claims.role,
+                }
         user = users_store.get(claims.sub)
         if user is None:
             raise AuthError("User not found")
         if user.get("disabled", False):
             raise AuthError("Account disabled")
         return {"id": claims.sub, "username": user["username"], "role": claims.role}
+
+    def _db_disabled(self, user_key: str) -> tuple[str | None, bool | None]:
+        """Query users by username then id; return (username, disabled).
+
+        Returns ``(None, None)`` when the user is not in the DB at all so the
+        caller can fall back to the in-memory store (mixed-mode rigs).
+        """
+        from sqlmodel import select
+
+        from rsi.db.tables import User
+
+        with self._session_factory() as session:  # type: ignore[misc]
+            row = session.exec(
+                select(User).where(User.username == user_key)
+            ).first()
+            if row is None:
+                row = session.get(User, user_key)
+            if row is None:
+                return None, None
+            return row.username, bool(row.disabled)
 
 
 __all__ = ["AuthService", "Claims"]

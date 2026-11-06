@@ -28,9 +28,11 @@ from pydantic import BaseModel, ValidationError
 
 from rsi.core.errors import LLMOutputInvalid
 from rsi.core.models import LLMResponse, LLMUsage
+from rsi.llm.cassette import CassetteMissError
 
 if TYPE_CHECKING:
     from rsi.llm.accounting import Accountant
+    from rsi.llm.cassette import CassetteStore
     from rsi.llm.prompts import PromptLibrary
 
 __all__ = ["Component", "LLMClient", "Handler"]
@@ -60,16 +62,40 @@ class LLMClient:
         prompt_version: str = "v1",
         prompt_library: PromptLibrary | None = None,
         accountant: Accountant | None = None,
+        temperature: float = 0.0,
+        cassette: "CassetteStore | None" = None,
+        cassette_name: str = "default",
     ) -> None:
         self._handler: Handler = handler or _default_handler
         self.model = model
         self.prompt_version = prompt_version
+        self.temperature = temperature
         self.prompt_library = prompt_library
         self.accountant = accountant
         self.cassette: dict[str, LLMResponse] = {}
+        self._cassette_store = cassette
+        self._cassette_name = cassette_name
         self._semaphore = asyncio.Semaphore(max_concurrent_calls)
 
     # -- public API ---------------------------------------------------------------
+
+    def prompt_hash(self, component: Component, prompt_name: str) -> str:
+        """Fingerprint of the active prompt+model+temperature (C-1, DD-08 §5.1).
+
+        ``sha256("<component>/<name>@<version>|<model>|<temperature>")`` where
+        the version is the library's active version when a PromptLibrary is
+        attached, else the client's static ``prompt_version``.
+        """
+        version = self.prompt_version
+        if self.prompt_library is not None:
+            v = self.prompt_library.latest_version(component, prompt_name)
+            if v > 0:
+                version = f"v{v}"
+            return self.prompt_library.hash_of(
+                f"{component}/{prompt_name}", self.model, self.temperature
+            )
+        payload = f"{component}/{prompt_name}@{version}|{self.model}|{self.temperature}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     async def complete(
         self,
@@ -82,6 +108,10 @@ class LLMClient:
     ) -> LLMResponse:
         """Render-free completion flow (cassette -> handler -> validate)."""
         key = self._key(component, prompt_name, vars)
+        if self._cassette_store is not None and self._cassette_store.mode == "replay":
+            return self._replay(
+                key, component, prompt_name, schema, run_id, batch_id
+            )
         cached = self.cassette.get(key)
         if cached is not None:
             return cached
@@ -136,28 +166,125 @@ class LLMClient:
         )
         self.cassette[key] = resp
 
-        # usage accounting for budget control (DD-02 §4)
-        if self.accountant is not None:
-            self.accountant.record(
-                component=component,
-                model=self.model,
-                prompt_version=prompt_version,
-                input_tokens=max(len(prompt_text or "") // 4, 1),
-                output_tokens=max(len(raw or "") // 4, 1),
-                latency_ms=latency_ms,
-                run_id=run_id,
-                batch_id=batch_id,
+        # C-4: record mode persists the call to the cassette file (DD-02 §4).
+        if self._cassette_store is not None and self._cassette_store.mode == "record":
+            self._cassette_store.append(
+                self._cassette_name,
+                {
+                    "key": key,
+                    "component": component,
+                    "prompt_name": prompt_name,
+                    "model": self.model,
+                    "prompt_version": prompt_version,
+                    "content": raw or "",
+                    "input_tokens": max(len(prompt_text or "") // 4, 1),
+                    "output_tokens": max(len(raw or "") // 4, 1),
+                    "latency_ms": latency_ms,
+                },
             )
+
+        # usage accounting for budget control (DD-02 §4)
+        self._account(
+            component,
+            prompt_version,
+            self.model,
+            len(prompt_text or "") // 4,
+            len(raw or "") // 4,
+            latency_ms,
+            run_id,
+            batch_id,
+        )
         return resp
 
     # -- internals ------------------------------------------------------------------
 
-    @staticmethod
-    def _key(component: str, prompt_name: str, vars: dict[str, str]) -> str:
+    def _account(
+        self,
+        component: str,
+        prompt_version: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        latency_ms: int,
+        run_id: str | None,
+        batch_id: str | None,
+    ) -> None:
+        """Account one call (real or replayed) through the Accountant."""
+        if self.accountant is None:
+            return
+        self.accountant.record(
+            component=component,
+            model=model,
+            prompt_version=prompt_version,
+            input_tokens=max(input_tokens, 1),
+            output_tokens=max(output_tokens, 1),
+            latency_ms=latency_ms,
+            run_id=run_id,
+            batch_id=batch_id,
+        )
+
+    def _replay(
+        self,
+        key: str,
+        component: Component,
+        prompt_name: str,
+        schema: type[BaseModel] | None,
+        run_id: str | None,
+        batch_id: str | None,
+    ) -> LLMResponse:
+        """Cassette replay path (ADR-7): hit -> respond + account; miss -> raise."""
+        record = self._cassette_store.find(self._cassette_name, key)
+        if record is None:
+            raise CassetteMissError(
+                f"cassette {self._cassette_name!r} has no record for "
+                f"component {component!r} prompt {prompt_name!r}",
+                context={"component": component, "prompt_name": prompt_name},
+            )
+        parsed: Any | None = None
+        if schema is not None:
+            parsed, _err = self._validate(str(record.get("content", "")), schema)
+        resp = LLMResponse(
+            content=str(record.get("content", "")),
+            parsed=parsed,
+            usage=LLMUsage(
+                input_tokens=int(record.get("input_tokens", 0) or 0),
+                output_tokens=int(record.get("output_tokens", 0) or 0),
+            ),
+            model=str(record.get("model", self.model)),
+            prompt_version=str(record.get("prompt_version", self.prompt_version)),
+        )
+        # DD-02 §5.1 note: replayed hits are still accounted so the budget
+        # view stays consistent (fixes the "hit without accounting" gap).
+        self._account(
+            component,
+            resp.prompt_version,
+            resp.model,
+            resp.usage.input_tokens,
+            resp.usage.output_tokens,
+            int(record.get("latency_ms", 0) or 0),
+            run_id,
+            batch_id,
+        )
+        return resp
+
+    # -- internals ------------------------------------------------------------------
+
+    def _key(self, component: str, prompt_name: str, vars: dict[str, str]) -> str:
+        """Cassette/cache key: component + prompt_name + prompt fingerprint
+        + canonical vars (R2-H3).
+
+        The active prompt fingerprint (``prompt_hash``) is part of the key so
+        a changed prompt version (e.g. a new ``.v2`` template) can never
+        replay a response recorded under the old prompt, even when the
+        request vars are identical.
+        """
         canonical = json.dumps(
             {k: vars[k] for k in sorted(vars)}, ensure_ascii=False, sort_keys=True
         )
-        payload = f"{component}\x00{prompt_name}\x00{canonical}"
+        payload = (
+            f"{component}\x00{prompt_name}\x00"
+            f"{self.prompt_hash(component, prompt_name)}\x00{canonical}"
+        )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     @staticmethod

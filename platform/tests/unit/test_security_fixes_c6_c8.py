@@ -40,8 +40,11 @@ class TestPreReceiveHook:
         assert "refs/tags/suts/*/baseline/*" in content
         assert "refs/tags/evalsets/*/freeze/*" in content
         assert "Cannot modify protected tag" in content
+        # Rule 2 (A-1): tag DELETION must be rejected before the deletion skip
+        assert "Cannot delete protected tag" in content
         # Rule 3: frozen evalsets protected from optimizer identity
         assert "evalsets/" in content
+        assert "git tag -l 'evalsets/*/freeze/*'" in content
 
     def test_gitstore_init_installs_hook(self, tmp_path):
         import git

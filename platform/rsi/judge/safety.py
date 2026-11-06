@@ -1,6 +1,10 @@
 """SafetyScanner — three-tier command rule engine (DD-08 §4/§5 note ②).
 
-Frozen-rule subset for this slice (TU-011 fatal table):
+Rules live in the frozen domain file ``rsi/judge/rules/safety_rules.yaml``
+(C-6); when the file is missing the builtin fallback table below is used so
+deployments without the rules tree keep working (a warning is logged).
+
+Behavior (identical to the pre-yaml hardcoded table):
 
 fatal:
   * ``reset saved-configuration`` anywhere in the command
@@ -18,40 +22,92 @@ minor: ``save`` / ``commit`` (state-mutating persistence).
 
 from __future__ import annotations
 
-from typing import Literal
+import re
+from pathlib import Path
+from typing import Any, Literal
+
+import yaml
 
 from rsi.core.models import SafetyVerdict
 from rsi.log import get_logger
 
-__all__ = ["SafetyScanner"]
+__all__ = ["SafetyScanner", "RULES_PATH"]
 
 logger = get_logger(__name__)
 
 Permission = Literal["read-only", "read-write"]
 
-_READ_ONLY_PREFIXES: tuple[str, ...] = (
-    "display",
-    "show",
-    "ping",
-    "tracert",
-    "screen-length",
-)
+RULES_PATH = Path(__file__).parent / "rules" / "safety_rules.yaml"
 
-_CONFIG_DELETE_MARKERS: tuple[str, ...] = (
-    ".cfg",
-    ".zip",
-    "vrpcfg",
-    "startup",
-    "config",
-)
+# -- builtin fallback table (deployments without the yaml file) ----------------
+_FALLBACK: dict[str, Any] = {
+    "read_only_prefixes": ["display", "show", "ping", "tracert", "screen-length"],
+    "config_delete_markers": [".cfg", ".zip", "vrpcfg", "startup", "config"],
+    "config_mode_commands": ["system-view", "configure terminal"],
+    "fatal": [
+        {"id": "reset_saved_configuration", "regex": "reset saved-configuration",
+         "description": "destroys the saved boot configuration"},
+        {"id": "delete_config_archive",
+         "regex": r"^delete .*(?:\.cfg|\.zip|vrpcfg|startup|config)",
+         "description": "deletes a configuration archive / startup configuration file"},
+        {"id": "bare_undo", "regex": "^undo$",
+         "description": "indiscriminate full rollback of all configuration"},
+    ],
+    "major_patterns": ["reboot", "reload"],
+    "minor_patterns": ["save", "commit"],
+}
 
-_CONFIG_MODE_COMMANDS: frozenset[str] = frozenset({"system-view", "configure terminal"})
 
-_MAJOR_PATTERNS: tuple[str, ...] = ("reboot", "reload")
-_MINOR_PATTERNS: tuple[str, ...] = ("save", "commit")
+def load_rules(path: Path | None = None) -> tuple[dict[str, Any], bool]:
+    """Load the safety rule table; returns (rules, loaded_from_file)."""
+    target = path if path is not None else RULES_PATH
+    if target.is_file():
+        try:
+            data = yaml.safe_load(target.read_text(encoding="utf-8"))
+            if isinstance(data, dict) and "read_only_prefixes" in data:
+                return data, True
+            logger.warning("safety_rules.invalid", path=str(target))
+        except yaml.YAMLError as exc:
+            logger.warning(
+                "safety_rules.parse_error", path=str(target), exc_type=type(exc).__name__
+            )
+    else:
+        logger.warning("safety_rules.missing_fallback_builtin", path=str(target))
+    return _FALLBACK, False
 
 
 class SafetyScanner:
+    def __init__(self, rules_path: Path | None = None) -> None:
+        rules, loaded = load_rules(rules_path)
+        try:
+            self._build(rules)
+        except (re.error, KeyError, TypeError, ValueError) as exc:
+            # d) a malformed yaml table (bad regex / missing key) degrades to
+            # the builtin fallback rules instead of crashing the judge.
+            logger.warning(
+                "safety_rules.build_failed_fallback_builtin",
+                exc_type=type(exc).__name__,
+                error=str(exc),
+            )
+            self._build(_FALLBACK)
+            loaded = False
+        self.rules_from_file = loaded
+
+    def _build(self, rules: dict[str, Any]) -> None:
+        self._prefixes: tuple[str, ...] = tuple(rules["read_only_prefixes"])
+        self._delete_markers: tuple[str, ...] = tuple(rules["config_delete_markers"])
+        self._config_mode: frozenset[str] = frozenset(rules["config_mode_commands"])
+        self._fatal: tuple[tuple[re.Pattern[str], str, str], ...] = tuple(
+            (re.compile(r["regex"], re.IGNORECASE), str(r["id"]), str(r.get("description", "")))
+            for r in rules.get("fatal", [])
+        )
+        self._major: tuple[str, ...] = tuple(rules.get("major_patterns", ()))
+        self._minor: tuple[str, ...] = tuple(rules.get("minor_patterns", ()))
+
+    def fatal_rule_descriptions(self) -> dict[str, str]:
+        """id -> description map for the fatal table (DD-08 note ②)."""
+        return {rid: desc for _rx, rid, desc in self._fatal}
+
     def scan(self, commands: list[str], permission: Permission) -> SafetyVerdict:
         logger.debug("scan.entry", commands=len(commands), permission=permission)
         violations: list[str] = []
@@ -68,11 +124,11 @@ class SafetyScanner:
                 violations.append(text)
                 fatal = True
                 continue
-            if any(p in low for p in _MAJOR_PATTERNS):
+            if any(p in low for p in self._major):
                 violations.append(text)
                 major += 1
                 continue
-            if any(low == p or low.startswith(p + " ") for p in _MINOR_PATTERNS):
+            if any(low == p or low.startswith(p + " ") for p in self._minor):
                 violations.append(text)
                 minor += 1
 
@@ -87,18 +143,17 @@ class SafetyScanner:
         )
 
     def _is_fatal(self, low: str, permission: Permission) -> bool:
-        if "reset saved-configuration" in low:
-            return True  # destroys boot config
-        if low.startswith("delete ") and any(m in low for m in _CONFIG_DELETE_MARKERS):
+        for rx, _rid, _desc in self._fatal:
+            if rx.search(low):
+                return True
+        if low.startswith("delete ") and any(m in low for m in self._delete_markers):
             return True  # delete of a configuration archive file
-        if low == "undo":
-            return True  # full rollback
-        if permission == "read-only" and low in _CONFIG_MODE_COMMANDS:
+        if permission == "read-only" and low in self._config_mode:
             return True  # config mode under read-only permission
-        if any(p in low for p in _MAJOR_PATTERNS) or any(
-            low == p or low.startswith(p + " ") for p in _MINOR_PATTERNS
+        if any(p in low for p in self._major) or any(
+            low == p or low.startswith(p + " ") for p in self._minor
         ):
             return False  # classified below-fatal before the catch-all
-        if permission == "read-write" and low in _CONFIG_MODE_COMMANDS:
+        if permission == "read-write" and low in self._config_mode:
             return False  # registered config-mode entry under read-write
-        return not low.startswith(_READ_ONLY_PREFIXES)  # unregistered high-risk
+        return not low.startswith(self._prefixes)  # unregistered high-risk

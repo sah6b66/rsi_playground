@@ -142,7 +142,8 @@ async def list_batch_runs(
     )
 
 
-def _transition(batch: dict, action: str) -> dict:
+def _transition(batch: dict, action: str) -> None:
+    """Guard: raise when the batch is in a terminal state."""
     status = BatchStatus(batch["status"])
     if status in _TERMINAL:
         raise InvalidTransitionError(
@@ -199,3 +200,95 @@ async def abort_batch(
     batch["status"] = BatchStatus.ABORTED.value
     batch["paused"] = False
     return BatchOut(**batch)
+
+
+# ── 列表 + :rerun（interfaces §9.6，FR9.1 重测）──────────────────────────
+
+class BatchPage(BaseModel):
+    items: list[BatchOut]
+    next_cursor: str | None = None
+    has_more: bool = False
+
+
+class RerunBody(BaseModel):
+    scope: Literal["failed", "all"] = "failed"
+    bypass_cache: bool = True
+
+
+@router.get("", response_model=BatchPage)
+async def list_batches(
+    response: Response,
+    sut_id: str | None = None,
+    status: str | None = None,
+    cursor: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+    user: Claims = Depends(get_current_user),
+    store: dict = Depends(get_store("batches")),
+) -> BatchPage:
+    """批次列表（?sut_id=&status= 过滤，游标分页）。"""
+    items = list(store.values())
+    if sut_id is not None:
+        items = [b for b in items if b["sut_id"] == sut_id]
+    if status is not None:
+        items = [b for b in items if b["status"] == status]
+    page_items, page = paginate(items, cursor, limit)
+    response.headers["x-pagination"] = json.dumps(page)
+    return BatchPage(
+        items=[BatchOut(**b) for b in page_items],
+        next_cursor=page["next_cursor"],
+        has_more=page["has_more"],
+    )
+
+
+@router.post("/{batch_id}:rerun", status_code=204)
+@audit.audited("batch.rerun", object_type="batch")
+async def rerun_batch(
+    batch_id: str,
+    body: RerunBody,
+    request: Request,
+    user: Claims = Depends(require_perms("batch:trigger")),
+    store: dict = Depends(get_store("batches")),
+) -> Response:
+    """重测（FR9.1）：构造 purpose=rerun 的新批次并以 bypass_cache 重跑 → 204。
+
+    批次仍在 created/running（无可重测对象）→ 409。BatchRunner 的缓存旁路
+    改造属 F4 批次；此处把 ``bypass_cache``/``rerun_scope`` 写入批次记录并
+    传递给 runner（若其 trigger/run_batch 签名支持）。
+    """
+    batch = _get(store, batch_id)
+    if batch["status"] in (BatchStatus.CREATED.value, BatchStatus.RUNNING.value):
+        raise InvalidTransitionError(
+            f"batch {batch_id!r} is {batch['status']} (nothing to rerun)",
+            context={"batch_id": batch_id, "from_state": batch["status"]},
+        )
+    rerun = {
+        "id": f"batch-{uuid.uuid4().hex[:8]}",
+        "evalset_id": batch["evalset_id"],
+        "sut_id": batch["sut_id"],
+        "purpose": batch["purpose"],
+        "profile_id": batch.get("profile_id"),
+        "status": BatchStatus.CREATED.value,
+        "paused": False,
+        "progress": {"done": 0, "total": 0},
+        "params": {
+            **dict(batch.get("params", {})),
+            "rerun_of": batch_id,
+            "rerun_scope": body.scope,
+            "bypass_cache": True,
+        },
+        "created_at": _now(),
+    }
+    runner = request.app.state.services.get("batch_runner")
+    if runner is not None:
+        # D-4: bypass is per-call — a rerun batch skips cache reads AND
+        # writes without flipping the sticky runner-level default (which
+        # would silently disable cache hits for every later batch).
+        trigger = getattr(runner, "trigger", None)
+        if trigger is not None:
+            try:
+                trigger(rerun, bypass_cache=body.bypass_cache)
+            except TypeError:
+                # legacy runner trigger() without the per-call bypass kwarg
+                trigger(rerun)
+    store[rerun["id"]] = rerun
+    return Response(status_code=204)

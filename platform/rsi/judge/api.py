@@ -47,6 +47,7 @@ class JudgeService:
         antihack: "AntiHackDetector",
         agg: "VerdictAggregator",
         session_factory: 'Callable[["Session"]] | None' = None,
+        prompt_hash_fn: Callable[[], str] | None = None,
     ) -> None:
         self._det = det
         self._safety = safety
@@ -54,6 +55,9 @@ class JudgeService:
         self._antihack = antihack
         self._agg = agg
         self._session_factory = session_factory
+        # C-1: fingerprint of the judge prompt actually used for this run
+        # (sha256(prompt version + model + temperature), DD-08 §5.1/§5.4).
+        self._prompt_hash_fn = prompt_hash_fn
 
     async def judge_run(
         self,
@@ -66,13 +70,23 @@ class JudgeService:
         *,
         run_status: "RunStatus | str | None" = None,
         efficiency: Efficiency | None = None,
+        config_version_id: str | None = None,
+        batch_purpose: str | None = None,
     ) -> "Verdict":
+        """Judge one run.
+
+        ``config_version_id`` / ``batch_purpose`` (T2-5) give the LLM judge
+        the evaluation context so it can tell baseline from candidate
+        configurations; both default to None for backward compatibility.
+        """
         logger.debug(
             "judge_run.entry",
             task=task.task.title,
             events=len(events),
             permission=permission,
             run_status=str(run_status) if run_status is not None else None,
+            config_version_id=config_version_id,
+            batch_purpose=batch_purpose,
         )
         commands = self._extract_commands(events)
 
@@ -83,20 +97,31 @@ class JudgeService:
             self._det.evaluate(task, result, lab, sandbox, events),
             safety_scan(),
         )
-        sem = await self._llm.judge(task, result, events)
+        sem = await self._llm.judge(
+            task,
+            result,
+            events,
+            config_version_id=config_version_id,
+            batch_purpose=batch_purpose,
+        )
         sem = self._merge_checklist(sem, det_scores)
         hack = self._antihack.detect(task, events, det_scores, sem, result=result, run_status=run_status)
         eff = efficiency if efficiency is not None else self._efficiency(events)
         missing = self._missing(result, run_status)
         verdict = self._agg.aggregate(det_scores, safety_verdict, sem, hack, eff, missing)
-        self._persist_judgment(
-            run_id=events[0].run_id if events else "",
-            verdict=verdict,
-            det_scores=det_scores,
-            safety_verdict=safety_verdict,
-            sem=sem,
-            hack=hack,
-        )
+        if not events:
+            # C-7: an empty event list has no run identity — persisting would
+            # write a run_id="" junk row, so skip (with a warning) instead.
+            logger.warning("judge_run.skip_persist_no_events", task=task.task.title)
+        else:
+            self._persist_judgment(
+                run_id=events[0].run_id,
+                verdict=verdict,
+                det_scores=det_scores,
+                safety_verdict=safety_verdict,
+                sem=sem,
+                hack=hack,
+            )
         logger.debug(
             "judge_run.exit",
             task_complete=verdict.scores.task_complete,
@@ -128,6 +153,7 @@ class JudgeService:
                 safety_json=_j(safety_verdict),
                 llm_json=_j(sem),
                 verdict_json=verdict.model_dump_json(),
+                judge_prompt_hash=self._prompt_hash_fn() if self._prompt_hash_fn else None,
                 created_at=datetime.now(timezone.utc).isoformat(),
             )
             with self._session_factory() as session:

@@ -17,6 +17,7 @@ from typing import NamedTuple
 from pydantic import BaseModel, Field
 
 from rsi.core.models import SshAccess
+from rsi.log import get_logger
 from rsi.sandbox.vendor import VENDOR_MAP, VendorProfile
 
 __all__ = [
@@ -26,6 +27,8 @@ __all__ = [
     "SessionKey",
     "SshPool",
 ]
+
+logger = get_logger(__name__)
 
 
 class SessionKey(NamedTuple):
@@ -105,6 +108,12 @@ class DeviceSession(ABC):
     async def close(self) -> None:
         await self._close()
 
+    def is_alive(self) -> bool:
+        """Liveness probe (B-4, DD §4.2). Base implementation assumes the
+        session is healthy; real transports override with transport-level
+        keepalive/flag checks."""
+        return True
+
     @property
     def _capture_cmd(self) -> str:
         if self.vendor.netmiko_device_type == "huawei":
@@ -155,10 +164,21 @@ class SshPool:
     async def device(
         self, key: SessionKey, access: SshAccess, vendor: str
     ) -> DeviceSession:
-        """Reuse the live session for this endpoint or create a new one."""
+        """Reuse the live session for this endpoint or create a new one.
+
+        B-4 (DD §4.2): a pooled hit is only reused while ``is_alive()``;
+        a dead session is closed and replaced with a fresh one.
+        """
         existing = self._sessions.get((key.ip, key.port))
-        if existing is not None:
+        if existing is not None and existing.is_alive():
             return existing
+        if existing is not None:
+            logger.debug("ssh_pool.session_dead", ip=key.ip, port=key.port)
+            del self._sessions[(key.ip, key.port)]
+            try:
+                await existing.close()
+            except Exception:  # noqa: BLE001 - dead session close is best-effort
+                pass
         profile = VENDOR_MAP[vendor]
         session = (
             self._factory(key, profile)

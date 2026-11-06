@@ -192,15 +192,17 @@ def test_rule3_uncalibrated_zero_delta_any_nonpositive_reverts() -> None:
 
 
 def test_rule4_cost_penalty_reject() -> None:
-    # gain above noise (1.0 - 0.8 - 0.05 = 0.15) but below cost penalty 0.2
+    # D-7 relative cost: gain above noise (1.0 - 0.8 - 0.05 = 0.15) but the
+    # candidate doubles tokens -> relative cost 1.0 -> threshold 0.2 -> reject
     ctx = _ctx(
-        base_stats=_stats(metrics={"root_cause_accuracy": 0.8}),
-        cand_stats=_stats(metrics={"root_cause_accuracy": 1.0}),
+        base_stats=_stats(metrics={"root_cause_accuracy": 0.8}, tokens=400),
+        cand_stats=_stats(metrics={"root_cause_accuracy": 1.0}, tokens=800),
         cost={"cost_penalty": 0.2},
     )
     d = RegularizedSelector().decide(ctx)
     assert d.action == "REJECT"
     assert d.rule_hit == 4
+    assert d.evidence["relative_cost"] == pytest.approx(1.0)
 
 
 def test_rule5_significant_promote() -> None:
@@ -247,3 +249,142 @@ def test_decision_evidence_carries_metrics() -> None:
     assert isinstance(d, Decision)
     assert d.reason
     assert "weighted_score" in d.evidence
+
+
+# ---------------------------------------------------------------------------
+# D-7: weighted composite score / relative cost / significance / guard switches
+# ---------------------------------------------------------------------------
+
+
+def test_composite_score_mixed_directions_with_metric_noise() -> None:
+    # two goals: rca (max) improves 0.1 with sigma 0.05 -> +2.0;
+    # wall_time_s (min) worsens 0.2 with sigma 0.1 -> -2.0
+    base = _stats(metrics={"root_cause_accuracy": 0.8, "wall_time_s": 1.0})
+    cand = _stats(metrics={"root_cause_accuracy": 0.9, "wall_time_s": 1.2})
+    ctx = _ctx(
+        base_stats=base,
+        cand_stats=cand,
+        noise_delta=0.5,
+        goals=[
+            Goal(metric="root_cause_accuracy", direction="max", weight=1.0),
+            Goal(metric="wall_time_s", direction="min", weight=1.0),
+        ],
+        metric_noise={"root_cause_accuracy": 0.05, "wall_time_s": 0.1},
+        cost={"cost_penalty": 0.0},
+    )
+    d = RegularizedSelector().decide(ctx)
+    # S = 1*(0.1/0.05) + 1*(-0.2/0.1) = 0.0 <= delta 0.5 -> REVERT (rule 3)
+    assert d.action == "REVERT"
+    assert d.rule_hit == 3
+    assert d.evidence["weighted_score"] == pytest.approx(0.0)
+
+
+def test_composite_score_noise_normalization_changes_outcome() -> None:
+    # same deltas, larger sigma -> smaller normalized score falls inside band
+    base = _stats(metrics={"root_cause_accuracy": 0.8})
+    cand = _stats(metrics={"root_cause_accuracy": 0.9})
+    ctx = _ctx(
+        base_stats=base,
+        cand_stats=cand,
+        noise_delta=0.5,  # band applies to the normalized score
+        metric_noise={"root_cause_accuracy": 0.1},  # 0.1/0.1 = 1.0 > 0.5
+        cost={"cost_penalty": 0.0},
+    )
+    assert RegularizedSelector().decide(ctx).action == "PROMOTE"
+
+    ctx_tight = _ctx(
+        base_stats=base,
+        cand_stats=cand,
+        noise_delta=0.5,
+        metric_noise={"root_cause_accuracy": 0.5},  # 0.1/0.5 = 0.2 <= 0.5
+        cost={"cost_penalty": 0.0},
+    )
+    assert RegularizedSelector().decide(ctx_tight).action == "REVERT"
+
+
+def test_rule4_small_cost_increase_with_big_gain_passes() -> None:
+    # token 微增 (400 -> 404, relative 0.01) + 分数大增 (gain 0.15) -> passes
+    ctx = _ctx(
+        base_stats=_stats(metrics={"root_cause_accuracy": 0.8}, tokens=400),
+        cand_stats=_stats(metrics={"root_cause_accuracy": 1.0}, tokens=404),
+        cost={"cost_penalty": 0.2},
+    )
+    d = RegularizedSelector().decide(ctx)
+    assert d.action == "PROMOTE"
+    assert d.evidence["relative_cost"] == pytest.approx(0.01)
+
+
+def test_rule4_doubled_tokens_with_small_gain_rejects() -> None:
+    # token 翻倍 + 分数微增 (0.8 -> 0.84, net gain 0.34-... still < 0.2*1.0? )
+    # gain = 0.04 - 0.05 < 0 anyway; make delta 0 so gain 0.04 < threshold 0.2
+    ctx = _ctx(
+        base_stats=_stats(metrics={"root_cause_accuracy": 0.8}, tokens=400),
+        cand_stats=_stats(metrics={"root_cause_accuracy": 0.84}, tokens=800),
+        noise_delta=0.0,
+        cost={"cost_penalty": 0.2},
+    )
+    d = RegularizedSelector().decide(ctx)
+    assert d.action == "REJECT"
+    assert d.rule_hit == 4
+
+
+def test_rule5_large_p_value_blocks_promotion() -> None:
+    from rsi.decision.significance import SignificanceTester
+
+    # per-task scores identical -> p = 1.0 -> not significant -> rule 6
+    ctx = _ctx(
+        base_task_scores=[0.5, 0.5, 0.5, 0.5],
+        cand_task_scores=[0.5, 0.5, 0.5, 0.5],
+        cost={"cost_penalty": 0.0},
+    )
+    sel = RegularizedSelector(significance=SignificanceTester())
+    d = sel.decide(ctx)
+    assert d.action == "ADVISE_MANUAL"
+    assert d.rule_hit == 6
+    assert d.evidence["p_value"] == pytest.approx(1.0)
+
+
+def test_rule5_significant_p_value_promotes() -> None:
+    from rsi.decision.significance import SignificanceTester
+
+    ctx = _ctx(
+        base_task_scores=[0.5, 0.5, 0.5, 0.5, 0.5, 0.5],
+        cand_task_scores=[0.9, 0.9, 0.9, 0.9, 0.9, 0.9],
+        cost={"cost_penalty": 0.0},
+    )
+    sel = RegularizedSelector(significance=SignificanceTester())
+    d = sel.decide(ctx)
+    assert d.action == "PROMOTE"
+    assert d.rule_hit == 5
+    assert d.evidence["p_value"] < 0.05
+
+
+def test_rule2_guard_switch_off_disables_check() -> None:
+    guards = GuardPolicy(missed_check_worsen="off")
+    ctx = _ctx(
+        base_stats=_stats(metrics={"root_cause_accuracy": 0.8, "missed_check": 0.0}),
+        cand_stats=_stats(metrics={"root_cause_accuracy": 0.9, "missed_check": 1.0}),
+        guards=guards,
+    )
+    d = RegularizedSelector().decide(ctx)
+    # missed_check guard disabled -> falls through to promote
+    assert d.action == "PROMOTE"
+    assert d.rule_hit == 5
+
+    # same ctx with the switch back on -> rejected at rule 2
+    d_on = RegularizedSelector().decide(_ctx(
+        base_stats=_stats(metrics={"root_cause_accuracy": 0.8, "missed_check": 0.0}),
+        cand_stats=_stats(metrics={"root_cause_accuracy": 0.9, "missed_check": 1.0}),
+    ))
+    assert d_on.action == "REJECT"
+    assert d_on.rule_hit == 2
+
+
+def test_rule2_high_risk_switch_off() -> None:
+    ctx = _ctx(
+        base_stats=_stats(metrics={"root_cause_accuracy": 0.8, "high_risk_actions": 0.0}),
+        cand_stats=_stats(metrics={"root_cause_accuracy": 0.95, "high_risk_actions": 2.0}),
+        guards=GuardPolicy(high_risk_worsen="off", safety_any_worsen="off"),
+    )
+    d = RegularizedSelector().decide(ctx)
+    assert d.rule_hit != 2

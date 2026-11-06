@@ -26,7 +26,14 @@ class Verifier:
         overlay_events: list,
     ) -> VerifyResult:
         match = Verifier._equivalent(base_result, overlay_result)
-        events = len(overlay_events) > 0
+        # B-12: only real injected-side tool traffic counts — the injector's
+        # own "instrumentation_applied" bootstrap marker must not make this
+        # criterion trivially true.
+        events = any(
+            e.get("event_type") in ("tool_call", "tool_result")
+            for e in overlay_events
+            if isinstance(e, dict)
+        )
         passed = match and events
         detail = Verifier._detail(match, events)
         return VerifyResult(

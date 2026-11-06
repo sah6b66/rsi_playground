@@ -24,6 +24,7 @@ from pathlib import Path
 import git
 
 from rsi.core.errors import GitStoreError, NotFastForwardError
+from rsi.log import get_logger
 from rsi.versioning.hooks import install_hooks
 from rsi.versioning.changeset import (
     Changeset,
@@ -39,6 +40,10 @@ from rsi.versioning.worktrees import Worktrees
 _BASELINE_RE = re.compile(r"^suts/(?P<sut>[^/]+)/baseline/v(?P<n>\d+)$")
 _CAND_RE = re.compile(r"^suts/(?P<sut>[^/]+)/cand/(?P<hyp>[^/]+)$")
 _SUT_PATH_RE = re.compile(r"^suts/(?P<sut>[^/]+)/")
+_FREEZE_HASH_RE = re.compile(r"content_hash=([0-9a-f]{64})")
+_FREEZE_TS_RE = re.compile(r"frozen_at=(\S+)")
+
+logger = get_logger(__name__)
 
 
 def _utcnow_iso() -> str:
@@ -49,14 +54,58 @@ def _baseline_prefix(sut_id: str) -> str:
     return f"suts/{sut_id}/baseline/"
 
 
+def _reject_traversal(path: str) -> None:
+    """Defense-in-depth path-traversal guard (audit R1#4).
+
+    Applied at every file-writing entry point independently of the optional
+    TargetRegistry injection: any ``..`` segment, absolute path or backslash
+    escape must never reach ``staging / rel`` (which would write outside the
+    staging worktree).
+    """
+    from pathlib import PurePosixPath
+
+    if (
+        ".." in PurePosixPath(path.replace("\\", "/")).parts
+        or path.startswith("/")
+        or "\\" in path
+    ):
+        raise GitStoreError(
+            f"path {path!r} contains a traversal segment and is rejected",
+        )
+
+
 class GitStore:
     """Git-backed artifact store for SUT versions (FR6.5/FR8)."""
 
-    def __init__(self, repo_path: Path, worktree_root: Path) -> None:
+    def __init__(
+        self,
+        repo_path: Path,
+        worktree_root: Path,
+        session_factory=None,
+        audit_log=None,
+        target_registry=None,
+    ) -> None:
+        """Build the GitStore facade.
+
+        ``session_factory`` / ``audit_log`` are optional DB integration hooks
+        (DD-09 §4): when supplied, successful version operations also register
+        rows in ``config_versions`` / ``suts`` / ``evalsets`` and append audit
+        entries. ``target_registry`` (rsi.optimizer.targets.TargetRegistry)
+        enables path-domain validation on ``commit_candidate`` and
+        ``write_file(commit=True)``.
+
+        Drift risk (accepted): all DB/audit writes are wrapped in try/except
+        and only emit a warning on failure — a DB outage never rolls back the
+        already-completed Git operation, so Git and DB can temporarily drift
+        until the next successful operation / reconciliation.
+        """
         self.repo_path = Path(repo_path)
         self.worktree_root = Path(worktree_root)
         self.repo: git.Repo | None = None
         self.worktrees: Worktrees | None = None
+        self.session_factory = session_factory
+        self.audit_log = audit_log
+        self.target_registry = target_registry
         # Serialize all mutating ops (snapshot/commit/promote/rollback).
         # Sync methods -> threading.Lock instead of asyncio.Lock (DD-09 §4).
         self._write_lock = threading.RLock()
@@ -107,11 +156,14 @@ class GitStore:
                 if tag is not None:
                     return VersionId(tag.commit.hexsha)
                 return VersionId(srepo.head.commit.hexsha)
-            return self._commit_staging(f"snapshot: {sut_id}", paths=[rel])
+            vid = self._commit_staging(f"snapshot: {sut_id}", paths=[rel])
+            self._register_version(vid, sut_id, "baseline", f"snapshot {sut_id}")
+            return vid
 
     def commit_candidate(self, base: VersionId, cs: Changeset, hyp_id: str) -> VersionId:
         """Apply ``cs`` on top of ``base`` in a temp worktree, commit, branch."""
         repo, worktrees, _ = self._require()
+        self._validate_paths([fc.path for fc in cs.files])
         sut_id = self._sut_from_changeset(cs)
         op_id = f"tmp-{uuid.uuid4().hex}"
         with self._write_lock:
@@ -128,7 +180,9 @@ class GitStore:
                 if branch in [h.name for h in repo.heads]:
                     repo.delete_head(branch, force=True)
                 repo.create_head(branch, sha)
-                return VersionId(sha)
+                vid = VersionId(sha)
+                self._register_version(vid, sut_id, "candidate", hyp_id)
+                return vid
             except git.GitCommandError as exc:
                 raise GitStoreError(
                     f"commit_candidate failed: {exc}",
@@ -161,6 +215,11 @@ class GitStore:
             name = _baseline_prefix(sut_id) + f"v{self._next_tag_num(sut_id)}"
             repo.create_tag(name, ref=cand_commit, message=f"promote {sut_id}")
             self._sync_staging(staging, cand_commit.hexsha)
+            self._db_call(lambda: self._update_sut_baseline(sut_id, str(candidate)))
+            self._audit(
+                "version.promote", sut_id,
+                sut_id=sut_id, candidate=str(candidate), tag=name,
+            )
 
     def rollback(self, sut_id: str, version_id: VersionId) -> None:
         """New baseline tag at a historical commit (keep-all: old tags stay)."""
@@ -170,6 +229,10 @@ class GitStore:
             name = _baseline_prefix(sut_id) + f"v{self._next_tag_num(sut_id)}"
             repo.create_tag(name, ref=commit, message=f"rollback {sut_id}")
             self._sync_staging(staging, commit.hexsha)
+            self._audit(
+                "version.rollback", sut_id,
+                sut_id=sut_id, version=str(version_id), tag=name,
+            )
 
     # ── export / diff / lineage (read-only, no lock) ─────────────────
 
@@ -262,7 +325,11 @@ class GitStore:
     # ── evalset freeze (FR3.3) ───────────────────────────────────────
 
     def freeze_evalset(self, evalset_id: str) -> FreezeRecord:
-        """Canonical-hash + tag ``evalsets/<id>/freeze/v<N>`` (idempotent per content)."""
+        """Canonical-hash + tag ``evalsets/<id>/freeze/v<N>`` (idempotent per content).
+
+        Re-freezing unchanged content reuses the existing freeze tag instead
+        of creating a new one; changed content creates the next tag.
+        """
         repo, _, staging = self._require()
         with self._write_lock:
             es_dir = staging / "evalsets" / evalset_id
@@ -281,17 +348,56 @@ class GitStore:
             prefix = f"evalsets/{evalset_id}/freeze/"
             n = 1
             for tag in repo.tags:
-                if tag.name.startswith(prefix):
-                    m = re.match(rf"{re.escape(prefix)}v(\d+)$", tag.name)
-                    if m:
-                        n = max(n, int(m.group(1)) + 1)
+                if not tag.name.startswith(prefix):
+                    continue
+                m = re.match(rf"{re.escape(prefix)}v(\d+)$", tag.name)
+                if m:
+                    n = max(n, int(m.group(1)) + 1)
+                # Idempotency: reuse the existing tag for identical content.
+                msg = ""
+                try:
+                    msg = tag.tag.message or ""
+                except Exception:  # noqa: BLE001 - lightweight tag: no message
+                    msg = ""
+                mh = _FREEZE_HASH_RE.search(msg)
+                if mh and mh.group(1) == content_hash:
+                    record = FreezeRecord(
+                        evalset_id=evalset_id,
+                        git_ref=tag.commit.hexsha,
+                        content_hash=content_hash,
+                        frozen_at=self._freeze_ts(tag, msg),
+                    )
+                    self._db_call(
+                        lambda: self._update_evalset_freeze(
+                            evalset_id, record.git_ref,
+                            record.content_hash, record.frozen_at,
+                        )
+                    )
+                    return record
             name = f"{prefix}v{n}"
-            repo.create_tag(name, ref=sha, message=f"freeze {evalset_id}")
+            frozen_at = _utcnow_iso()
+            repo.create_tag(
+                name,
+                ref=sha,
+                message=(
+                    f"freeze {evalset_id} "
+                    f"content_hash={content_hash} frozen_at={frozen_at}"
+                ),
+            )
+            self._db_call(
+                lambda: self._update_evalset_freeze(
+                    evalset_id, sha, content_hash, frozen_at
+                )
+            )
+            self._audit(
+                "evalset.freeze", evalset_id,
+                evalset_id=evalset_id, tag=name, content_hash=content_hash,
+            )
             return FreezeRecord(
                 evalset_id=evalset_id,
                 git_ref=sha,
                 content_hash=content_hash,
-                frozen_at=_utcnow_iso(),
+                frozen_at=frozen_at,
             )
 
     def verify_freeze(self) -> bool:
@@ -345,13 +451,56 @@ class GitStore:
     ) -> None:
         """Write ``suts/<sut_id>/<path>`` in staging; optionally commit."""
         _, _, staging = self._require()
+        _reject_traversal(path)
         rel = f"suts/{sut_id}/{path}"
+        if commit:
+            self._validate_paths([rel])
         target = staging / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
         if commit:
             with self._write_lock:
-                self._commit_staging(message or f"write: {rel}", paths=[f"suts/{sut_id}"])
+                vid = self._commit_staging(
+                    message or f"write: {rel}", paths=[f"suts/{sut_id}"]
+                )
+                # F10: a direct write_file(commit=True) creates a real
+                # version commit, so it must register a config_versions row
+                # like snapshot does. ck_config_versions_kind only allows
+                # baseline/candidate/archive — a manual write is closest to
+                # "baseline" (it lands on the baseline line, no hypothesis).
+                self._register_version(
+                    vid, sut_id, "baseline", f"manual write {path}"
+                )
+
+    def delete_file(
+        self,
+        sut_id: str,
+        path: str,
+        commit: bool = False,
+        message: str = "",
+    ) -> None:
+        """Delete ``suts/<sut_id>/<path>`` from staging; optionally commit.
+
+        Staging-only delete (``commit=False``) removes the file from the
+        staging worktree without creating a version.
+        """
+        _, _, staging = self._require()
+        _reject_traversal(path)
+        rel = f"suts/{sut_id}/{path}"
+        target = staging / rel
+        if target.is_file():
+            target.unlink()
+        if commit:
+            with self._write_lock:
+                vid = self._commit_staging(
+                    message or f"delete: {rel}", paths=[f"suts/{sut_id}"]
+                )
+                # g) align with write_file(commit=True): validate + register a
+                # config_versions row for the manual delete commit.
+                self._validate_paths([rel])
+                self._register_version(
+                    vid, sut_id, "baseline", f"manual delete {path}"
+                )
 
     # ── internal helpers ─────────────────────────────────────────────
 
@@ -435,6 +584,7 @@ class GitStore:
 
     def _apply_changes(self, tree_dir: str | Path, files: list[FileChange]) -> None:
         for fc in files:
+            _reject_traversal(fc.path)
             target = Path(tree_dir) / fc.path
             if fc.op == "delete":
                 if target.exists():
@@ -447,3 +597,110 @@ class GitStore:
                     )
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text(fc.content, encoding="utf-8")
+
+    # ── DB registration / audit (A-2) ────────────────────────────────
+
+    def _db_call(self, fn) -> None:
+        """Run a DB write; failure logs a warning but never raises.
+
+        Drift risk: the Git operation has already succeeded at this point,
+        so a DB failure leaves Git ahead of the DB until reconciliation.
+        """
+        if self.session_factory is None:
+            return
+        try:
+            fn()
+        except Exception as exc:  # noqa: BLE001 - deliberate containment
+            logger.warning("gitstore.db_write_failed", error=str(exc))
+
+    def _audit(self, action: str, object_id: str, /, **detail) -> None:
+        if self.audit_log is None:
+            return
+        try:
+            self.audit_log.record(
+                actor="system",
+                action=action,
+                object_type=action.split(".", 1)[0],
+                object_id=object_id,
+                detail=detail,
+            )
+        except Exception as exc:  # noqa: BLE001 - deliberate containment
+            logger.warning("gitstore.audit_write_failed", error=str(exc))
+
+    def _register_version(
+        self, version_id: VersionId, sut_id: str, kind: str, label: str
+    ) -> None:
+        if self.session_factory is None:
+            return
+        from rsi.db.tables import ConfigVersion
+
+        def _do() -> None:
+            with self.session_factory() as session:  # type: ignore[misc]
+                session.add(
+                    ConfigVersion(
+                        id=str(version_id),
+                        sut_id=sut_id,
+                        git_ref=str(version_id),
+                        label=label,
+                        kind=kind,
+                        created_at=_utcnow_iso(),
+                        created_by="system",
+                    )
+                )
+                session.commit()
+
+        self._db_call(_do)
+
+    def _update_sut_baseline(self, sut_id: str, version_id: str) -> None:
+        from rsi.db.tables import Sut
+
+        with self.session_factory() as session:  # type: ignore[misc]
+            row = session.get(Sut, sut_id)
+            if row is None:
+                logger.warning(
+                    "gitstore.sut_row_missing", sut_id=sut_id,
+                )
+                return
+            row.baseline_version_id = version_id
+            session.add(row)
+            session.commit()
+
+    def _update_evalset_freeze(
+        self, evalset_id: str, git_ref: str, content_hash: str, frozen_at: str
+    ) -> None:
+        from rsi.db.tables import EvalSet
+
+        with self.session_factory() as session:  # type: ignore[misc]
+            row = session.get(EvalSet, evalset_id)
+            if row is None:
+                logger.warning(
+                    "gitstore.evalset_row_missing", evalset_id=evalset_id,
+                )
+                return
+            row.git_ref = git_ref
+            row.content_hash = content_hash
+            row.frozen_at = frozen_at
+            session.add(row)
+            session.commit()
+
+    @staticmethod
+    def _freeze_ts(tag, msg: str) -> str:
+        m = _FREEZE_TS_RE.search(msg)
+        if m:
+            return m.group(1)
+        try:
+            return datetime.fromtimestamp(
+                tag.tag.tagged_date, tz=timezone.utc
+            ).isoformat()
+        except Exception:  # noqa: BLE001 - fall back to now
+            return _utcnow_iso()
+
+    # ── path-domain validation (A-8) ─────────────────────────────────
+
+    def _validate_paths(self, paths: list[str]) -> None:
+        """TargetRegistry whitelist + frozen-domain check (DD-09 §5.2)."""
+        if self.target_registry is None:
+            return
+        enabled = set(self.target_registry.TARGET_PATHS)
+        for p in paths:
+            self.target_registry.validate(p, enabled)

@@ -25,6 +25,9 @@ class RunHandle(BaseModel):
     instance_id: str
     cmd: list[str]
     stdout: str | None = None
+    # Container/agent process exit code (B-10/G5): filled by the S11 real
+    # executor; 137/139 classify the run as instance-crashed in collect.
+    exit_code: int | None = None
     # Extra env for the S11 real executor to inject when spawning the task
     # (e.g. OPENCODE_WIRETAP_FILE for per-run trace attribution).
     env: dict[str, str] = Field(default_factory=dict)

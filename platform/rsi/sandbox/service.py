@@ -11,7 +11,9 @@ L2 (lab reset + snap0 restore).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -44,6 +46,42 @@ READONLY_PREFIXES: tuple[str, ...] = (
 
 _RESTORE_MAX_ATTEMPTS = 3  # 1 initial + 2 retries (DD-04 §4.1 restore_task)
 _ERROR_OUTPUT_PREFIX = "Error:"
+# B-7: "output contains a timestamp -> healthy" (DD-04 §4 health_check).
+_TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}:\d{2}")
+# B-6: volatile line prefixes dropped by the config-equivalence normalization
+_NORM_DROP_PREFIXES = ("#", "!", "<", "*", "%")
+# R2-M2: ANCHORED device-timestamp line patterns. A line is dropped only
+# when the whole line IS a device clock/banner line — a bare substring
+# search would also swallow legitimate diff lines that merely contain a
+# time-like token (e.g. a MAC address 00:11:22, or "uptime" inside a
+# description). Patterns:
+#   * full ISO timestamp line ("2026-01-01 00:00:00 UTC", with optional tz)
+#   * "clock is ..." / "The current time is ..." device clock banner
+#   * "... uptime is D days, H:MM:SS" banner line
+_TS_LINE_RE = re.compile(
+    r"^(?:"
+    r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\s*[A-Za-z0-9+-]+)?"
+    r"|(?:\S+\s+)?clock(?:\s+is)?\s+.*"
+    r"|\S+ uptime(?:\s+is)?\s+\d+\s+\w+.*"
+    r")$",
+    re.IGNORECASE,
+)
+
+
+def normalize_config(text: str) -> list[str]:
+    """B-6 equivalence-diff normalization: drop blank lines, comment/prompt
+    lines and whole-line device timestamps, strip trailing whitespace."""
+    kept: list[str] = []
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith(_NORM_DROP_PREFIXES) or _TS_LINE_RE.match(stripped):
+            continue
+        kept.append(stripped)
+    return kept
+
 
 logger = get_logger(__name__)
 
@@ -83,6 +121,8 @@ class SandboxService:
         scheduler: LabScheduler | None = None,
         settings=None,
         ssh_pool: SshPool | None = None,
+        session_factory=None,
+        readiness_checker=None,
     ) -> None:
         self._backends = backends
         self.labs_dir = Path(labs_dir)
@@ -100,6 +140,11 @@ class SandboxService:
         # M1: device commands route through the SSH pool when available;
         # None keeps the pure-backend behavior (backward compatible).
         self._ssh_pool = ssh_pool
+        # B-2: optional DB session factory — when wired, build/destroy persist
+        # the labs row (device_endpoints_json is the ADR-24 authority).
+        # B-15: optional ReadinessChecker — backend wait_ready fallback probe.
+        self._session_factory = session_factory
+        self._readiness_checker = readiness_checker
         self._closed = False
 
     # -- lab lifecycle ---------------------------------------------------------
@@ -152,13 +197,94 @@ class SandboxService:
         journal.append(
             {"record": "snapshot", "name": "snap0", "snapshot_id": snap0.snapshot_id}
         )
+        self._persist_lab_row(lab, env, selection.backend_key)
         logger.debug("build_lab.exit", lab_id=lab.lab_id, snap0=snap0.snapshot_id)
         return lab
+
+    def _persist_lab_row(
+        self, lab: LabHandle, env: EnvSpec, backend_key: str
+    ) -> None:
+        """B-2: INSERT the labs row (device_endpoints_json = ADR-24 authority).
+
+        Best effort: a DB failure only logs a warning — lab lifecycle must
+        never fail because of metadata persistence."""
+        if self._session_factory is None:
+            return
+        try:
+            from rsi.db.tables import Lab
+
+            env_json = json.dumps(
+                env.model_dump(mode="json"), sort_keys=True, default=str
+            )
+            endpoints = {
+                name: {"ip": a.ip, "port": a.port}
+                for name, a in lab.endpoints.items()
+            }
+            with self._session_factory() as session:
+                session.add(
+                    Lab(
+                        id=lab.lab_id,
+                        host=lab.host,
+                        backend=backend_key,
+                        env_hash=hashlib.sha256(env_json.encode()).hexdigest()[:16],
+                        status="ready",
+                        online=1,
+                        devices_online=f"{len(lab.endpoints)}/{len(env.devices)}",
+                        device_endpoints_json=json.dumps(endpoints),
+                        created_at=_utcnow_iso(),
+                    )
+                )
+                session.commit()
+        except Exception as exc:  # noqa: BLE001 - metadata write must not fail builds
+            logger.warning("labs.persist_failed", lab_id=lab.lab_id, error=str(exc))
+
+    def _mark_lab_destroyed(self, lab_id: str) -> None:
+        """B-2/IN-015: UPDATE labs SET status='destroyed', destroyed_at=now."""
+        if self._session_factory is None:
+            return
+        try:
+            from sqlalchemy import update
+            from rsi.db.tables import Lab
+
+            with self._session_factory() as session:
+                session.exec(
+                    update(Lab)
+                    .where(Lab.id == lab_id)
+                    .values(status="destroyed", destroyed_at=_utcnow_iso())
+                )
+                session.commit()
+        except Exception as exc:  # noqa: BLE001 - best effort
+            logger.warning("labs.destroy_mark_failed", lab_id=lab_id, error=str(exc))
 
     async def wait_ready(
         self, lab: LabHandle, timeout_s: int | None = None
     ) -> ReadyReport:
-        return await self._backend(lab).wait_ready(lab, timeout_s or self._ready_timeout_s)
+        """Backend wait_ready with a ReadinessChecker fallback (B-15).
+
+        When the backend report fails and a checker is wired, one extra
+        checker round (ssh_reachable / cli_match) runs before giving up —
+        real backends (S11) may report false negatives while the devices are
+        already reachable."""
+        timeout = timeout_s or self._ready_timeout_s
+        report = await self._backend(lab).wait_ready(lab, timeout)
+        if report.passed or self._readiness_checker is None:
+            return report
+        env = self._envs.get(lab.lab_id)
+        if env is None:
+            return report
+        try:
+            fallback = await self._readiness_checker.check(
+                env, lab.endpoints, timeout_s=10
+            )
+        except Exception as exc:  # noqa: BLE001 - probe must not raise
+            logger.debug(
+                "wait_ready.checker_failed", exc_type=type(exc).__name__
+            )
+            return report
+        if fallback.passed:
+            logger.debug("wait_ready.checker_passed", lab_id=lab.lab_id)
+            return fallback
+        return report
 
     async def snapshot(self, lab: LabHandle, name: str) -> SnapRef:
         logger.debug("snapshot.entry", lab_id=lab.lab_id, name=name)
@@ -191,6 +317,7 @@ class SandboxService:
         self._envs.pop(lab.lab_id, None)
         self._snapshots.pop(lab.lab_id, None)
         self._journals.pop(lab.lab_id, None)
+        self._mark_lab_destroyed(lab.lab_id)
         logger.debug("destroy.exit", lab_id=lab.lab_id)
 
     # -- prepare / restore_task (ADR-20) ----------------------------------------
@@ -308,10 +435,31 @@ class SandboxService:
         has_cli_restore = any(
             a.action == "exec_cli" and a.backup_files for a in applied
         )
+        devices_to_reset: list[str] = []
         if has_cli_restore:
-            # reset device state, then replay the task-pre backups (idempotent
-            # SET semantics, DD-04 §5.4)
-            await backend.reset(lab)
+            devices_to_reset = sorted(
+                {d for a in applied if a.backup_files for d in a.backup_files}
+            )
+            pool_sessions = {
+                d: self._pool_session(lab, d) for d in devices_to_reset
+            }
+            if all(s is not None for s in pool_sessions.values()):
+                # B-6 (DD-04 §5.4): per-device vendor reset_cmd over the SSH
+                # pool instead of a whole-lab reset — only the devices touched
+                # by this task's prepare are rolled back.
+                for device, session in pool_sessions.items():
+                    result = _run_sync(
+                        session.exec_config(list(session.vendor.reset_cmd))
+                    )
+                    if not result.ok:
+                        raise EnvError(
+                            f"vendor reset_cmd failed on {device}: "
+                            f"{result.matched_errors}",
+                            context={"device": device, "lab_id": lab.lab_id},
+                        )
+            else:
+                # no pooled session for every device — legacy whole-lab reset
+                await backend.reset(lab)
         for action in reversed(applied):
             if action.action == "call_api":
                 assert action.api is not None and action.params is not None
@@ -329,12 +477,47 @@ class SandboxService:
                     for line in backup.read_text(encoding="utf-8").splitlines():
                         if not line.strip() or line.startswith("#"):
                             continue
-                        output = backend.exec(lab, device, line)
-                        if output.startswith(_ERROR_OUTPUT_PREFIX):
-                            raise EnvError(
-                                f"backup replay failed on {device}: {line!r} -> {output}",
-                                context={"device": device, "cli": line},
-                            )
+                        session = self._pool_session(lab, device)
+                        if session is not None:
+                            result = _run_sync(session.exec_config([line]))
+                            if not result.ok:
+                                raise EnvError(
+                                    f"backup replay failed on {device}: {line!r} "
+                                    f"-> {result.matched_errors}",
+                                    context={"device": device, "cli": line},
+                                )
+                        else:
+                            output = backend.exec(lab, device, line)
+                            if output.startswith(_ERROR_OUTPUT_PREFIX):
+                                raise EnvError(
+                                    f"backup replay failed on {device}: {line!r} -> {output}",
+                                    context={"device": device, "cli": line},
+                                )
+        # B-6: post-replay equivalence spot check — the captured running
+        # config must match the backup (normalized) or the restore counts as
+        # failed and the retry path runs.
+        if has_cli_restore:
+            for device in devices_to_reset:
+                session = self._pool_session(lab, device)
+                if session is None:
+                    continue
+                action = next(
+                    a for a in applied if a.backup_files and device in a.backup_files
+                )
+                backup_text = Path(action.backup_files[device]).read_text(
+                    encoding="utf-8"
+                )
+                captured = _run_sync(session.capture_config())
+                if normalize_config(captured) != normalize_config(backup_text):
+                    logger.warning(
+                        "restore_task.equivalence_mismatch",
+                        device=device,
+                        lab_id=lab.lab_id,
+                    )
+                    raise EnvError(
+                        f"post-restore config mismatch on {device}",
+                        context={"device": device, "lab_id": lab.lab_id},
+                    )
         report = await backend.wait_ready(lab)
         if not report.passed:
             raise EnvError(
@@ -403,7 +586,7 @@ class SandboxService:
             except Exception as exc:  # noqa: BLE001 — probe must not raise
                 logger.debug("health_check.exit", healthy=False, exc_type=type(exc).__name__)
                 return False
-            healthy = result.ok and bool(result.output.strip())
+            healthy = result.ok and bool(_TS_RE.search(result.output))
             logger.debug("health_check.exit", healthy=healthy, via="ssh_pool")
             return healthy
         try:
@@ -411,7 +594,7 @@ class SandboxService:
         except EnvError as exc:
             logger.debug("health_check.exit", healthy=False, exc_type=type(exc).__name__)
             return False
-        healthy = "error" not in output.lower() and bool(output.strip())
+        healthy = bool(_TS_RE.search(output))
         logger.debug("health_check.exit", healthy=healthy)
         return healthy
 

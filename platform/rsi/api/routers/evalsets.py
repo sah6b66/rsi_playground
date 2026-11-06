@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import uuid
+import zipfile
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from rsi.api.deps import audit, get_current_user, get_store, require_perms
@@ -48,6 +51,7 @@ class EvalsetUpdate(BaseModel):
 class EvalsetOut(BaseModel):
     id: str
     name: str
+    purpose: str = "iterate"
     tasks: list[dict[str, Any]]
     description: str
     frozen: bool
@@ -63,7 +67,10 @@ class EvalsetPage(BaseModel):
 
 class VersionOut(BaseModel):
     version: int
-    frozen: bool
+    git_ref: str | None = None
+    content_hash: str | None = None
+    frozen_at: str | None = None
+    frozen: bool = True
     created_at: str
 
 
@@ -110,6 +117,11 @@ async def create_evalset(
     user: Claims = Depends(require_perms("evalset:manage")),
     store: dict = Depends(get_store("evalsets")),
 ) -> EvalsetOut:
+    if any(e["name"] == body.name for e in store.values()):
+        raise ConflictError(
+            f"evalset name {body.name!r} already exists",
+            context={"name": body.name},
+        )
     es = {
         "id": f"es-{uuid.uuid4().hex[:8]}",
         "name": body.name,
@@ -180,8 +192,20 @@ async def freeze_evalset(
             context={"evalset_id": evalset_id},
         )
     es["frozen"] = True
+    content_hash = hashlib.sha256(
+        json.dumps(es["tasks"], sort_keys=True).encode()
+    ).hexdigest()
+    es["content_hash"] = content_hash
+    es["frozen_at"] = _now()
     es["versions"].append(
-        {"version": es["version"], "frozen": True, "created_at": _now()}
+        {
+            "version": es["version"],
+            "git_ref": None,  # git_ref 由 GitStore.freeze_evalset 提供（文档未定义接入方式，P0 置空）
+            "content_hash": content_hash,
+            "frozen_at": es["frozen_at"],
+            "frozen": True,
+            "created_at": _now(),
+        }
     )
     return EvalsetOut(**es)
 
@@ -203,3 +227,113 @@ async def list_versions(
         next_cursor=page['next_cursor'],
         has_more=page['has_more'],
     )
+
+
+# ── :assign / :export / :import (interfaces §9.4) ─────────────────────────
+
+class AssignBody(BaseModel):
+    purpose: Literal["iterate", "holdout", "generalization", "smoke"] = Field(
+        json_schema_extra={"example": "holdout"}
+    )
+
+
+@router.post("/{evalset_id}:assign", status_code=204)
+@audit.audited("evalset.assign", object_type="evalset")
+async def assign_evalset(
+    evalset_id: str,
+    body: AssignBody,
+    user: Claims = Depends(require_perms("evalset:manage")),
+    store: dict = Depends(get_store("evalsets")),
+) -> Response:
+    """用途分配 → 204（purpose 非法值由 pydantic Literal → 422）。"""
+    es = _get(store, evalset_id)
+    es["purpose"] = body.purpose
+    return Response(status_code=204)
+
+
+def _evalset_zip_bytes(es: dict) -> bytes:
+    """三件套原格式 zip（FR3.5）：env.yaml + tasks.jsonl + configs/。"""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("env.yaml", str(es.get("env_yaml", "")))
+        zf.writestr(
+            "tasks.jsonl",
+            "\n".join(json.dumps(t, ensure_ascii=False) for t in es["tasks"]),
+        )
+        for rel, content in (es.get("configs") or {}).items():
+            zf.writestr(f"configs/{rel}", content)
+    return buf.getvalue()
+
+
+@router.post("/{evalset_id}:export")
+async def export_evalset(
+    evalset_id: str,
+    user: Claims = Depends(get_current_user),
+    store: dict = Depends(get_store("evalsets")),
+) -> Response:
+    """导出三件套原格式 zip（FR3.5）。"""
+    es = _get(store, evalset_id)
+    return Response(
+        content=_evalset_zip_bytes(es),
+        media_type="application/zip",
+        headers={
+            "content-disposition": f'attachment; filename="{es["name"]}.zip"'
+        },
+    )
+
+
+@router.post(":import", response_model=EvalsetOut, status_code=201)
+@audit.audited("evalset.import", object_type="evalset")
+async def import_evalset(
+    file: UploadFile = File(...),
+    name: str = Form(""),
+    user: Claims = Depends(require_perms("evalset:manage")),
+    store: dict = Depends(get_store("evalsets")),
+) -> EvalsetOut:
+    """导入三件套 zip → 201{id}；名冲突 409。
+
+    zip 结构约定（文档未定义细节，实现取 export 的对称格式）：
+    ``env.yaml``、``tasks.jsonl``、``configs/**``。
+    """
+    if name and any(e["name"] == name for e in store.values()):
+        raise ConflictError(
+            f"evalset name {name!r} already exists", context={"name": name}
+        )
+    tasks: list[dict[str, Any]] = []
+    env_yaml = ""
+    configs: dict[str, str] = {}
+    with zipfile.ZipFile(io.BytesIO(await file.read())) as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            data = zf.read(info.filename).decode("utf-8", "replace")
+            if info.filename == "tasks.jsonl":
+                tasks = [
+                    json.loads(line)
+                    for line in data.splitlines()
+                    if line.strip()
+                ]
+            elif info.filename in ("env.yaml", "env.yml"):
+                env_yaml = data
+            elif info.filename.startswith("configs/"):
+                configs[info.filename[len("configs/"):]] = data
+    es_name = name or file.filename or "imported"
+    if any(e["name"] == es_name for e in store.values()):
+        raise ConflictError(
+            f"evalset name {es_name!r} already exists", context={"name": es_name}
+        )
+    es = {
+        "id": f"es-{uuid.uuid4().hex[:8]}",
+        "name": es_name,
+        "purpose": "iterate",
+        "tasks": tasks,
+        "description": f"imported from {file.filename}",
+        "env_yaml": env_yaml,
+        "configs": configs,
+        "frozen": False,
+        "version": 1,
+        "created_at": _now(),
+        "versions": [],
+    }
+    store[es["id"]] = es
+    return EvalsetOut(**es)

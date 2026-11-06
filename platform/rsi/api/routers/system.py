@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -23,6 +24,8 @@ class DependencyStatus(BaseModel):
 
 class DependencyPage(BaseModel):
     items: list[DependencyStatus]
+    # "monitor" = live HealthMonitor results; "fallback" = static defaults
+    source: str = "fallback"
 
 
 class SettingItem(BaseModel):
@@ -90,8 +93,28 @@ async def dependencies(
     user: Claims = Depends(require_perms("view:read")),
 ) -> DependencyPage:
     monitor = request.app.state.services.get("health_monitor")
-    items = monitor.get_cached() if monitor is not None else _DEFAULT_DEPS
-    return DependencyPage(items=[DependencyStatus(**d) for d in items])
+    if monitor is not None:
+        items = monitor.get_cached()
+        source = "monitor"
+        if not items:  # first sweep not run yet: force one sweep off-loop
+            # b) run the (synchronous, potentially slow) checker sweep in a
+            # worker thread so the event loop / _poll_loop is not blocked.
+            await asyncio.to_thread(monitor.check_all)
+            items = monitor.get_cached()
+    else:
+        items = _DEFAULT_DEPS
+        source = "fallback"
+    return DependencyPage(
+        items=[
+            DependencyStatus(
+                name=d["name"],
+                status=d["status"],
+                latency_ms=d.get("latency_ms"),
+            )
+            for d in items
+        ],
+        source=source,
+    )
 
 
 @router.get("/system/settings", response_model=SettingsPage)
@@ -134,20 +157,38 @@ async def update_setting(
 @router.post("/system:stop", response_model=StopState)
 @audit.audited("system.stop", object_type="system")
 async def stop_on(
+    request: Request,
     user: Claims = Depends(require_perms("system:stop")),
     system: dict = Depends(get_store("system")),
 ) -> StopState:
     system["stopped"] = True
+    # D-5: a real STOP must create the BudgetController stop file so
+    # BatchRunner aborts; without the controller we only flip the flag.
+    budget = request.app.state.services.get("budget_controller")
+    if budget is not None:
+        budget.stop_file.parent.mkdir(parents=True, exist_ok=True)
+        budget.stop_file.write_text(
+            "manual STOP via POST /system:stop\n", encoding="utf-8"
+        )
     return StopState(stopped=True)
 
 
 @router.delete("/system:stop", response_model=StopState)
 @audit.audited("system.stop_cancel", object_type="system")
 async def stop_off(
+    request: Request,
     user: Claims = Depends(require_perms("system:stop")),
     system: dict = Depends(get_store("system")),
 ) -> StopState:
     system["stopped"] = False
+    # D-5: recovery must delete the BudgetController stop file too, else
+    # BatchRunner keeps aborting despite the API reporting "recovered".
+    budget = request.app.state.services.get("budget_controller")
+    if budget is not None:
+        try:
+            budget.stop_file.unlink(missing_ok=True)
+        except OSError:
+            pass
     return StopState(stopped=False)
 
 

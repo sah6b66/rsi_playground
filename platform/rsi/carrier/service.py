@@ -6,6 +6,7 @@ path placeholder), no real containers — adapter/fake drives everything.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,7 @@ from rsi.core.models import LabHandle, TaskResult, TaskSpec
 from rsi.core.naming import new_id
 from rsi.log import get_logger
 
-__all__ = ["HostService", "InstanceHandle", "RunHandle"]
+__all__ = ["HostService", "ImageCheck", "InstanceHandle", "RunHandle"]
 
 logger = get_logger(__name__)
 
@@ -37,6 +38,21 @@ class InstanceHandle(BaseModel):
     status: str = "running"
     config_dir: Path
     env: dict[str, str] = Field(default_factory=dict)
+    # B-18: carrier type this instance was created for — adapter dispatch is
+    # keyed on this, not on the execution host.
+    carrier: str = "fake"
+
+
+class ImageCheck(BaseModel):
+    """Result of a SUT image verification probe (G5 / DD-05 §4).
+
+    ``ok=None`` means "unknown/offline" — the Docker daemon was unreachable
+    so no check could be performed (P0 offline mode)."""
+
+    ok: bool | None
+    image_ref: str
+    checks: list[str] = Field(default_factory=list)
+    detail: str = ""
 
 
 def build_dev_env(cred: Any) -> dict[str, str]:
@@ -92,8 +108,9 @@ class HostService:
         self._default_adapter = next(iter(adapters.values()))
         self._instances: dict[str, InstanceHandle] = {}
 
-    def _adapter_for(self, host: str) -> CarrierAdapter:
-        return self.adapters.get(host, self._default_adapter)
+    def _adapter_for(self, carrier_type: str) -> CarrierAdapter:
+        """B-18: adapters are keyed by carrier type, not by execution host."""
+        return self.adapters.get(carrier_type, self._default_adapter)
 
     def create_instance(
         self,
@@ -105,10 +122,13 @@ class HostService:
         host: str | None = None,
         cred: Any = None,
         run_id: str = "",
+        carrier_type: str = "fake",
     ) -> InstanceHandle:
         """Create (P0: register) a SUT instance attached to lab + trace nets.
 
         ``host=None`` → auto-select least-loaded host via InstanceScheduler.
+        ``carrier_type`` selects the CarrierAdapter (B-18); the host only
+        affects the Docker pool and network placement.
         """
         logger.debug(
             "create_instance.entry",
@@ -116,6 +136,7 @@ class HostService:
             lab_id=lab.lab_id,
             instrument=instrument,
             host=host,
+            carrier_type=carrier_type,
         )
         selected_host = self.scheduler.select(host)
         logger.debug("create_instance.host_selected", host=selected_host)
@@ -130,9 +151,11 @@ class HostService:
         instance_id = new_id("inst")
         # P0: skip GitStore export — config_version_id is a placeholder path.
         config_dir = Path(config_version_id)
+        overlay_built = False
         if instrument and config_dir.exists():
             logger.debug("create_instance.overlay", source=str(config_dir))
             config_dir = OverlayBuilder.build(config_dir)
+            overlay_built = True
         handle = InstanceHandle(
             instance_id=instance_id,
             sut_id=image_ref,
@@ -142,12 +165,73 @@ class HostService:
             status="running",
             config_dir=config_dir,
             env={"RSI_LAB_ID": lab.lab_id, "RSI_RUN_ID": run_id, **build_dev_env(cred)},
+            carrier=carrier_type,
         )
-        self.net_policy.attach(selected_host, handle.container_id, [lab_net, trace_net])
-        self.host_pool.increment(selected_host)
-        self._instances[instance_id] = handle
+        # B-9: DD-05 §5.3 — a failure after the overlay exists must clean up
+        # the half-built container + directory and roll the host count back.
+        try:
+            self.net_policy.attach(
+                selected_host, handle.container_id, [lab_net, trace_net]
+            )
+            self.host_pool.increment(selected_host)
+            self._instances[instance_id] = handle
+        except Exception:
+            logger.warning(
+                "create_instance.cleanup_after_failure", instance_id=instance_id
+            )
+            try:
+                self.net_policy.detach(handle.container_id)
+            except Exception:  # noqa: BLE001 - best effort during cleanup
+                pass
+            if overlay_built:
+                try:
+                    OverlayBuilder.cleanup(config_dir)
+                except Exception:  # noqa: BLE001 - best effort during cleanup
+                    pass
+            raise
         logger.debug("create_instance.exit", instance_id=instance_id, host=selected_host)
         return handle
+
+    async def verify_image(
+        self, image_ref: str, host: str | None = None
+    ) -> ImageCheck:
+        """G5 (DD-05 §4): check the SUT image exists on a host.
+
+        P0 offline: when the Docker daemon is unreachable (or the pool is the
+        offline stub) the result is ``ok=None`` — unknown, not failed.
+        """
+        logger.debug("verify_image.entry", image_ref=image_ref, host=host)
+        selected = host or "main"
+        try:
+            client = self.host_pool.client(selected)
+        except Exception as exc:  # noqa: BLE001 - offline/unconfigured host
+            logger.debug("verify_image.exit", ok=None, reason="no_client")
+            return ImageCheck(
+                ok=None,
+                image_ref=image_ref,
+                detail=f"offline: docker daemon unreachable ({type(exc).__name__})",
+            )
+        if client is None:
+            logger.debug("verify_image.exit", ok=None, reason="offline_stub")
+            return ImageCheck(
+                ok=None,
+                image_ref=image_ref,
+                detail="offline: docker daemon unreachable",
+            )
+        try:
+            await asyncio.to_thread(client.images.get, image_ref)
+        except Exception as exc:  # noqa: BLE001 - image missing / API error
+            logger.debug("verify_image.exit", ok=False, exc_type=type(exc).__name__)
+            return ImageCheck(
+                ok=False,
+                image_ref=image_ref,
+                checks=["docker inspect"],
+                detail=f"image not found: {exc}",
+            )
+        logger.debug("verify_image.exit", ok=True)
+        return ImageCheck(
+            ok=True, image_ref=image_ref, checks=["docker inspect"], detail=""
+        )
 
     def submit_task(self, instance: InstanceHandle, task: TaskSpec) -> RunHandle:
         """Dispatch the task prompt to the instance's carrier adapter."""
@@ -157,7 +241,7 @@ class HostService:
             prompt_len=len(task.prompt),
             tool_constraints=len(task.tool_constraints),
         )
-        adapter = self._adapter_for(instance.host)
+        adapter = self._adapter_for(instance.carrier)
         result = adapter.submit_task(instance, task)
         logger.debug("submit_task.exit", result_type=type(result).__name__)
         return result
@@ -167,13 +251,25 @@ class HostService:
         logger.debug("collect.entry", instance_id=handle.instance_id, timeout_s=timeout_s)
         instance = self._instances.get(handle.instance_id)
         adapter = (
-            self._adapter_for(instance.host) if instance else self._default_adapter
+            self._adapter_for(instance.carrier) if instance else self._default_adapter
         )
         try:
             stdout = adapter.collect_result(handle, timeout_s)
         except Exception as exc:
             logger.debug("collect.instance_crashed", exc_type=type(exc).__name__)
             return TaskResult(task_complete=False, instance_crashed=True)
+        # B-10 (DD-05 §4): container exit code semantics. 137 (OOM-kill) /
+        # 139 (segfault) mean the run infra-crashed — FINAL_JSON extraction is
+        # meaningless. exit_code==0 with empty stdout is a parse error.
+        exit_code = getattr(handle, "exit_code", None)
+        if exit_code in (137, 139):
+            logger.debug(
+                "collect.instance_crashed", exit_code=exit_code, via="exit_code"
+            )
+            return TaskResult(task_complete=False, instance_crashed=True)
+        if exit_code == 0 and not (stdout or "").strip():
+            logger.debug("collect.parse_error", reason="empty_stdout", exit_code=0)
+            return TaskResult(task_complete=False, parse_error=True)
         result = extract_task_result(stdout)
         logger.debug(
             "collect.exit",

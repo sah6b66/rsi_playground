@@ -17,6 +17,7 @@ dependencies = [
     "scipy>=1.12",
     "docker>=7.0",
     "pyyaml>=6.0.3",
+    "python-multipart>=0.0.33",
 ]
 
 [project.optional-dependencies]
@@ -32,8 +33,16 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["rsi"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "sim: simulation-backend cases (S11+, expected to skip until real backends)",
+    "e2e: compose/playwright acceptance cases (expected to skip until E2E phase)",
+]

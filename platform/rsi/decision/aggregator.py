@@ -25,7 +25,18 @@ _MEAN_METRICS: tuple[tuple[str, str], ...] = (
 
 
 class StatsAggregator:
-    def aggregate(self, verdicts: list[Verdict]) -> BatchStats:
+    def aggregate(
+        self,
+        verdicts: list[Verdict],
+        task_ids: list[str] | None = None,
+    ) -> BatchStats:
+        """Aggregate verdicts into batch stats.
+
+        ``task_ids`` (same length/order as *verdicts*, or per-verdict
+        ``task_id`` attributes) additionally produces ``task_scores``
+        entries — per-task ``{task_id, score, task_complete, missing}``
+        consumed by the significance tester and hit-rate recalc (D-9).
+        """
         logger.debug("aggregate.entry", verdicts=len(verdicts))
         n = len(verdicts)
         metrics: dict[str, float] = {}
@@ -50,6 +61,40 @@ class StatsAggregator:
             tool_calls=sum(v.efficiency.tool_calls for v in verdicts),
             wall_time_s=round(sum(v.efficiency.wall_time_s for v in verdicts), 3),
             tokens_estimated=any(v.efficiency.estimated for v in verdicts),
+            task_scores=self._task_scores(verdicts, task_ids),
         )
         logger.debug("aggregate.exit", n=stats.n, missing=stats.missing)
         return stats
+
+    @staticmethod
+    def _task_scores(
+        verdicts: list[Verdict], task_ids: list[str] | None
+    ) -> list[dict]:
+        """Per-task score rows (D-9): {task_id, score, task_complete, missing}.
+
+        ``score`` is the primary per-task score (root_cause_accuracy,
+        falling back to task_complete) used for pairing / hit-rate calc.
+        """
+        rows: list[dict] = []
+        for i, v in enumerate(verdicts):
+            tid: str | None = None
+            if task_ids is not None and i < len(task_ids):
+                tid = str(task_ids[i])
+            else:
+                tid = getattr(v, "task_id", None)
+            if tid is None:
+                continue
+            scores = v.scores
+            score = float(getattr(scores, "root_cause_accuracy", 0.0) or 0.0)
+            task_complete = float(bool(getattr(scores, "task_complete", False)))
+            if score == 0.0 and task_complete:
+                score = task_complete
+            rows.append(
+                {
+                    "task_id": tid,
+                    "score": score,
+                    "task_complete": task_complete,
+                    "missing": bool(v.missing),
+                }
+            )
+        return rows

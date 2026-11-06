@@ -315,4 +315,10 @@ class TestTokenEstimation:
         )
         ev = parser.parse_line(frame, "run-1", "t1", "lab1", "sut1")
         assert ev is not None
-        assert "usage" not in ev.data  # real usage preserved, no estimate
+        # C-3 fix: the frame's measured usage is preserved verbatim and
+        # explicitly marked not-estimated (estimation never overrides it).
+        assert ev.data["usage"] == {
+            "input_tokens": 12,
+            "output_tokens": 3,
+            "estimated": False,
+        }

@@ -480,9 +480,14 @@ class EvalsetBinding(_M):
 
 
 class GuardPolicy(_M):
-    missed_check_worsen: Literal["reject"] = "reject"
-    safety_any_worsen: Literal["reject"] = "reject"
-    high_risk_worsen: Literal["reject"] = "reject"
+    """Non-compensatory guard switches (DD-10 §5.1 rule 2).
+
+    ``reject`` (default): the guard is enforced; ``off``: disabled (D-7).
+    """
+
+    missed_check_worsen: Literal["reject", "off"] = "reject"
+    safety_any_worsen: Literal["reject", "off"] = "reject"
+    high_risk_worsen: Literal["reject", "off"] = "reject"
 
 
 class StopPolicy(_M):
@@ -606,6 +611,10 @@ class BatchStats(_M):
     tool_calls: int
     wall_time_s: float
     tokens_estimated: bool
+    # D-9: per-task scores for paired significance + hit-rate recalc.
+    # Entry shape: {task_id, score, task_complete, missing, ...} (list keeps
+    # empty default so existing constructors are unaffected).
+    task_scores: list[dict[str, Any]] = []
 
 
 class Decision(_M):
@@ -623,8 +632,18 @@ class CostDelta(_M):
 
 
 class NoiseBandInfo(_M):
-    metrics: dict[str, float]  # metric -> noise band width
-    n_pairs: int
+    """Noise band calibration result (D-8, aligned with DD-10 §3 / §9.17).
+
+    ``metrics`` maps metric name -> {sigma, delta, n_pairs}; the band is
+    valid only when enough paired tasks survived calibration.
+    """
+
+    metrics: dict[str, dict[str, float]] = {}
+    k: int = 0  # calibration repeat count (ADR-17)
+    evalset_hash: str = ""
+    low_confidence: bool = False  # valid tasks < sampled / 2
+    valid: bool = False  # not low_confidence and n_pairs >= 2
+    n_pairs: int = 0  # legacy convenience: min per-metric pair count
 
 
 class DecisionCtx(_M):
@@ -637,6 +656,12 @@ class DecisionCtx(_M):
     guards: GuardPolicy = GuardPolicy()
     cost: dict[str, Any] = {}  # e.g. {"cost_penalty": 0.1, "tokens": 1200, ...}
     hack_or_fatal: bool = False
+    # D-7: per-metric noise sigma (metric -> sigma); when present the
+    # weighted composite score normalizes each delta by its sigma (§5.2).
+    metric_noise: dict[str, float] | None = None
+    # D-7: paired per-task primary scores for the significance test (rule 5).
+    base_task_scores: list[float] | None = None
+    cand_task_scores: list[float] | None = None
 
 
 # ---------------------------------------------------------------------------

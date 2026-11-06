@@ -44,6 +44,16 @@ class TraceCollector:
         self._wiretap_parser = OpenCodeWiretapParser()
         self._event_parser = NdjsonEventParser()
 
+    def attach_store(self, store: "TraceStore | None") -> None:
+        """Wire the query-side store (collector<->store circular dependency).
+
+        The production composition root builds the collector first (store
+        optional), then the TraceStore over the collector, then calls this
+        method so ``finalize`` meta flows into the query side — no private
+        attribute poking (audit T2-2).
+        """
+        self._store = store
+
     # -- ingest -----------------------------------------------------------
 
     def ingest(self, events: list[TraceEvent]) -> None:

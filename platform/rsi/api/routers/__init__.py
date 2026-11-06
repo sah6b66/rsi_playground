@@ -4,9 +4,11 @@ from rsi.api.routers import (
     audit_logs,
     auth,
     batches,
+    credentials,
     dashboard,
     evalsets,
     experiments,
+    hypotheses,
     instances,
     instrumentation,
     iterations,
@@ -17,12 +19,18 @@ from rsi.api.routers import (
     suts,
     system,
     traces,
+    users,
+    versions,
 )
 from rsi.api import streaming
 
 ALL_ROUTERS = [
     auth.router,
     suts.router,
+    versions.router,
+    hypotheses.router,
+    credentials.router,
+    users.router,
     evalsets.router,
     profiles.router,
     batches.router,
@@ -43,7 +51,8 @@ ALL_ROUTERS = [
     streaming.router,
 ]
 
-__all__ = ["ALL_ROUTERS", "audit_logs", "auth", "batches", "dashboard",
-           "evalsets", "experiments", "instances", "instrumentation",
-           "iterations", "judgments", "labs", "profiles", "runs", "suts",
-           "streaming", "system", "traces"]
+__all__ = ["ALL_ROUTERS", "audit_logs", "auth", "batches", "credentials",
+           "dashboard", "evalsets", "experiments", "hypotheses",
+           "instances", "instrumentation", "iterations", "judgments",
+           "labs", "profiles", "runs", "suts", "streaming", "system",
+           "traces", "users", "versions"]

@@ -143,7 +143,11 @@ VALID_HYPOTHESIS_TRANSITIONS: Mapping[
     HypothesisStatus.APPLIED: frozenset(
         {HypothesisStatus.ACCEPTED, HypothesisStatus.REJECTED, HypothesisStatus.WITHDRAWN}
     ),
-    # ACCEPTED / REJECTED / WITHDRAWN are terminal.
+    # DD-01 §3.11 "任意→withdrawn（人工）": ACCEPTED/REJECTED are also
+    # human-withdrawable; only WITHDRAWN itself is terminal.
+    HypothesisStatus.ACCEPTED: frozenset({HypothesisStatus.WITHDRAWN}),
+    HypothesisStatus.REJECTED: frozenset({HypothesisStatus.WITHDRAWN}),
+    # WITHDRAWN is terminal.
 }
 
 VALID_ITERATION_TRANSITIONS: Mapping[IterationState, frozenset[IterationState]] = {
@@ -154,7 +158,14 @@ VALID_ITERATION_TRANSITIONS: Mapping[IterationState, frozenset[IterationState]] 
         {IterationState.REVIEWING, IterationState.PAUSED, IterationState.ABORTED}
     ),
     IterationState.REVIEWING: frozenset(
-        {IterationState.APPLYING, IterationState.PAUSED, IterationState.ABORTED}
+        {
+            IterationState.APPLYING,
+            # Review-gate rejection records a REVERT decision without any
+            # verification round (DD-12 §5.4 short-circuit at the review gate).
+            IterationState.DECIDING,
+            IterationState.PAUSED,
+            IterationState.ABORTED,
+        }
     ),
     IterationState.APPLYING: frozenset(
         {IterationState.VERIFYING, IterationState.PAUSED, IterationState.ABORTED}
