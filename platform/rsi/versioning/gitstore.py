@@ -414,7 +414,15 @@ class GitStore:
             f = staging / rel
             if not f.is_file():
                 return False
-            if hashlib.sha256(f.read_bytes()).hexdigest() != expected:
+            # audit3 E1: same CRLF normalization as
+            # rsi.judge.rules.freeze_check — the manifest records
+            # line-ending-normalized digests so Windows checkouts verify too.
+            if (
+                hashlib.sha256(
+                    f.read_bytes().replace(b"\r\n", b"\n")
+                ).hexdigest()
+                != expected
+            ):
                 return False
         return True
 

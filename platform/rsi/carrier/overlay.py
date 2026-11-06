@@ -26,8 +26,15 @@ class OverlayBuilder:
     def build(config_dir: Path, plan: Any | None = None) -> Path:
         """Copy ``config_dir`` to a sibling ``overlay-<uuid>`` and stamp metadata."""
         logger.debug("build.entry", config_dir=str(config_dir), has_plan=plan is not None)
-        config_dir = Path(config_dir)
+        config_dir = Path(config_dir).resolve()
         overlay_dir = config_dir.parent / f"overlay-{uuid.uuid4().hex[:12]}"
+        # A degenerate source (e.g. cwd from an empty config_version_id) would
+        # place the overlay inside itself and recurse copytree forever.
+        if overlay_dir == config_dir or overlay_dir.is_relative_to(config_dir):
+            raise ValueError(
+                f"overlay destination {overlay_dir} would nest inside its "
+                f"source {config_dir}; refusing recursive copy"
+            )
         shutil.copytree(config_dir, overlay_dir, dirs_exist_ok=True)
         meta = {
             "source": str(config_dir),

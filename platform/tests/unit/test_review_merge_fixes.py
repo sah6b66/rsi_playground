@@ -147,9 +147,10 @@ class TestTrigger:
             raise RuntimeError("sandbox exploded")
 
         runner.run_batch = boom  # type: ignore
-        runner.trigger({"id": "b-bad"})  # must not raise
-        await asyncio.wait_for(asyncio.gather(*runner._tasks), timeout=5)
-        assert runner.last_status == "failed"
+        # audit3 W3: trigger runs on an isolated per-batch copy (returned)
+        r = runner.trigger({"id": "b-bad"})  # must not raise
+        await asyncio.wait_for(asyncio.gather(*r._tasks), timeout=5)
+        assert r.last_status == "failed"
 
     async def test_trigger_from_sync_context(self):
         runner = _bare_runner()
@@ -199,12 +200,14 @@ class TestTrigger:
                     asyncio.gather(*runner._tasks, return_exceptions=True),
                     timeout=30,
                 )
-            assert runner.last_status != "created"
             got = await client.get(
                 f"/api/v1/batches/{batch_id}",
                 headers={"Authorization": f"Bearer {token}"},
             )
             assert got.status_code == 200
+            # audit3 W2: the in-memory store is synced by the completion
+            # callback — the batch reaches a terminal status, not "created".
+            assert got.json()["status"] != "created"
 
 
 class _RerunRunner:

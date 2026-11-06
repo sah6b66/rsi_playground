@@ -150,9 +150,15 @@ class HostService:
         trace_net = self.net_policy.ensure_trace_net(selected_host)
         instance_id = new_id("inst")
         # P0: skip GitStore export — config_version_id is a placeholder path.
-        config_dir = Path(config_version_id)
+        # Reject empty/placeholder ids: ``Path("")`` is ``.`` (cwd), and
+        # overlaying cwd would recursively copy the whole working tree.
+        config_dir = (
+            Path(config_version_id)
+            if str(config_version_id).strip()
+            else Path("<unversioned>")
+        )
         overlay_built = False
-        if instrument and config_dir.exists():
+        if instrument and config_dir.is_dir():
             logger.debug("create_instance.overlay", source=str(config_dir))
             config_dir = OverlayBuilder.build(config_dir)
             overlay_built = True

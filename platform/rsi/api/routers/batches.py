@@ -105,10 +105,20 @@ async def trigger_batch(
         "params": body.params,
         "created_at": _now(),
     }
+    store[batch["id"]] = batch
     runner = request.app.state.services.get("batch_runner")
     if runner is not None:
-        runner.trigger(batch)
-    store[batch["id"]] = batch
+        # audit3 W2: the runner only writes the DB, so give it an
+        # on_update callback that syncs this in-memory batch dict when the
+        # background run finishes (success/failure/abort) — without it the
+        # store entry would stay "created" forever.
+        trigger = getattr(runner, "trigger", None)
+        if trigger is not None:
+            try:
+                trigger(batch, on_update=lambda upd: batch.update(upd))
+            except TypeError:
+                # legacy runner trigger() without the on_update kwarg
+                trigger(batch)
     return BatchOut(**batch)
 
 
@@ -286,9 +296,16 @@ async def rerun_batch(
         trigger = getattr(runner, "trigger", None)
         if trigger is not None:
             try:
-                trigger(rerun, bypass_cache=body.bypass_cache)
+                trigger(
+                    rerun,
+                    bypass_cache=body.bypass_cache,
+                    on_update=lambda upd: rerun.update(upd),
+                )
             except TypeError:
-                # legacy runner trigger() without the per-call bypass kwarg
-                trigger(rerun)
+                try:
+                    trigger(rerun, bypass_cache=body.bypass_cache)
+                except TypeError:
+                    # legacy runner trigger() without the per-call bypass kwarg
+                    trigger(rerun)
     store[rerun["id"]] = rerun
     return Response(status_code=204)

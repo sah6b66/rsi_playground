@@ -367,7 +367,6 @@ class TestFrozenDomain:
                 "actual": "a",
                 "confidence_of_sut": "0.5",
                 "match_hints": "h",
-                "eval_context": "",
             },
         )
         assert "root-cause judge" in out

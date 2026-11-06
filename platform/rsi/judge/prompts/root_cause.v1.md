@@ -15,8 +15,6 @@ SUT self-reported confidence: {confidence_of_sut}
 Highlighting hints (cues only — never judgment criteria):
 {match_hints}
 
-Evaluation context: {eval_context}
-
 Compare the SUT conclusion with the expected root cause semantically (same
 underlying fault, even if wording differs). Do not treat hints as criteria.
 

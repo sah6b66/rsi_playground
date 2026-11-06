@@ -9,6 +9,7 @@ and StatsAggregator. Pure orchestration: no device/container IO of its own.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import threading
@@ -221,7 +222,13 @@ class BatchRunner:
 
     # -- API trigger (DD-13 §9.6 batch_runner wiring) ------------------------
 
-    def trigger(self, batch: dict, *, bypass_cache: bool | None = None) -> None:
+    def trigger(
+        self,
+        batch: dict,
+        *,
+        bypass_cache: bool | None = None,
+        on_update: Callable[[dict], None] | None = None,
+    ) -> "BatchRunner":
         """Schedule ``run_batch`` for an API-created batch dict; non-blocking.
 
         Called from the async POST /batches and :rerun endpoints. The batch
@@ -234,9 +241,24 @@ class BatchRunner:
         ``bypass_cache`` is per-call (D-4 audit fix): a rerun batch bypasses
         the cache without flipping the sticky runner-level default, so
         ordinary batches keep their cache hits.
+
+        ``on_update`` (audit3 W2) is an optional completion callback invoked
+        once per batch with a dict update (``status``/``progress``/
+        ``finished_at``) — the API router uses it to sync the in-memory
+        batch store with the background run. Callback errors are contained.
+
+        Per-batch isolation (audit3 W3): each trigger runs on a shallow copy
+        of this runner with a fresh ``last_run_ids``/``last_status`` (same
+        semantics as ``ParallelBatchRunner.run_many``), so concurrent
+        triggers cannot cross-write each other's introspection state. The
+        shared result cache / checkpoint store / services stay shared (they
+        are keyed externally). Returns the per-batch copy for introspection.
         """
         batch_id = str(batch.get("id") or new_id("batch"))
-        coro = self._run_triggered_batch(batch, batch_id, bypass_cache)
+        runner = copy.copy(self)
+        runner.last_run_ids = {}
+        runner.last_status = "created"
+        coro = runner._run_triggered_batch(batch, batch_id, bypass_cache, on_update)
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:  # sync caller: run on a daemon thread
@@ -246,22 +268,40 @@ class BatchRunner:
                 daemon=True,
                 name=f"rsi-batch-{batch_id}",
             ).start()
-            return
+            return runner
         task = loop.create_task(coro, name=f"rsi-batch-{batch_id}")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        return runner
 
     async def _run_triggered_batch(
-        self, batch: dict, batch_id: str, bypass_cache: bool | None
+        self,
+        batch: dict,
+        batch_id: str,
+        bypass_cache: bool | None,
+        on_update: Callable[[dict], None] | None = None,
     ) -> None:
         params = dict(batch.get("params") or {})
         if bypass_cache is None:
             bypass_cache = bool(params.get("bypass_cache", False))
+
+        def _notify(update: dict) -> None:
+            if on_update is None:
+                return
+            try:
+                on_update(update)
+            except Exception as exc:  # noqa: BLE001 - callback must not kill the run
+                logger.warning(
+                    "batch.trigger_on_update_failed",
+                    batch_id=batch_id,
+                    error=str(exc),
+                )
+
         try:
             env, tasks, config_version_id, image_ref = (
                 self._resolve_trigger_inputs(batch)
             )
-            await self.run_batch(
+            stats = await self.run_batch(
                 batch_id,
                 env,
                 tasks,
@@ -279,6 +319,18 @@ class BatchRunner:
             logger.warning(
                 "batch.trigger_failed", batch_id=batch_id, error=str(exc)
             )
+            _notify({
+                "status": "failed",
+                "progress": {"done": 0, "total": 0},
+                "finished_at": _utcnow_iso(),
+            })
+            return
+        n = getattr(stats, "n", 0)
+        _notify({
+            "status": self.last_status,
+            "progress": {"done": n, "total": max(len(tasks), n)},
+            "finished_at": _utcnow_iso(),
+        })
 
     def _resolve_trigger_inputs(
         self, batch: dict
@@ -591,7 +643,13 @@ class BatchRunner:
         # 4. create SUT instance (P0: one instance per run)
         cred = self._resolve_cred(batch_id, permission)
         effective_config = config_version_id
-        if self.instrumentor is not None and Path(config_version_id).is_dir():
+        # An empty/placeholder config_version_id must never resolve to cwd
+        # (``Path("")`` is ``.``) — overlaying cwd would copy the whole tree.
+        if (
+            self.instrumentor is not None
+            and bool(str(config_version_id).strip())
+            and Path(config_version_id).is_dir()
+        ):
             # B-1 (DD-06 §6): instrument the exported config version once per
             # (batch, config_version) and feed the returned overlay dir to
             # create_instance. Smoke runs on throwaway instances.
