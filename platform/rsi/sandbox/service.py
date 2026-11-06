@@ -703,11 +703,19 @@ class _LoopRunner:
     on a single loop, so session locks never hop between event loops.
     """
 
-    def __init__(self) -> None:
+    # F-3 (audit3): the bridge wait must comfortably exceed the device-side
+    # read timeout (DeviceSession.exec_cli defaults to 120s) — a 30s wait
+    # fired first, and the bare TimeoutError escaped the EnvError handling
+    # in restore_task/run_task, killing the whole batch instead of grading
+    # the task env_failed. 180s = 120s device read timeout + retry headroom.
+    DEFAULT_TIMEOUT_S = 180.0
+
+    def __init__(self, timeout_s: float | None = None) -> None:
         import threading
 
         self._lock = threading.Lock()
         self._loop: asyncio.AbstractEventLoop | None = None
+        self.timeout_s = self.DEFAULT_TIMEOUT_S if timeout_s is None else timeout_s
 
     def run(self, coro):
         with self._lock:
@@ -722,11 +730,16 @@ class _LoopRunner:
             # L1: bounded wait — a hung runner thread must not deadlock the
             # caller forever.
             return asyncio.run_coroutine_threadsafe(coro, self._loop).result(
-                timeout=30
+                timeout=self.timeout_s
             )
         except asyncio.TimeoutError as exc:
-            raise TimeoutError(
-                "sandbox runner loop coroutine did not finish within 30s"
+            # F-3: EnvError (not the builtin TimeoutError) so the existing
+            # task-level degradation in BatchRunner.run_task classifies this
+            # as env_failed instead of aborting the batch.
+            raise EnvError(
+                "sandbox runner loop coroutine did not finish within "
+                f"{self.timeout_s}s",
+                context={"timeout_s": self.timeout_s, "reason": "runner_bridged_timeout"},
             ) from exc
 
 

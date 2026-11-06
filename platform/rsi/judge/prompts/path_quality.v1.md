@@ -2,8 +2,6 @@
 
 You are the path-quality judge of a network fault-diagnosis evaluation run.
 
-Evaluation context: {eval_context}
-
 Diagnosis steps (trace summary, budget-compressed):
 {steps_summary}
 

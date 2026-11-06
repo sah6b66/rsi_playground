@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import json
+
 import pytest
 
 from rsi.core.errors import InvalidTransitionError
@@ -603,5 +605,7 @@ async def test_llm_judge_prompt_contains_config_version():
         config_version_id="cfg-v9",
         batch_purpose="candidate_eval",
     )
-    assert "cfg-v9" in llm.last_vars["eval_context"]
-    assert "candidate_eval" in llm.last_vars["eval_context"]
+    # audit3 N2: blind judge — the arm labels must NOT leak into the prompt
+    blob = json.dumps(llm.last_vars, ensure_ascii=False, default=str)
+    assert "eval_context" not in llm.last_vars
+    assert "cfg-v9" not in blob and "candidate_eval" not in blob

@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
 
 from rsi.api.deps import audit, get_current_user, get_store, require_perms
-from rsi.core.errors import NotFoundError
+from rsi.core.errors import ConfigError, NotFoundError
 from rsi.security.auth import Claims
 
 router = APIRouter(prefix="/credentials", tags=["credentials"])
@@ -70,9 +70,16 @@ def _put_secret(request: Request, name: str, kind: str, secret: str) -> str:
 
 
 def _rotate_secret(request: Request, cred_id: str, new_secret: str) -> None:
+    # N-8 (audit3): without a credential_store the rotate would be a silent
+    # no-op that still answers 204 — the secret never changes. Fail loudly
+    # (ConfigError -> 503) instead of pretending success.
     cs = request.app.state.services.get("credential_store")
-    if cs is not None:
-        cs.rotate(cred_id, new_secret)
+    if cs is None:
+        raise ConfigError(
+            "credential store not configured",
+            context={"credential_id": cred_id, "missing_service": "credential_store"},
+        )
+    cs.rotate(cred_id, new_secret)
 
 
 @router.get("", response_model=CredentialPage)

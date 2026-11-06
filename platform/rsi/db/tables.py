@@ -340,6 +340,9 @@ class Judgment(SQLModel, table=True):
     llm_json: Optional[str] = None
     verdict_json: str = Field(nullable=False)  # §2.1 Verdict schema
     judge_prompt_hash: Optional[str] = None  # FR7.6 freeze audit
+    # audit3 N2: eval provenance (config_version_id / batch_purpose) kept for
+    # traceability — deliberately NOT shown to the judge LLM (blind eval).
+    eval_context_json: Optional[str] = None
     created_at: str = Field(nullable=False)
 
 

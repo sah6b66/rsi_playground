@@ -27,6 +27,19 @@ MANIFEST_PATH = JUDGE_ROOT / "rules" / "freeze.manifest"
 _FROZEN_GLOBS = ("rules/safety_rules.yaml", "prompts/*.v*.md")
 
 
+def _normalized_sha256(path: Path) -> str:
+    """sha256 over the file bytes with CRLF line endings normalized to LF.
+
+    Windows checkouts (core.autocrlf=true) materialize the frozen files with
+    CRLF while the manifest was computed from the LF-committed bytes — a
+    byte-exact hash would then mismatch on every file (audit3 E1/N1). Both
+    :func:`verify` and :func:`write_manifest` use this same normalization so
+    the two sides can never drift apart.
+    """
+    data = path.read_bytes().replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
 def verify(manifest_path: Path | None = None, root: Path | None = None) -> bool:
     """Return True iff every file listed in the manifest matches its sha256."""
     base = root if root is not None else JUDGE_ROOT
@@ -47,7 +60,7 @@ def verify(manifest_path: Path | None = None, root: Path | None = None) -> bool:
         if not f.is_file():
             logger.warning("freeze_check.missing_file", path=rel)
             return False
-        actual = hashlib.sha256(f.read_bytes()).hexdigest()
+        actual = _normalized_sha256(f)
         if actual != expected:
             logger.warning("freeze_check.hash_mismatch", path=rel, expected=expected, actual=actual)
             return False
@@ -84,7 +97,7 @@ def write_manifest(
     for pattern in _FROZEN_GLOBS:
         for f in sorted(base.glob(pattern)):
             rel = f.relative_to(base).as_posix()
-            manifest[rel] = hashlib.sha256(f.read_bytes()).hexdigest()
+            manifest[rel] = _normalized_sha256(f)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return manifest

@@ -75,9 +75,9 @@ class JudgeService:
     ) -> "Verdict":
         """Judge one run.
 
-        ``config_version_id`` / ``batch_purpose`` (T2-5) give the LLM judge
-        the evaluation context so it can tell baseline from candidate
-        configurations; both default to None for backward compatibility.
+        ``config_version_id`` / ``batch_purpose`` (T2-5/F3) are provenance
+        only: they are persisted with the Judgment row (eval_context_json)
+        and never reach the judge LLM prompts (audit3 N2 blind-eval fix).
         """
         logger.debug(
             "judge_run.entry",
@@ -121,6 +121,8 @@ class JudgeService:
                 safety_verdict=safety_verdict,
                 sem=sem,
                 hack=hack,
+                config_version_id=config_version_id,
+                batch_purpose=batch_purpose,
             )
         logger.debug(
             "judge_run.exit",
@@ -137,15 +139,27 @@ class JudgeService:
         safety_verdict,
         sem: "SemanticScores",
         hack,
+        *,
+        config_version_id: str | None = None,
+        batch_purpose: str | None = None,
     ) -> None:
         if self._session_factory is None:
             return
         try:
+            import json as _json
+
             from rsi.db.tables import Judgment
 
             def _j(obj) -> str | None:
                 return obj.model_dump_json() if obj is not None else None
 
+            eval_ctx = _json.dumps(
+                {
+                    "config_version_id": config_version_id,
+                    "batch_purpose": batch_purpose,
+                },
+                ensure_ascii=False,
+            )
             row = Judgment(
                 id=str(uuid.uuid4()),
                 run_id=run_id,
@@ -154,6 +168,7 @@ class JudgeService:
                 llm_json=_j(sem),
                 verdict_json=verdict.model_dump_json(),
                 judge_prompt_hash=self._prompt_hash_fn() if self._prompt_hash_fn else None,
+                eval_context_json=eval_ctx,
                 created_at=datetime.now(timezone.utc).isoformat(),
             )
             with self._session_factory() as session:

@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from rsi.core.errors import (
     AuthError,
     BudgetExceeded,
+    ConfigError,
     ConflictError,
     DeviceError,
     EnvError,
@@ -44,6 +45,9 @@ EXCEPTION_MAP: dict[type[Exception], tuple[int, str]] = {
     DeviceError: (409, "CONFLICT"),
     EnvError: (409, "CONFLICT"),
     BudgetExceeded: (429, "BUDGET_EXCEEDED"),
+    # A required service was not assembled into the DI container (N-8): the
+    # request itself is valid, the deployment is not — 503, not 500.
+    ConfigError: (503, "SERVICE_UNAVAILABLE"),
     LLMOutputInvalid: (502, "LLM_INVALID"),
     RsiError: (500, "INTERNAL"),  # fallback
 }

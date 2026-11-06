@@ -9,6 +9,7 @@ and StatsAggregator. Pure orchestration: no device/container IO of its own.
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import threading
@@ -221,7 +222,13 @@ class BatchRunner:
 
     # -- API trigger (DD-13 §9.6 batch_runner wiring) ------------------------
 
-    def trigger(self, batch: dict, *, bypass_cache: bool | None = None) -> None:
+    def trigger(
+        self,
+        batch: dict,
+        *,
+        bypass_cache: bool | None = None,
+        on_update: Callable[[dict], None] | None = None,
+    ) -> "BatchRunner":
         """Schedule ``run_batch`` for an API-created batch dict; non-blocking.
 
         Called from the async POST /batches and :rerun endpoints. The batch
@@ -234,9 +241,24 @@ class BatchRunner:
         ``bypass_cache`` is per-call (D-4 audit fix): a rerun batch bypasses
         the cache without flipping the sticky runner-level default, so
         ordinary batches keep their cache hits.
+
+        ``on_update`` (audit3 W2) is an optional completion callback invoked
+        once per batch with a dict update (``status``/``progress``/
+        ``finished_at``) — the API router uses it to sync the in-memory
+        batch store with the background run. Callback errors are contained.
+
+        Per-batch isolation (audit3 W3): each trigger runs on a shallow copy
+        of this runner with a fresh ``last_run_ids``/``last_status`` (same
+        semantics as ``ParallelBatchRunner.run_many``), so concurrent
+        triggers cannot cross-write each other's introspection state. The
+        shared result cache / checkpoint store / services stay shared (they
+        are keyed externally). Returns the per-batch copy for introspection.
         """
         batch_id = str(batch.get("id") or new_id("batch"))
-        coro = self._run_triggered_batch(batch, batch_id, bypass_cache)
+        runner = copy.copy(self)
+        runner.last_run_ids = {}
+        runner.last_status = "created"
+        coro = runner._run_triggered_batch(batch, batch_id, bypass_cache, on_update)
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:  # sync caller: run on a daemon thread
@@ -246,22 +268,40 @@ class BatchRunner:
                 daemon=True,
                 name=f"rsi-batch-{batch_id}",
             ).start()
-            return
+            return runner
         task = loop.create_task(coro, name=f"rsi-batch-{batch_id}")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        return runner
 
     async def _run_triggered_batch(
-        self, batch: dict, batch_id: str, bypass_cache: bool | None
+        self,
+        batch: dict,
+        batch_id: str,
+        bypass_cache: bool | None,
+        on_update: Callable[[dict], None] | None = None,
     ) -> None:
         params = dict(batch.get("params") or {})
         if bypass_cache is None:
             bypass_cache = bool(params.get("bypass_cache", False))
+
+        def _notify(update: dict) -> None:
+            if on_update is None:
+                return
+            try:
+                on_update(update)
+            except Exception as exc:  # noqa: BLE001 - callback must not kill the run
+                logger.warning(
+                    "batch.trigger_on_update_failed",
+                    batch_id=batch_id,
+                    error=str(exc),
+                )
+
         try:
             env, tasks, config_version_id, image_ref = (
                 self._resolve_trigger_inputs(batch)
             )
-            await self.run_batch(
+            stats = await self.run_batch(
                 batch_id,
                 env,
                 tasks,
@@ -279,6 +319,18 @@ class BatchRunner:
             logger.warning(
                 "batch.trigger_failed", batch_id=batch_id, error=str(exc)
             )
+            _notify({
+                "status": "failed",
+                "progress": {"done": 0, "total": 0},
+                "finished_at": _utcnow_iso(),
+            })
+            return
+        n = getattr(stats, "n", 0)
+        _notify({
+            "status": self.last_status,
+            "progress": {"done": n, "total": max(len(tasks), n)},
+            "finished_at": _utcnow_iso(),
+        })
 
     def _resolve_trigger_inputs(
         self, batch: dict
@@ -591,7 +643,13 @@ class BatchRunner:
         # 4. create SUT instance (P0: one instance per run)
         cred = self._resolve_cred(batch_id, permission)
         effective_config = config_version_id
-        if self.instrumentor is not None and Path(config_version_id).is_dir():
+        # An empty/placeholder config_version_id must never resolve to cwd
+        # (``Path("")`` is ``.``) — overlaying cwd would copy the whole tree.
+        if (
+            self.instrumentor is not None
+            and bool(str(config_version_id).strip())
+            and Path(config_version_id).is_dir()
+        ):
             # B-1 (DD-06 §6): instrument the exported config version once per
             # (batch, config_version) and feed the returned overlay dir to
             # create_instance. Smoke runs on throwaway instances.
@@ -616,102 +674,121 @@ class BatchRunner:
             run_id=run_id,
             carrier_type=self.carrier_type,
         )
-        try:
-            # 5. submit -> collect (timeout from config)
-            handle = self.carrier.submit_task(instance, task.task)
-            result = await asyncio.to_thread(
-                self.carrier.collect, handle, self.task_timeout_s
-            )
-            # F2 crash classification: a carrier that surfaces the container
-            # exit code (137=OOM / 139=segfault) marks the run infra-crashed
-            # regardless of stdout; FINAL_JSON is meaningless then. Carriers
-            # without an exit_code field are skipped (F6 adds it).
-            exit_code = getattr(handle, "exit_code", None)
-            if exit_code in (137, 139) and not result.instance_crashed:
-                logger.debug(
-                    "run_task.instance_crashed", run_id=run_id, exit_code=exit_code
-                )
-                result = TaskResult(task_complete=False, instance_crashed=True)
+        # F-2 (audit3): destroy the instance on EVERY exit path (normal,
+        # instance_crashed early return, judge/restore exceptions). A leaked
+        # handle keeps the HostService._instances entry and the host_pool
+        # slot count alive, permanently polluting least-loaded scheduling.
+        destroyed = False
 
-            if result.instance_crashed:
-                # infra fault, not an Agent defect: skip judgment entirely
-                # (excluded from attribution samples, counted in infra stats)
+        def _destroy_instance() -> None:
+            nonlocal destroyed
+            if destroyed:
+                return
+            destroyed = True
+            try:
+                self.carrier.destroy(instance)
+            except Exception:  # noqa: BLE001 - teardown must not mask results
                 logger.debug(
-                    "run_task.exit", run_id=run_id, status="instance_crashed"
+                    "run_task.destroy_failed",
+                    run_id=run_id,
+                    instance_id=getattr(instance, "instance_id", "?"),
                 )
+
+        try:
+            try:
+                # 5. submit -> collect (timeout from config)
+                handle = self.carrier.submit_task(instance, task.task)
+                result = await asyncio.to_thread(
+                    self.carrier.collect, handle, self.task_timeout_s
+                )
+                # F2 crash classification: a carrier that surfaces the container
+                # exit code (137=OOM / 139=segfault) marks the run infra-crashed
+                # regardless of stdout; FINAL_JSON is meaningless then. Carriers
+                # without an exit_code field are skipped (F6 adds it).
+                exit_code = getattr(handle, "exit_code", None)
+                if exit_code in (137, 139) and not result.instance_crashed:
+                    logger.debug(
+                        "run_task.instance_crashed", run_id=run_id, exit_code=exit_code
+                    )
+                    result = TaskResult(task_complete=False, instance_crashed=True)
+
+                if result.instance_crashed:
+                    # infra fault, not an Agent defect: skip judgment entirely
+                    # (excluded from attribution samples, counted in infra stats)
+                    logger.debug(
+                        "run_task.exit", run_id=run_id, status="instance_crashed"
+                    )
+                    return result, _env_failed_verdict()
+
+                # 6. collect trace events (P0: synthesized from the result actions)
+                events = self._trace_events(run_id, task, lab, result)
+                self.collector.ingest(events)
+            finally:
+                self.collector.finalize(run_id)
+
+            # 7. judge
+            env = self._envs.get(batch_id)
+            eval_task = EvalTask(env=env, task=task) if env is not None else None
+            verdict = await self.judge.judge_run(
+                eval_task,
+                result,
+                events,
+                lab,
+                self.sandbox,
+                permission,
+                run_status=RunStatus.DONE,
+                # T2-5: judge context so the LLM can tell baseline vs candidate
+                config_version_id=config_version_id,
+                batch_purpose=self._batch_purpose(batch_id),
+            )
+
+            # 8. task-level restore AFTER judgment (final-state asserts need the
+            # fault state present, ADR-20 L1). restore_task already retries
+            # internally; on persistent failure escalate to L2 environment-level
+            # recovery (lab reset + restore replay), and if even that fails the
+            # TASK is scored env_failed (batch-level failure semantics, DD-12
+            # §5.2) instead of killing the whole batch.
+            restored = False
+            for _attempt in range(3):  # 1 initial + 2 retries (D-13)
+                try:
+                    await self.sandbox.restore_task(lab, applied)
+                    restored = True
+                    break
+                except EnvError as exc:
+                    logger.debug(
+                        "run_task.restore_retry",
+                        run_id=run_id,
+                        attempt=_attempt + 1,
+                        exc_type=type(exc).__name__,
+                    )
+            if not restored:
+                try:
+                    # L2: reset the lab to a clean state and re-run restore
+                    # (SandboxService.reset replays device state; a full
+                    # ops.jsonl replay rides on the backup re-apply inside
+                    # restore_task). No dedicated replay API exists in P0.
+                    logger.warning("run_task.restore_l2_recovery", run_id=run_id)
+                    await self.sandbox.reset(lab)
+                    await self.sandbox.restore_task(lab, applied)
+                    restored = True
+                except Exception as exc:  # noqa: BLE001 - task degrades, not batch
+                    logger.warning(
+                        "run_task.restore_env_failed",
+                        run_id=run_id,
+                        exc_type=type(exc).__name__,
+                    )
+            if not restored:
                 return result, _env_failed_verdict()
 
-            # 6. collect trace events (P0: synthesized from the result actions)
-            events = self._trace_events(run_id, task, lab, result)
-            self.collector.ingest(events)
+            logger.debug(
+                "run_task.exit",
+                run_id=run_id,
+                task_complete=result.task_complete,
+                missing=verdict.missing,
+            )
+            return result, verdict
         finally:
-            self.collector.finalize(run_id)
-
-        # 7. judge
-        env = self._envs.get(batch_id)
-        eval_task = EvalTask(env=env, task=task) if env is not None else None
-        verdict = await self.judge.judge_run(
-            eval_task,
-            result,
-            events,
-            lab,
-            self.sandbox,
-            permission,
-            run_status=RunStatus.DONE,
-            # T2-5: judge context so the LLM can tell baseline vs candidate
-            config_version_id=config_version_id,
-            batch_purpose=self._batch_purpose(batch_id),
-        )
-
-        # 8. task-level restore AFTER judgment (final-state asserts need the
-        # fault state present, ADR-20 L1). restore_task already retries
-        # internally; on persistent failure escalate to L2 environment-level
-        # recovery (lab reset + restore replay), and if even that fails the
-        # TASK is scored env_failed (batch-level failure semantics, DD-12
-        # §5.2) instead of killing the whole batch.
-        restored = False
-        for _attempt in range(3):  # 1 initial + 2 retries (D-13)
-            try:
-                await self.sandbox.restore_task(lab, applied)
-                restored = True
-                break
-            except EnvError as exc:
-                logger.debug(
-                    "run_task.restore_retry",
-                    run_id=run_id,
-                    attempt=_attempt + 1,
-                    exc_type=type(exc).__name__,
-                )
-        if not restored:
-            try:
-                # L2: reset the lab to a clean state and re-run restore
-                # (SandboxService.reset replays device state; a full
-                # ops.jsonl replay rides on the backup re-apply inside
-                # restore_task). No dedicated replay API exists in P0.
-                logger.warning("run_task.restore_l2_recovery", run_id=run_id)
-                await self.sandbox.reset(lab)
-                await self.sandbox.restore_task(lab, applied)
-                restored = True
-            except Exception as exc:  # noqa: BLE001 - task degrades, not batch
-                logger.warning(
-                    "run_task.restore_env_failed",
-                    run_id=run_id,
-                    exc_type=type(exc).__name__,
-                )
-        if not restored:
-            self.carrier.destroy(instance)
-            return result, _env_failed_verdict()
-
-        # 9. destroy instance
-        self.carrier.destroy(instance)
-
-        logger.debug(
-            "run_task.exit",
-            run_id=run_id,
-            task_complete=result.task_complete,
-            missing=verdict.missing,
-        )
-        return result, verdict
+            _destroy_instance()
 
     # -- helpers ----------------------------------------------------------------
 
