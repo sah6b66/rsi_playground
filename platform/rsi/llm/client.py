@@ -269,12 +269,22 @@ class LLMClient:
 
     # -- internals ------------------------------------------------------------------
 
-    @staticmethod
-    def _key(component: str, prompt_name: str, vars: dict[str, str]) -> str:
+    def _key(self, component: str, prompt_name: str, vars: dict[str, str]) -> str:
+        """Cassette/cache key: component + prompt_name + prompt fingerprint
+        + canonical vars (R2-H3).
+
+        The active prompt fingerprint (``prompt_hash``) is part of the key so
+        a changed prompt version (e.g. a new ``.v2`` template) can never
+        replay a response recorded under the old prompt, even when the
+        request vars are identical.
+        """
         canonical = json.dumps(
             {k: vars[k] for k in sorted(vars)}, ensure_ascii=False, sort_keys=True
         )
-        payload = f"{component}\x00{prompt_name}\x00{canonical}"
+        payload = (
+            f"{component}\x00{prompt_name}\x00"
+            f"{self.prompt_hash(component, prompt_name)}\x00{canonical}"
+        )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     @staticmethod

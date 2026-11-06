@@ -103,6 +103,35 @@ class DecisionRecorder:
     ) -> None:
         if self._session_factory is None:
             return
+        try:
+            self._persist_now(
+                record,
+                sut_id=sut_id,
+                baseline_version_id=baseline_version_id,
+                candidate_version_id=candidate_version_id,
+                hypothesis_id=hypothesis_id,
+                scores=scores,
+            )
+        except Exception as exc:  # noqa: BLE001 - R2-H1: a DB/audit outage
+            # must not crash the DECIDING phase; the in-memory record (kept
+            # above) is still served to API consumers, same containment
+            # policy as Accountant/GitStore.
+            logger.warning(
+                "decision.persist_failed",
+                experiment_id=record.experiment_id,
+                error=str(exc),
+            )
+
+    def _persist_now(
+        self,
+        record: DecisionRecord,
+        *,
+        sut_id: str,
+        baseline_version_id: str,
+        candidate_version_id: str,
+        hypothesis_id: str | None,
+        scores: dict[str, Any] | None,
+    ) -> None:
         import json
 
         from rsi.db.tables import Experiment

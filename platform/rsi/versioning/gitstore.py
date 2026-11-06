@@ -54,6 +54,26 @@ def _baseline_prefix(sut_id: str) -> str:
     return f"suts/{sut_id}/baseline/"
 
 
+def _reject_traversal(path: str) -> None:
+    """Defense-in-depth path-traversal guard (audit R1#4).
+
+    Applied at every file-writing entry point independently of the optional
+    TargetRegistry injection: any ``..`` segment, absolute path or backslash
+    escape must never reach ``staging / rel`` (which would write outside the
+    staging worktree).
+    """
+    from pathlib import PurePosixPath
+
+    if (
+        ".." in PurePosixPath(path.replace("\\", "/")).parts
+        or path.startswith("/")
+        or "\\" in path
+    ):
+        raise GitStoreError(
+            f"path {path!r} contains a traversal segment and is rejected",
+        )
+
+
 class GitStore:
     """Git-backed artifact store for SUT versions (FR6.5/FR8)."""
 
@@ -431,6 +451,7 @@ class GitStore:
     ) -> None:
         """Write ``suts/<sut_id>/<path>`` in staging; optionally commit."""
         _, _, staging = self._require()
+        _reject_traversal(path)
         rel = f"suts/{sut_id}/{path}"
         if commit:
             self._validate_paths([rel])
@@ -464,13 +485,22 @@ class GitStore:
         staging worktree without creating a version.
         """
         _, _, staging = self._require()
+        _reject_traversal(path)
         rel = f"suts/{sut_id}/{path}"
         target = staging / rel
         if target.is_file():
             target.unlink()
         if commit:
             with self._write_lock:
-                self._commit_staging(message or f"delete: {rel}", paths=[f"suts/{sut_id}"])
+                vid = self._commit_staging(
+                    message or f"delete: {rel}", paths=[f"suts/{sut_id}"]
+                )
+                # g) align with write_file(commit=True): validate + register a
+                # config_versions row for the manual delete commit.
+                self._validate_paths([rel])
+                self._register_version(
+                    vid, sut_id, "baseline", f"manual delete {path}"
+                )
 
     # ── internal helpers ─────────────────────────────────────────────
 
@@ -554,6 +584,7 @@ class GitStore:
 
     def _apply_changes(self, tree_dir: str | Path, files: list[FileChange]) -> None:
         for fc in files:
+            _reject_traversal(fc.path)
             target = Path(tree_dir) / fc.path
             if fc.op == "delete":
                 if target.exists():

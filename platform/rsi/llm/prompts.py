@@ -101,7 +101,16 @@ class PromptLibrary:
     def _latest_key(self, component: str, name: str) -> str | None:
         prefix = f"{component}/{name}.v"
         best: str | None = None
+        best_v = -1
         for k in self._templates:
-            if k.startswith(prefix) and (best is None or k > best):
-                best = k
+            if not k.startswith(prefix):
+                continue
+            # e) numeric version compare: lexicographic ordering would rank
+            # ".v10" below ".v2" and silently pick a stale prompt.
+            try:
+                v = int(k[len(prefix):])
+            except ValueError:
+                continue
+            if v > best_v:
+                best, best_v = k, v
         return best

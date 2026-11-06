@@ -93,6 +93,9 @@ def create_app(
         # shutdown: stop background pollers, then reclaim pooled resources
         if stop_task is not None:
             stop_task.cancel()
+            # c) await the cancelled task so the poller actually finishes
+            # (and its finally-blocks run) before the loop closes.
+            await asyncio.gather(stop_task, return_exceptions=True)
         if monitor is not None and hasattr(monitor, "stop"):
             try:
                 await monitor.stop()

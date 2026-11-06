@@ -80,6 +80,43 @@ _GATE_ORDER = (
 _GATE_POLL_S = 5.0  # asyncio.Event wait slice (DD-12 §5.4 dual-safety polling)
 
 
+def _score_rows(stats) -> dict[str, float]:
+    """BatchStats.task_scores -> {task_id: score} (D-9 list or legacy dict)."""
+    raw = getattr(stats, "task_scores", None) if stats is not None else None
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return {str(k): float(v) for k, v in raw.items()}
+    out: dict[str, float] = {}
+    for entry in raw:
+        if not isinstance(entry, dict) or entry.get("task_id") is None:
+            continue
+        out[str(entry["task_id"])] = float(
+            entry.get(
+                "score",
+                entry.get("root_cause_accuracy", entry.get("task_complete", 0.0)),
+            )
+        )
+    return out
+
+
+def _task_score_list(stats) -> list[float] | None:
+    """Per-task scores in task-id order (selector rule-5 paired input)."""
+    rows = _score_rows(stats)
+    if not rows:
+        return None
+    return [rows[k] for k in sorted(rows)]
+
+
+def _pair_scores(base_stats, cand_stats) -> list[float] | None:
+    """Candidate scores reordered to the baseline task order (pairing)."""
+    base = _score_rows(base_stats)
+    cand = _score_rows(cand_stats)
+    if not base or not cand:
+        return None
+    return [cand[k] for k in sorted(base) if k in cand]
+
+
 class InMemoryPauseStore:
     """Lightweight PAUSED persistence (D-3 P0): dict keyed by iteration_id.
 
@@ -127,6 +164,7 @@ class IterationEngine:
         enable_manual_gates: bool = False,
         critic_max_repair_rounds: int = 5,
         no_gain_rounds: int = 3,
+        noise_lookup: Callable[[str], dict[str, float]] | None = None,
     ) -> None:
         self.batch_runner = batch_runner
         self.attribution_analyzer = attribution_analyzer
@@ -143,6 +181,10 @@ class IterationEngine:
         self.enable_manual_gates = enable_manual_gates
         self.critic_max_repair_rounds = critic_max_repair_rounds
         self.no_gain_rounds = no_gain_rounds
+        # R2-H1: optional noise-band data source (evalset_id -> {metric: sigma}).
+        # None keeps metric_noise unset in DecisionCtx (rules degrade to
+        # delta-0 semantics), so existing stub rigs are unaffected.
+        self.noise_lookup = noise_lookup
         self.round = 0
         # introspection for tests/ops
         self.last_iteration_id: str | None = None
@@ -335,6 +377,7 @@ class IterationEngine:
         hypothesis: dict[str, Any] | None = None,
         candidate_config_version_id: str | None = None,
         noise_delta: float | None = None,
+        iteration_id: str | None = None,
     ) -> dict[str, Any]:
         """One iteration round (P0): state machine + data flow, no real LLM."""
         logger.debug(
@@ -345,7 +388,12 @@ class IterationEngine:
             round=self.round + 1,
         )
         self.round += 1
-        iteration_id = new_id("iter")
+        # R1#5: the API mints ``iter-<uuid8>`` ids; an explicit iteration_id
+        # lets the caller bridge its id space into RUNNING_ENGINES so the
+        # gate endpoints reach this very engine instance. None keeps the
+        # self-minted id (backward compatible).
+        if iteration_id is None:
+            iteration_id = new_id("iter")
         self.last_iteration_id = iteration_id
         from_ = None
         RUNNING_ENGINES[iteration_id] = self
@@ -449,7 +497,12 @@ class IterationEngine:
                     evidence={"repair_rounds": self.critic_max_repair_rounds},
                 )
                 self._record_decision(
-                    iteration_id, decision, baseline_stats, None
+                    iteration_id,
+                    decision,
+                    baseline_stats,
+                    None,
+                    sut_id=sut_id,
+                    baseline_version_id=str(config_version_id),
                 )
                 await self._advance(iteration_id, from_, "DECIDING")
                 await self._advance(iteration_id, "DECIDING", "FINISHED")
@@ -495,7 +548,14 @@ class IterationEngine:
                 reason="review gate rejected the changeset",
                 evidence={"reasons": review["reasons"]},
             )
-            self._record_decision(iteration_id, decision, baseline_stats, None)
+            self._record_decision(
+                iteration_id,
+                decision,
+                baseline_stats,
+                None,
+                sut_id=sut_id,
+                baseline_version_id=str(config_version_id),
+            )
             await self._advance(iteration_id, from_, "DECIDING")
             await self._advance(iteration_id, "DECIDING", "FINISHED")
             self.last_state = "FINISHED"
@@ -563,6 +623,22 @@ class IterationEngine:
                 noise_delta=noise_delta,
                 goals=profile.goals,
                 guards=profile.guards,
+                # R2-H1: production wiring for the D-7 selector inputs —
+                # per-metric noise sigma, paired per-task scores and the
+                # combined cost summary, all derived from the BatchStats the
+                # verification phase just produced.
+                metric_noise=self._lookup_metric_noise(profile),
+                base_task_scores=_task_score_list(baseline_stats),
+                cand_task_scores=_pair_scores(baseline_stats, candidate_stats),
+                cost={
+                    "tokens": (baseline_stats.tokens + candidate_stats.tokens),
+                    "tool_calls": (
+                        baseline_stats.tool_calls + candidate_stats.tool_calls
+                    ),
+                    "wall_time_s": (
+                        baseline_stats.wall_time_s + candidate_stats.wall_time_s
+                    ),
+                },
             )
             decision = self.selector.decide(ctx)
             if self.gate_handler is not None:
@@ -605,7 +681,15 @@ class IterationEngine:
         )
 
         # decision side effects (T2-3): record + promote + hit_rate recalc
-        self._record_decision(iteration_id, decision, baseline_stats, candidate_stats)
+        self._record_decision(
+            iteration_id,
+            decision,
+            baseline_stats,
+            candidate_stats,
+            sut_id=sut_id,
+            baseline_version_id=str(config_version_id),
+            candidate_version_id=str(cand_cfg),
+        )
         if decision.action == "PROMOTE" and self.gitstore is not None:
             from rsi.versioning.changeset import VersionId
 
@@ -681,6 +765,11 @@ class IterationEngine:
         decision: Decision,
         baseline_stats: BatchStats | None,
         candidate_stats: BatchStats | None,
+        *,
+        sut_id: str = "unknown",
+        baseline_version_id: str = "unknown",
+        candidate_version_id: str = "unknown",
+        hypothesis_id: str | None = None,
     ) -> None:
         if self.decision_recorder is None:
             return
@@ -689,7 +778,35 @@ class IterationEngine:
             decision,
             f"{iteration_id}-baseline",
             f"{iteration_id}-holdout",
+            sut_id=sut_id,
+            baseline_version_id=baseline_version_id,
+            candidate_version_id=candidate_version_id,
+            hypothesis_id=hypothesis_id,
+            scores={
+                "baseline_metrics": dict(baseline_stats.metrics or {})
+                if baseline_stats is not None
+                else {},
+                "candidate_metrics": dict(candidate_stats.metrics or {})
+                if candidate_stats is not None
+                else {},
+            },
         )
+
+    def _lookup_metric_noise(self, profile) -> dict[str, float] | None:
+        """R2-H1: noise_lookup(evalset_id) -> {metric: sigma}; None skips."""
+        if self.noise_lookup is None:
+            return None
+        ev = getattr(profile, "evalsets", None)
+        key = getattr(ev, "holdout", "") or getattr(ev, "iterate", "") or ""
+        if not key:
+            return None
+        try:
+            return dict(self.noise_lookup(str(key)))
+        except Exception as exc:  # noqa: BLE001 - lookup must not kill DECIDING
+            logger.warning(
+                "iteration.noise_lookup_failed", evalset_id=key, error=str(exc)
+            )
+            return None
 
     @staticmethod
     def _calc_hit_rate(

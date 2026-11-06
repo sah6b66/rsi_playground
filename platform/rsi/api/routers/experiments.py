@@ -107,6 +107,9 @@ async def sft_report(
             exp.get("defect_b_clusters", []),
             exp.get("opt_history", []),
             int(exp.get("failed_sample_count", 0)),
+            # f) owner id so the report file lands under the right owner dir
+            # (DD-11 §7④) instead of a shared default.
+            exp_id=experiment_id,
         )
     lines = [f"# SFT 评估报告 — {experiment_id}", ""]
     if suggestion is None:

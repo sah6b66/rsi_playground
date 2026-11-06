@@ -11,24 +11,30 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from rsi.core.enums import RunStatus
 from rsi.core.errors import BudgetExceeded, EnvError
 from rsi.core.models import (
     BatchStats,
+    DeviceSpec,
     Efficiency,
+    EnvSpec,
     EvalTask,
     EventType,
+    ExpectedAnswer,
     LabHandle,
     PathQuality,
     Scores,
+    SshAccess,
     SafetyVerdict,
     TaskRecord,
     TaskResult,
     TaskSpec,
+    Topology,
     TraceEvent,
     Verdict,
 )
@@ -150,6 +156,8 @@ class BatchRunner:
         instrumentor=None,
         session_factory=None,
         carrier_type: str = "opencode",
+        batch_resolver: Callable[[dict], tuple[Any, list[TaskRecord], str, str]]
+        | None = None,
     ) -> None:
         # credential_resolver (audit T2-1/B-8): object exposing
         # ``resolve_env(env, permission)`` (CredentialResolver) whose result
@@ -188,8 +196,15 @@ class BatchRunner:
         self.result_cache: dict[tuple[str, str], tuple[str, Verdict, str]] = (
             result_cache if result_cache is not None else {}
         )
-        # D-4: default cache bypass (set by :rerun wiring / noise calibration)
+        # D-4: default cache bypass (per-call override is preferred; this
+        # attribute remains the runner-level default for noise calibration)
         self.bypass_cache: bool = False
+        # API trigger wiring: optional resolver turning an API batch dict
+        # (evalset_id/sut_id/params) into run_batch inputs
+        # (env, tasks, config_version_id, image_ref). None -> offline default
+        # (minimal fake env + one trivial task) so trigger() always works.
+        self.batch_resolver = batch_resolver
+        self._tasks: set[asyncio.Task] = set()
         self._envs: dict[str, Any] = {}
         # B-1: Instrumentor facade (DD-06 §6) — when wired, the exported config
         # version is instrumented (scan -> plan -> inject -> smoke verify)
@@ -203,6 +218,103 @@ class BatchRunner:
         # introspection for tests/ops: latest batch status and task->run_id map
         self.last_status: str = "created"
         self.last_run_ids: dict[str, str] = {}
+
+    # -- API trigger (DD-13 §9.6 batch_runner wiring) ------------------------
+
+    def trigger(self, batch: dict, *, bypass_cache: bool | None = None) -> None:
+        """Schedule ``run_batch`` for an API-created batch dict; non-blocking.
+
+        Called from the async POST /batches and :rerun endpoints. The batch
+        runs as a background asyncio task (kept alive via ``self._tasks`` so
+        it is not garbage-collected mid-run); from a synchronous context the
+        coroutine is pushed onto a daemon thread instead. Failures are
+        contained: they set ``last_status`` and log a warning, never raising
+        back into the endpoint.
+
+        ``bypass_cache`` is per-call (D-4 audit fix): a rerun batch bypasses
+        the cache without flipping the sticky runner-level default, so
+        ordinary batches keep their cache hits.
+        """
+        batch_id = str(batch.get("id") or new_id("batch"))
+        coro = self._run_triggered_batch(batch, batch_id, bypass_cache)
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # sync caller: run on a daemon thread
+            threading.Thread(
+                target=asyncio.run,
+                args=(coro,),
+                daemon=True,
+                name=f"rsi-batch-{batch_id}",
+            ).start()
+            return
+        task = loop.create_task(coro, name=f"rsi-batch-{batch_id}")
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _run_triggered_batch(
+        self, batch: dict, batch_id: str, bypass_cache: bool | None
+    ) -> None:
+        params = dict(batch.get("params") or {})
+        if bypass_cache is None:
+            bypass_cache = bool(params.get("bypass_cache", False))
+        try:
+            env, tasks, config_version_id, image_ref = (
+                self._resolve_trigger_inputs(batch)
+            )
+            await self.run_batch(
+                batch_id,
+                env,
+                tasks,
+                config_version_id,
+                image_ref,
+                bypass_cache=bypass_cache,
+                db_meta={
+                    "evalset_id": str(batch.get("evalset_id", "")),
+                    "sut_id": str(batch.get("sut_id", "")),
+                    "profile_id": batch.get("profile_id"),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - trigger must not 500 the API
+            self.last_status = "failed"
+            logger.warning(
+                "batch.trigger_failed", batch_id=batch_id, error=str(exc)
+            )
+
+    def _resolve_trigger_inputs(
+        self, batch: dict
+    ) -> tuple[Any, list[TaskRecord], str, str]:
+        """Batch dict -> (env, tasks, config_version_id, image_ref).
+
+        Uses the injected resolver when present; otherwise the offline
+        default (minimal fake env + one trivial task) keeps the API path
+        functional in the offline assembly.
+        """
+        if self.batch_resolver is not None:
+            return self.batch_resolver(batch)
+        params = dict(batch.get("params") or {})
+        env = EnvSpec(
+            name=f"lab-{str(batch.get('id') or 'adhoc')}",
+            backend="fake",
+            devices=[DeviceSpec(name="R1", type="vrp", config="configs/R1.cfg")],
+            topology=Topology(),
+            ssh_access={
+                "R1": SshAccess(
+                    ip="10.0.0.1", port=2001, username="admin", password="pw"
+                )
+            },
+        )
+        tasks = [
+            TaskRecord(
+                task_id="fault/adhoc-00",
+                title="API-triggered ad-hoc task",
+                prepare=[],
+                task=TaskSpec(prompt="diagnose the fault and reply with FINAL_JSON"),
+                expected=ExpectedAnswer(),
+            )
+        ]
+        config_version_id = str(params.get("config_version_id", ""))
+        image_ref = str(batch.get("sut_id") or params.get("image_ref") or "sut")
+        return env, tasks, config_version_id, image_ref
 
     # -- batch loop (§5.1) ---------------------------------------------------
 

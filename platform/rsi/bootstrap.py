@@ -134,7 +134,9 @@ def build_services(
         engine, session_factory = bootstrap_database(settings)
 
     # -- Security --------------------------------------------------------
-    audit_log = AuditLog()  # in-memory P0; DB persistence is the F5 slice
+    # R2-M1: audit entries persist to the audit_log table via the session
+    # factory (one short session per record; never a shared long-lived one).
+    audit_log = AuditLog(session_factory=session_factory)
     master_key, ephemeral_creds = _master_key(settings)
     credential_store = CredentialStore(master_key)
     credential_resolver = CredentialResolver(store=credential_store)
@@ -251,6 +253,20 @@ def build_services(
         factor=settings.decision.noise.factor,
         session_factory=session_factory,
     )
+
+    def _noise_lookup(evalset_id: str) -> dict[str, float]:
+        """R2-H1: evalset -> {metric: sigma} from persisted noise_bands rows."""
+        try:
+            from rsi.db.tables import NoiseBand
+
+            with session_factory() as session:
+                rows = session.query(NoiseBand).filter(
+                    NoiseBand.evalset_id == evalset_id
+                )
+                return {row.metric: float(row.sigma) for row in rows}
+        except Exception:  # noqa: BLE001 - lookup must not kill DECIDING
+            return {}
+
     decision_recorder = DecisionRecorder(
         session_factory=session_factory, audit_log=audit_log
     )
@@ -309,6 +325,7 @@ def build_services(
         critic=deterministic_critic,
         decision_recorder=decision_recorder,
         gitstore=git_store,
+        noise_lookup=_noise_lookup,
     )
 
     # -- HealthMonitor (D-1, DD-12 §4.7) -----------------------------------

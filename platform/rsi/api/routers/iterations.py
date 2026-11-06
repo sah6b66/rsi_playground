@@ -275,7 +275,14 @@ async def _engine_gate(engine, name: str, body: GateBody) -> str | None:
                     hyp[key] = body.model_extra[key]
         return await engine.gate_hypothesis(hyp)
     if name == "review":
-        verdict = "pass" if body.approved is not False else "reject"
+        # a) explicit approval required: a missing ``approved`` (None) is a
+        # 422, not a silent pass — the review gate must never default-open.
+        if body.approved is None:
+            raise ValidationError(
+                "review gate requires an explicit approved (true/false)",
+                context={"gate": name, "approved": None},
+            )
+        verdict = "pass" if body.approved else "reject"
         return await engine.gate_review(verdict, [])
     if name == "decision":
         return await engine.gate_decision(body.decision or "promote")
@@ -317,10 +324,25 @@ def _gate_router(name: str, required_step: str, next_step: str):
                 },
             )
         engine_hyp_id: str | None = None
+        # a) the review gate requires an explicit approved decision — None
+        # is a 422 in BOTH modes (engine bridge and store-only fallback),
+        # never a default pass.
+        if name == "review" and body.approved is None:
+            raise ValidationError(
+                "review gate requires an explicit approved (true/false)",
+                context={"gate": name, "approved": None},
+            )
+        # D-3 bridge (id-space note, R1#5): this endpoint keys the registry by
+        # the API-minted ``iter-<uuid8>`` id. The API itself never starts an
+        # IterationEngine — a store-only iteration therefore finds no engine
+        # here and falls through to the store-only state-machine update below
+        # (no engine validation happens in that mode). A live engine reaches
+        # this bridge only when its driver passed the API iteration id into
+        # ``iterate_once(iteration_id=...)``, which registers the engine under
+        # that same id. A 409 from the engine means the engine's own state
+        # machine rejected the gate (mismatched step/state).
         engine = RUNNING_ENGINES.get(iteration_id)
         if engine is not None:
-            # D-3 bridge: a live engine instance validates state + step
-            # itself (InvalidTransitionError -> 409 on mismatch).
             engine_hyp_id = await _engine_gate(engine, name, body)
         # no engine (iteration not running in-process): store-only fallback
         it["state"] = it["paused_from"] or IterationState.ATTRIBUTING.value

@@ -50,18 +50,34 @@ _ERROR_OUTPUT_PREFIX = "Error:"
 _TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}:\d{2}")
 # B-6: volatile line prefixes dropped by the config-equivalence normalization
 _NORM_DROP_PREFIXES = ("#", "!", "<", "*", "%")
+# R2-M2: ANCHORED device-timestamp line patterns. A line is dropped only
+# when the whole line IS a device clock/banner line — a bare substring
+# search would also swallow legitimate diff lines that merely contain a
+# time-like token (e.g. a MAC address 00:11:22, or "uptime" inside a
+# description). Patterns:
+#   * full ISO timestamp line ("2026-01-01 00:00:00 UTC", with optional tz)
+#   * "clock is ..." / "The current time is ..." device clock banner
+#   * "... uptime is D days, H:MM:SS" banner line
+_TS_LINE_RE = re.compile(
+    r"^(?:"
+    r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\s*[A-Za-z0-9+-]+)?"
+    r"|(?:\S+\s+)?clock(?:\s+is)?\s+.*"
+    r"|\S+ uptime(?:\s+is)?\s+\d+\s+\w+.*"
+    r")$",
+    re.IGNORECASE,
+)
 
 
 def normalize_config(text: str) -> list[str]:
     """B-6 equivalence-diff normalization: drop blank lines, comment/prompt
-    lines and timestamp lines, strip trailing whitespace."""
+    lines and whole-line device timestamps, strip trailing whitespace."""
     kept: list[str] = []
     for raw in text.splitlines():
         line = raw.rstrip()
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith(_NORM_DROP_PREFIXES) or _TS_RE.search(stripped):
+        if stripped.startswith(_NORM_DROP_PREFIXES) or _TS_LINE_RE.match(stripped):
             continue
         kept.append(stripped)
     return kept

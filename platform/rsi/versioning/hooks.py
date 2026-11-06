@@ -14,6 +14,8 @@ from pathlib import Path
 
 PRE_RECEIVE_SCRIPT = """#!/bin/bash
 # RSI Playground pre-receive hook
+# ZERO is git's all-zeros null object id (exactly 40 hex chars, SHA-1 repo
+# format) meaning "ref deleted/created" — not a configurable length.
 ZERO=0000000000000000000000000000000000000000
 while read oldrev newrev refname; do
     # Rule 2 (checked BEFORE the deletion skip): protected tags can never
@@ -51,7 +53,7 @@ while read oldrev newrev refname; do
                 case "$f" in
                     evalsets/*)
                         es_id=$(printf '%s\\n' "$f" | sed -E 's#^evalsets/([^/]+)/.*$#\\1#')
-                        if printf '%s\\n' "$frozen_ids" | grep -qx "$es_id"; then
+                        if printf '%s\\n' "$frozen_ids" | grep -qx -- "$es_id"; then
                             echo "ERROR: optimizer identity cannot modify frozen evalsets/ (evalset $es_id is frozen)" >&2
                             exit 1
                         fi

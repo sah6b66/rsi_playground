@@ -79,7 +79,21 @@ def load_rules(path: Path | None = None) -> tuple[dict[str, Any], bool]:
 class SafetyScanner:
     def __init__(self, rules_path: Path | None = None) -> None:
         rules, loaded = load_rules(rules_path)
+        try:
+            self._build(rules)
+        except (re.error, KeyError, TypeError, ValueError) as exc:
+            # d) a malformed yaml table (bad regex / missing key) degrades to
+            # the builtin fallback rules instead of crashing the judge.
+            logger.warning(
+                "safety_rules.build_failed_fallback_builtin",
+                exc_type=type(exc).__name__,
+                error=str(exc),
+            )
+            self._build(_FALLBACK)
+            loaded = False
         self.rules_from_file = loaded
+
+    def _build(self, rules: dict[str, Any]) -> None:
         self._prefixes: tuple[str, ...] = tuple(rules["read_only_prefixes"])
         self._delete_markers: tuple[str, ...] = tuple(rules["config_delete_markers"])
         self._config_mode: frozenset[str] = frozenset(rules["config_mode_commands"])

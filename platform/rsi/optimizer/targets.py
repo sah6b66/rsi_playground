@@ -9,6 +9,7 @@ the DeterministicCritic (double validation, DD-11 §4).
 from __future__ import annotations
 
 import re
+from pathlib import PurePosixPath
 
 from rsi.core.errors import TargetViolationError
 from rsi.log import get_logger
@@ -110,6 +111,19 @@ class TargetRegistry:
     def validate(self, path: str, enabled_targets: set[str]) -> None:
         """Raise ``TargetViolationError`` unless *path* is an enabled, unfrozen target."""
         logger.debug("validate.entry", path=path, enabled_targets=sorted(enabled_targets))
+        # Path-traversal guard (audit R1#4): any ".." segment, absolute path
+        # or backslash escape is rejected before the whitelist regexes run —
+        # the regex tails (".*") would otherwise happily accept "..".
+        if (
+            ".." in PurePosixPath(path.replace("\\", "/")).parts
+            or path.startswith("/")
+            or "\\" in path
+        ):
+            logger.debug("validate.violation", reason="path_traversal", path=path)
+            raise TargetViolationError(
+                f"path {path!r} contains a traversal segment and is rejected",
+                context={"path": path, "reason": "path_traversal"},
+            )
         if self.is_frozen(path):
             logger.debug("validate.violation", reason="frozen_domain", path=path)
             raise TargetViolationError(

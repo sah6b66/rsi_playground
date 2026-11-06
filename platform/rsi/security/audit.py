@@ -87,14 +87,23 @@ class AuditEntry(BaseModel):
 class AuditLog:
     """Audit trail: in-memory list (P0), plus optional ``audit_log`` table.
 
-    When an optional SQLModel ``session`` is supplied, ``record()`` also
-    persists each entry to the database (DD-03 §6); the in-memory list is
-    always kept for backward compatibility.
+    When a SQLModel ``session`` or (preferred, R2-M1) a ``session_factory``
+    is supplied, ``record()`` also persists each entry to the database
+    (DD-03 §6); the in-memory list is always kept for backward
+    compatibility. The factory form opens one short session per record —
+    a long-lived shared Session would serialize (and deadlock-prone) every
+    audited request onto one connection.
     """
 
-    def __init__(self, session: Session | None = None) -> None:
+    def __init__(
+        self,
+        session: Session | None = None,
+        *,
+        session_factory: Callable[[], Session] | None = None,
+    ) -> None:
         self.entries: list[AuditEntry] = []
         self._session = session
+        self._session_factory = session_factory
 
     def record(
         self,
@@ -113,18 +122,31 @@ class AuditLog:
             detail=detail or {},
         )
         self.entries.append(entry)
-        if self._session is not None:
-            self._session.add(
-                AuditLogEntry(
-                    ts=entry.ts,
-                    actor=actor,
-                    action=action,
-                    object_type=object_type,
-                    object_id=object_id,
-                    detail_json=json.dumps(entry.detail, default=str),
+        row = AuditLogEntry(
+            ts=entry.ts,
+            actor=actor,
+            action=action,
+            object_type=object_type,
+            object_id=object_id,
+            detail_json=json.dumps(entry.detail, default=str),
+        )
+        if self._session_factory is not None:
+            try:
+                with self._session_factory() as session:
+                    session.add(row)
+                    session.commit()
+            except Exception as exc:  # noqa: BLE001 - audit must not 500
+                logger.warning(
+                    "audit.db_write_failed", action=action, error=str(exc)
                 )
-            )
-            self._session.commit()
+        if self._session is not None:
+            try:
+                self._session.add(row)
+                self._session.commit()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "audit.db_write_failed", action=action, error=str(exc)
+                )
 
     def audited(
         self,

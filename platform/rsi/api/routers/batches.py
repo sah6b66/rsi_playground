@@ -280,12 +280,15 @@ async def rerun_batch(
     }
     runner = request.app.state.services.get("batch_runner")
     if runner is not None:
-        # D-4: propagate the bypass flag into run_batch (runner default, so
-        # the rerun batch skips cache reads AND writes).
-        if body.bypass_cache:
-            runner.bypass_cache = True
+        # D-4: bypass is per-call — a rerun batch skips cache reads AND
+        # writes without flipping the sticky runner-level default (which
+        # would silently disable cache hits for every later batch).
         trigger = getattr(runner, "trigger", None)
         if trigger is not None:
-            trigger(rerun)
+            try:
+                trigger(rerun, bypass_cache=body.bypass_cache)
+            except TypeError:
+                # legacy runner trigger() without the per-call bypass kwarg
+                trigger(rerun)
     store[rerun["id"]] = rerun
     return Response(status_code=204)

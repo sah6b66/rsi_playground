@@ -114,6 +114,7 @@ class Doctor:
             self.check_external,
             self.check_internal,
             self.check_security,
+            self.check_freeze,
         ):
             try:
                 results.extend(check())
@@ -673,6 +674,36 @@ class Doctor:
             message=f"未知 database.url，跳过检查: {db_url!r}")
 
     # ── Category 5: Security ─────────────────────────────────────────
+
+    def check_freeze(self) -> list[CheckResult]:
+        """R2-H2: judge frozen-domain verification finally has a consumer.
+
+        When ``judge/rules/freeze.manifest`` exists, every manifested file
+        must hash clean AND every frozen-glob file must be listed (see
+        ``rsi.judge.rules.freeze_check.verify``). No manifest configured ->
+        informational pass (freeze simply not enabled in this deployment).
+        """
+        try:
+            from rsi.judge.rules import freeze_check
+        except Exception as exc:  # pragma: no cover - import guard
+            return [CheckResult(
+                category="security", name="judge 冻结校验", status="warn",
+                message=f"无法加载 freeze_check 模块: {exc}")]
+        if not freeze_check.MANIFEST_PATH.is_file():
+            return [CheckResult(
+                category="security", name="judge 冻结校验", status="pass",
+                message="未配置 freeze.manifest，跳过冻结校验")]
+        ok = freeze_check.verify()
+        if ok:
+            return [CheckResult(
+                category="security", name="judge 冻结校验", status="pass",
+                message=f"冻结域校验通过（manifest={freeze_check.MANIFEST_PATH.name}）")]
+        return [CheckResult(
+            category="security", name="judge 冻结校验", status="fail",
+            message="冻结域校验失败：judge 规则/提示词被篡改或存在未列册文件",
+            fix_hint="python -m rsi.judge.rules.freeze_check 查看差异；"
+                     "确认改动合规后 python -m rsi.judge.rules.freeze_check write 重列册")]
+
 
     def check_security(self) -> list[CheckResult]:
         results: list[CheckResult] = []

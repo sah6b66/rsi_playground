@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -95,8 +96,10 @@ async def dependencies(
     if monitor is not None:
         items = monitor.get_cached()
         source = "monitor"
-        if not items:  # first sweep not run yet: force one synchronous sweep
-            monitor.check_all()
+        if not items:  # first sweep not run yet: force one sweep off-loop
+            # b) run the (synchronous, potentially slow) checker sweep in a
+            # worker thread so the event loop / _poll_loop is not blocked.
+            await asyncio.to_thread(monitor.check_all)
             items = monitor.get_cached()
     else:
         items = _DEFAULT_DEPS
