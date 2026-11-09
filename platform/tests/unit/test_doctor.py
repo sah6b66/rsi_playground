@@ -37,8 +37,8 @@ carrier:
 sandbox:
   backends:
     ensp-pro-1:
-      host: 192.0.2.1
-      ssh_user: administrator
+      kind: ensp-pro
+      url: https://192.0.2.1:8443
       subnets: ["10.101.0.0/16"]
 """
 
@@ -186,6 +186,60 @@ class TestConfig:
         rs = d.check_config()
         r = next(x for x in rs if "LLM" in x.name)
         assert r.status == "warn"
+
+
+class TestSandboxBackends:
+    def test_valid_kind_url_passes(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _write_settings(tmp_path, VALID_SETTINGS)
+        d = Doctor(settings_path=tmp_path / "settings.yaml")
+        rs = d.check_config()
+        # No fail/warn mentioning sandbox.backends.<name>.kind/.url/旧字段
+        bad = [r for r in rs if r.status != "pass"
+               and ("kind" in r.name or ".url" in r.name or "旧字段" in r.name)]
+        assert not bad, bad
+
+    def test_url_empty_fails(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _write_settings(tmp_path, VALID_SETTINGS.replace(
+            "      url: https://192.0.2.1:8443\n", ""))
+        d = Doctor(settings_path=tmp_path / "settings.yaml")
+        rs = d.check_config()
+        r = next(x for x in rs if x.name == "sandbox.backends.ensp-pro-1.url")
+        assert r.status == "fail"
+        assert "url" in r.message
+
+    def test_bad_kind_fails(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _write_settings(tmp_path, VALID_SETTINGS.replace(
+            "kind: ensp-pro", "kind: gns3"))
+        d = Doctor(settings_path=tmp_path / "settings.yaml")
+        rs = d.check_config()
+        r = next(x for x in rs if x.name.endswith(".kind"))
+        assert r.status == "fail"
+
+    def test_legacy_ssh_keys_warn(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _write_settings(tmp_path, VALID_SETTINGS.replace(
+            "      kind: ensp-pro",
+            "      host: 192.0.2.1\n      ssh_user: administrator\n"
+            "      kind: ensp-pro"))
+        d = Doctor(settings_path=tmp_path / "settings.yaml")
+        rs = d.check_config()
+        r = next(x for x in rs if "旧字段" in x.name)
+        assert r.status == "warn"
+        assert "host" in r.message and "ssh_user" in r.message
+
+    def test_fake_backend_without_url_ok(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _write_settings(tmp_path, VALID_SETTINGS.replace(
+            "kind: ensp-pro", "kind: fake").replace(
+            "      url: https://192.0.2.1:8443\n", ""))
+        d = Doctor(settings_path=tmp_path / "settings.yaml")
+        rs = d.check_config()
+        bad = [r for r in rs if r.status == "fail"
+               and ("kind" in r.name or ".url" in r.name)]
+        assert not bad, bad
 
 
 class TestSubnets:

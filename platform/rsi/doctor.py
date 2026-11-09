@@ -327,11 +327,52 @@ class Doctor:
                 category="config", name="sandbox.backends", status="pass",
                 message=f"sandbox.backends 定义 {len(backends)} 个后端"))
 
+        # sandbox.backends kind/url + legacy-key detection
+        results.extend(self._check_sandbox_backends(cfg))
+
         # subnets validity + overlap
         results.extend(self._check_subnets(cfg))
 
         # env vars
         results.extend(self._check_secret_envs())
+        return results
+
+    _SANDBOX_KINDS = {"ensp-pro", "pnetlab", "fake"}
+    _SANDBOX_LEGACY_KEYS = ("host", "ssh_port", "ssh_user", "agent_cmd",
+                            "templates_dir")
+
+    def _check_sandbox_backends(self, cfg: dict[str, Any]) -> list[CheckResult]:
+        """T1: validate kind enum + url presence; warn on legacy SSH keys."""
+        results: list[CheckResult] = []
+        backends = (cfg.get("sandbox") or {}).get("backends") or {}
+        for name, b in backends.items():
+            b = b or {}
+            kind = str(b.get("kind", "fake"))
+            if kind not in self._SANDBOX_KINDS:
+                results.append(CheckResult(
+                    category="config", name=f"sandbox.backends.{name}.kind",
+                    status="fail",
+                    message=f"sandbox.backends.{name}.kind = {kind!r} 不在 "
+                            f"{sorted(self._SANDBOX_KINDS)} 中",
+                    fix_hint=f"改为 {sorted(self._SANDBOX_KINDS)} 之一"))
+            elif kind != "fake" and not str(b.get("url") or "").strip():
+                results.append(CheckResult(
+                    category="config", name=f"sandbox.backends.{name}.url",
+                    status="fail",
+                    message=f"sandbox.backends.{name} kind={kind} 但 url 为空",
+                    fix_hint="填写平台 Web 入口地址（如 "
+                             "https://192.168.56.101:8443；平台是网页入口，"
+                             "不可 SSH）"))
+            legacy = [k for k in self._SANDBOX_LEGACY_KEYS if k in b]
+            if legacy:
+                results.append(CheckResult(
+                    category="config", name=f"sandbox.backends.{name} 旧字段",
+                    status="warn",
+                    message=f"sandbox.backends.{name} 含已废弃的 SSH 字段: "
+                            f"{', '.join(legacy)}（平台不可 SSH，"
+                            "这些键会被静默忽略）",
+                    fix_hint="改用 kind/url 形态；设备 SSH 见评估集 env.yaml "
+                             "的 ssh_access"))
         return results
 
     def _check_subnets(self, cfg: dict[str, Any]) -> list[CheckResult]:
@@ -480,22 +521,30 @@ class Doctor:
                 category="external", name="Docker", status="pass",
                 message=f"Docker {docker_ver}"))
 
-        # sandbox backend SSH reachability
+        # sandbox platform URL probing (T2 PlatformProbe; offline → warn)
+        from rsi.sandbox.platform_probe import PlatformProbe
+
         cfg = self._load_settings()
         for bname, b in ((cfg.get("sandbox") or {}).get("backends") or {}).items():
-            host = (b or {}).get("host") or ""
-            if not host:
+            b = b or {}
+            if str(b.get("kind", "fake")) == "fake":
                 continue
-            port = int((b or {}).get("ssh_port", 22))
-            if self._tcp_reachable(host, port):
+            url = str(b.get("url") or "").strip()
+            if not url:
+                continue
+            probe = PlatformProbe(url, verify_tls=bool(b.get("verify_tls", False)))
+            r = probe.probe()
+            if r.ok:
                 results.append(CheckResult(
-                    category="external", name=f"仿真后端 {bname}", status="pass",
-                    message=f"仿真后端 {bname} ({host}:{port}) 可达"))
+                    category="external", name=f"仿真平台 {bname}", status="pass",
+                    message=f"仿真平台 {bname} 在线 ({url}, {r.detail}, "
+                            f"{r.latency_ms or 0:.0f}ms)"))
             else:
                 results.append(CheckResult(
-                    category="external", name=f"仿真后端 {bname}", status="warn",
-                    message=f"仿真后端 {bname} ({host}:{port}) 不可达",
-                    fix_hint="检查仿真主机是否启动，SSH 是否开放"))
+                    category="external", name=f"仿真平台 {bname}", status="warn",
+                    message=f"仿真平台 {bname} 不可达 ({url}, {r.detail})",
+                    fix_hint="检查平台虚机是否启动、Web 入口是否开放"
+                             "（平台是网页入口，不可 SSH）"))
 
         # remote carrier hosts (docker starts with ssh://)
         for hname, h in ((cfg.get("carrier") or {}).get("hosts") or {}).items():

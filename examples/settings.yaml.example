@@ -47,21 +47,22 @@ logging:
   retention_days: 30                    # 日志保留天数
   error_split: true                     # error 单独文件实时写入
 
-# ── ⑥ 仿真后端（FR5.8 模块自管，每实例独立 VM/网络） ──
+# ── ⑥ 仿真后端（预建模式：平台 URL 探活 + 设备级 SSH） ──
+# 注意：eNSP Pro / PNETLab 是网页平台，本身不可 SSH 登录！平台监控走 URL 探活。
+# 设备级 SSH 在评估集 env.yaml 的 ssh_access 中定义：同沙箱多设备可复用同 IP
+# 不同端口；设备 IP 可与平台 URL 的 IP 不同，分别定义。
 sandbox:
   backends:
-    # 键名规则：<类型>-<序号>（如 ensp-pro-1）；或与 env.yaml backend 枚举同名
+    fake:                              # 离线测试后端（无 url）
+      kind: fake
     ensp-pro-1:
-      host: 192.168.1.50               # ENSP Pro 所在 Windows 主机 IP
-      ssh_port: 22
-      ssh_user: administrator
-      agent_cmd: pg-enspctl            # host-agent CLI 命令
-      templates_dir: deploy/ensp-templates
+      kind: ensp-pro                   # ensp-pro | pnetlab | fake
+      url: https://192.168.56.101:8443 # 平台 Web 入口（eNSP Pro 默认 8443）
+      verify_tls: false                # 自签证书默认关闭校验
       subnets: [10.101.1.0/24]         # 设备管理网段（全网唯一！）
-    pnetlab-1:
-      host: 192.168.1.60               # PNETLab 所在 Linux 主机 IP
-      ssh_port: 22
-      ssh_user: root
+    pnetlab:
+      kind: pnetlab
+      url: http://192.168.56.102       # PNETLab 平台 Web 入口
       subnets: [10.102.1.0/24]
   build_retry: 2                       # 构建失败重试次数
   ready_timeout_s: 600                 # 就绪探测超时（秒）
