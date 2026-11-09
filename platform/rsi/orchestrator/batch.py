@@ -725,7 +725,14 @@ class BatchRunner:
                 # to the original config dir (same semantics as the facade's
                 # verify-failure fallback, B-1), never kill the batch.
                 try:
-                    overlay_dir, report = self.instrumentor.instrument(
+                    # B-23: the instrument pipeline (directory scan + overlay
+                    # copytree + injection + two smoke collects of up to 60s
+                    # each) is pure synchronous IO — run it on a worker
+                    # thread so the event loop keeps scheduling. The smoke
+                    # callback (_smoke_run) only touches sync carrier methods
+                    # and is thread-safe (no loop-bound state).
+                    overlay_dir, report = await asyncio.to_thread(
+                        self.instrumentor.instrument,
                         Path(config_version_id),
                         self.carrier_type,
                         lambda cfg: self._smoke_run(lab, image_ref, cfg),
@@ -874,13 +881,48 @@ class BatchRunner:
                     )
             if not restored:
                 try:
-                    # L2: reset the lab to a clean state and re-run restore
-                    # (SandboxService.reset replays device state; a full
-                    # ops.jsonl replay rides on the backup re-apply inside
-                    # restore_task). No dedicated replay API exists in P0.
+                    # L2 (B-24, DD-12 §5.2): environment-level recovery back
+                    # to the batch-initial state — lab reset, then restore
+                    # the snap0 snapshot (the pre-task baseline the batch
+                    # started from; a bare reset only reaches the built-clean
+                    # state, not the post-build snap0 state), then replay the
+                    # lab's ops.jsonl journalled prepare ops so state applied
+                    # since snap0 is rebuilt (exec_cli records are re-sent;
+                    # call_api records are skipped with a warning — they are
+                    # config-API writes the snapshot may already carry and
+                    # are not idempotent). The failing task's own prepare is
+                    # excluded: this restore exists precisely to undo it.
                     logger.warning("run_task.restore_l2_recovery", run_id=run_id)
                     await self.sandbox.reset(lab)
-                    await self.sandbox.restore_task(lab, applied)
+                    snapshots = getattr(self.sandbox, "snapshots", None)
+                    snap_ref = None
+                    if callable(snapshots):
+                        snap_ref = next(
+                            (
+                                s
+                                for s in snapshots(lab.lab_id)
+                                if s.snapshot_id == snap0_id
+                            ),
+                            None,
+                        )
+                    if snap_ref is not None:
+                        await self.sandbox.restore(lab, snap_ref)
+                    else:
+                        logger.warning(
+                            "run_task.restore_l2_snapshot_missing",
+                            run_id=run_id,
+                            snapshot_id=snap0_id,
+                        )
+                    replay = getattr(self.sandbox, "replay_applied_ops", None)
+                    if callable(replay):
+                        replayed = await replay(
+                            lab, exclude_task_ids={task.task_id}
+                        )
+                        logger.debug(
+                            "run_task.restore_l2_replay",
+                            run_id=run_id,
+                            replayed=replayed,
+                        )
                     restored = True
                 except Exception as exc:  # noqa: BLE001 - task degrades, not batch
                     logger.warning(

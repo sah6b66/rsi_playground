@@ -415,8 +415,71 @@ class IterationEngine:
                 candidate_config_version_id=candidate_config_version_id,
                 noise_delta=noise_delta,
             )
+        except asyncio.CancelledError:
+            # D-1: cancellation is not an Exception subclass — same terminal
+            # bookkeeping, then the cancellation keeps unwinding.
+            await self._abort_on_exception(iteration_id, "cancelled")
+            raise
+        except Exception as exc:  # noqa: BLE001 - terminal-state guarantee (D-1)
+            await self._abort_on_exception(
+                iteration_id, f"{type(exc).__name__}: {exc}"
+            )
+            raise
         finally:
             RUNNING_ENGINES.pop(iteration_id, None)
+
+    async def _abort_on_exception(self, iteration_id: str, error: str) -> None:
+        """D-1: leave a terminal ABORTED record when the body blows up.
+
+        Without this the engine sits forever in a mid-flight state
+        (APPLYING/VERIFYING/...): no terminal event, no checkpoint row, and a
+        later ``start()`` raises because the state is still active. All
+        bookkeeping here is best-effort — it must never mask the original
+        exception.
+        """
+        from_ = self.last_state
+        if from_ in (None, "FINISHED", "ABORTED", "ARCHIVED"):
+            return  # nothing mid-flight (or already terminal)
+        logger.warning(
+            "iteration.abort_on_exception",
+            iteration_id=iteration_id,
+            from_state=from_,
+            error=error,
+        )
+        try:
+            if from_ == "PAUSED":
+                self._pending_gate = None
+                self.state_store.clear_pause(iteration_id)
+            if self._valid(from_, "ABORTED"):
+                await self._advance(iteration_id, from_, "ABORTED")
+            else:
+                # transition table has no edge for this state (should not
+                # happen for the running states) — force the terminal state
+                # and publish the event without the legality check.
+                logger.warning(
+                    "iteration.abort_skip_transition_check", from_state=from_
+                )
+                self.last_state = "ABORTED"
+                await self.event_bus.publish(
+                    "iteration", iteration_id, from_ or "", "ABORTED"
+                )
+            if self.ckpt is not None:
+                await self.ckpt.save(
+                    f"iter-{iteration_id}",
+                    {
+                        "iteration_id": iteration_id,
+                        "round": self.round,
+                        "state": "ABORTED",
+                        "from": from_,
+                        "error": error,
+                    },
+                )
+        except Exception as exc:  # noqa: BLE001 - never mask the original error
+            logger.warning(
+                "iteration.abort_bookkeeping_failed",
+                iteration_id=iteration_id,
+                error=str(exc),
+            )
 
     async def _iterate_body(
         self,

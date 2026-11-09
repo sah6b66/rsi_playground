@@ -377,6 +377,7 @@ class FlakySandbox:
         self.fail_times = fail_times
         self.restore_calls = 0
         self.resets = 0
+        self.l2_restores = 0
 
     async def prepare(self, lab, task_id, actions):
         return ["applied"]
@@ -390,6 +391,18 @@ class FlakySandbox:
 
     async def reset(self, lab):
         self.resets += 1
+
+    def snapshots(self, lab_id):
+        return [type("Snap", (), {"snapshot_id": "snap0"})()]
+
+    async def restore(self, lab, snap):
+        # B-24 rig: the snapshot restore also fails while flaky, so the
+        # env_failed expectations below still exercise the full L2 failure.
+        self.l2_restores += 1
+        if self.restore_calls <= self.fail_times:
+            from rsi.core.errors import EnvError
+
+            raise EnvError("flaky l2 restore")
 
 
 class StubCarrier:
