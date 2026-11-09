@@ -50,6 +50,21 @@ def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _normalized_bytes(data: bytes) -> bytes:
+    """CRLF → LF (audit4 A-13).
+
+    Same normalization semantics as ``rsi.judge.rules.freeze_check``
+    (not imported cross-package on purpose): digests computed over
+    staging content must not depend on the platform's line endings.
+    """
+    return data.replace(b"\r\n", b"\n")
+
+
+def _normalized_file_sha(f: Path) -> str:
+    """sha256 over the CRLF-normalized bytes of ``f`` (audit4 A-13)."""
+    return hashlib.sha256(_normalized_bytes(f.read_bytes())).hexdigest()
+
+
 def _baseline_prefix(sut_id: str) -> str:
     return f"suts/{sut_id}/baseline/"
 
@@ -229,6 +244,13 @@ class GitStore:
             name = _baseline_prefix(sut_id) + f"v{self._next_tag_num(sut_id)}"
             repo.create_tag(name, ref=commit, message=f"rollback {sut_id}")
             self._sync_staging(staging, commit.hexsha)
+            # A-12 (audit4): DD-09 §4 — rollback must "更新 DB+staging";
+            # register the rollback target commit as a baseline version
+            # (idempotent: historical commits usually already have a row)
+            # and write back suts.baseline_version_id like promote does.
+            vid = VersionId(commit.hexsha)
+            self._register_version(vid, sut_id, "baseline", f"rollback {sut_id}")
+            self._db_call(lambda: self._update_sut_baseline(sut_id, str(vid)))
             self._audit(
                 "version.rollback", sut_id,
                 sut_id=sut_id, version=str(version_id), tag=name,
@@ -341,7 +363,9 @@ class GitStore:
             h = hashlib.sha256()
             for f in sorted(es_dir.rglob("*")):
                 if f.is_file():
-                    h.update(f.read_bytes())
+                    # A-13: CRLF-normalized so LF and CRLF platforms agree
+                    # (staging write_text translates \n -> CRLF on Windows).
+                    h.update(_normalized_bytes(f.read_bytes()))
             content_hash = h.hexdigest()
             srepo = self._staging_repo(staging)
             sha = srepo.head.commit.hexsha
@@ -414,15 +438,10 @@ class GitStore:
             f = staging / rel
             if not f.is_file():
                 return False
-            # audit3 E1: same CRLF normalization as
+            # audit3 E1 / audit4 A-13: same CRLF normalization as
             # rsi.judge.rules.freeze_check — the manifest records
             # line-ending-normalized digests so Windows checkouts verify too.
-            if (
-                hashlib.sha256(
-                    f.read_bytes().replace(b"\r\n", b"\n")
-                ).hexdigest()
-                != expected
-            ):
+            if _normalized_file_sha(f) != expected:
                 return False
         return True
 
@@ -465,7 +484,8 @@ class GitStore:
             self._validate_paths([rel])
         target = staging / rel
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        # A-13: lock LF so staging content hashes are platform-stable.
+        target.write_text(content, encoding="utf-8", newline="\n")
         if commit:
             with self._write_lock:
                 vid = self._commit_staging(
@@ -604,7 +624,8 @@ class GitStore:
                         path=fc.path,
                     )
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_text(fc.content, encoding="utf-8")
+                # A-13: lock LF (platform-stable content hashes).
+                target.write_text(fc.content, encoding="utf-8", newline="\n")
 
     # ── DB registration / audit (A-2) ────────────────────────────────
 
@@ -644,6 +665,11 @@ class GitStore:
 
         def _do() -> None:
             with self.session_factory() as session:  # type: ignore[misc]
+                # Idempotent (audit4 A-12): rollback targets usually already
+                # have a config_versions row from the original snapshot /
+                # write_file commit — skip instead of hitting the PK.
+                if session.get(ConfigVersion, str(version_id)) is not None:
+                    return
                 session.add(
                     ConfigVersion(
                         id=str(version_id),

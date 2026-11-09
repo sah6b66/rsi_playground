@@ -118,7 +118,8 @@ def test_full_foundation(tmp_path: Path, store: GitStore) -> None:
     h = hashlib.sha256()
     for f in sorted(es_dir.rglob("*")):
         if f.is_file():
-            h.update(f.read_bytes())
+            # audit4 A-13: freeze hashes CRLF-normalized content
+            h.update(f.read_bytes().replace(b"\r\n", b"\n"))
     assert freeze.content_hash == h.hexdigest()
     assert freeze.git_ref
     # idempotent per content: second freeze hashes identically
