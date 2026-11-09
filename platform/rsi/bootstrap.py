@@ -49,7 +49,7 @@ from rsi.orchestrator.budget import BudgetController
 from rsi.orchestrator.checkpoint import CheckpointStore
 from rsi.orchestrator.event_bus import EventBus
 from rsi.orchestrator.health import HealthMonitor, build_checkers
-from rsi.orchestrator.iteration import IterationEngine
+from rsi.orchestrator.iteration import DbPauseStore, IterationEngine
 from rsi.sandbox.backends.fake import FakeSandboxBackend
 from rsi.sandbox.config_api import ConfigApiCaller
 from rsi.sandbox.scheduler import LabScheduler
@@ -310,6 +310,14 @@ def build_services(
         session_factory=session_factory,
         carrier_type="opencode",
     )
+    # D-4 (设计 §5.4): PAUSED 落库 — DbPauseStore persists gate pause records
+    # to the iterations table so the PAUSED state + gate step survive a
+    # process restart (queryable via API; engine start warns on stale
+    # records). Falls back to the in-memory store only when no DB session
+    # factory is available.
+    pause_store = (
+        DbPauseStore(session_factory) if session_factory is not None else None
+    )
     iteration_engine = IterationEngine(
         batch_runner=batch_runner,
         attribution_analyzer=attribution_analyzer,
@@ -326,6 +334,7 @@ def build_services(
         decision_recorder=decision_recorder,
         gitstore=git_store,
         noise_lookup=_noise_lookup,
+        state_store=pause_store,
     )
 
     # -- HealthMonitor (D-1, DD-12 §4.7) -----------------------------------

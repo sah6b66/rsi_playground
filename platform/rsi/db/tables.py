@@ -56,6 +56,10 @@ class Iteration(SQLModel, table=True):
     round: int = Field(nullable=False, default=0)
     created_at: str = Field(nullable=False)
     finished_at: Optional[str] = None
+    # D-4 (设计 §5.4): PAUSED 落库 — 人工门 pause 记录列（等待步骤+时间戳）。
+    # 可空：未 PAUSED 或旧模式（内存 store）的行保持 NULL。
+    paused_step: Optional[str] = None
+    paused_at: Optional[str] = None
 
 
 class User(SQLModel, table=True):

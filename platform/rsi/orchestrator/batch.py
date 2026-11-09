@@ -117,6 +117,31 @@ def _cache_key(task: TaskRecord, env: Any, config_version_id: str) -> tuple[str,
     return _sha16(task_json), _sha16(env_json)
 
 
+def _config_content_hash(config_version_id: str) -> str:
+    """D-6 (ADR-5 约束注记的实现层加固): config 目录内容聚合哈希。
+
+    When ``config_version_id`` is a P0 pass-through directory (path-as-id),
+    an in-place edit of the directory must invalidate the cache entry. The
+    hash aggregates every file's relative path + bytes; a nonexistent path
+    (real GitStore version ids / offline ids) returns ``""`` — content
+    validation is skipped and the hit check degrades to the plain version
+    string comparison (GitStore exports are immutable, ADR-5 note).
+    """
+    if not config_version_id:
+        return ""
+    p = Path(config_version_id)
+    if not p.is_dir():
+        return ""
+    h = hashlib.sha256()
+    for f in sorted(p.rglob("*")):
+        if f.is_file():
+            h.update(str(f.relative_to(p)).replace("\\", "/").encode("utf-8"))
+            h.update(b"\0")
+            h.update(f.read_bytes())
+            h.update(b"\0")
+    return h.hexdigest()[:16]
+
+
 def _env_failed_verdict() -> Verdict:
     """Zero-score verdict; env-failed runs stay in the denominator (缺试计0)."""
     return Verdict(
@@ -152,7 +177,8 @@ class BatchRunner:
         settings=None,
         task_timeout_s: float | None = None,
         host: str = "main",
-        result_cache: dict[tuple[str, str], tuple[str, Verdict, str]] | None = None,
+        result_cache: dict[tuple[str, str], tuple[str, str, Verdict, str]]
+        | None = None,
         credential_resolver=None,
         instrumentor=None,
         session_factory=None,
@@ -192,9 +218,11 @@ class BatchRunner:
         self.host = host
         # H6/ADR-5: per-(task_content_hash, env_content_hash) verdict cache
         # shared across runner instances; a hit skips instance creation + SUT
-        # execution. Value = (config_version_id, verdict, run_id) so a config
-        # change invalidates without key churn.
-        self.result_cache: dict[tuple[str, str], tuple[str, Verdict, str]] = (
+        # execution. Value = (config_version_id, config_content_hash, verdict,
+        # run_id) so a config change invalidates without key churn; D-6 added
+        # the config content hash so an in-place edit of a pass-through config
+        # directory also invalidates ("" = non-path id, string compare only).
+        self.result_cache: dict[tuple[str, str], tuple[str, str, Verdict, str]] = (
             result_cache if result_cache is not None else {}
         )
         # D-4: default cache bypass (per-call override is preferred; this
@@ -416,6 +444,9 @@ class BatchRunner:
             bypass_cache = self.bypass_cache
         if self._batch_purpose(batch_id) == "noise_calibration":
             bypass_cache = True
+        # D-6: config 目录内容哈希（path-as-id 场景）；非路径 id 返回 ""
+        # （仅字符串比对，GitStore 导出不可变 — ADR-5 约束注记）
+        cfg_content_hash = _config_content_hash(config_version_id)
         logger.debug(
             "run_batch.entry",
             batch_id=batch_id,
@@ -498,13 +529,17 @@ class BatchRunner:
 
                 # c. cache hit (H6/ADR-5): identical task+env content hashes
                 # recorded under the same config version -> reuse the cached
-                # verdict, skip execution entirely
+                # verdict, skip execution entirely. D-6: when the version id
+                # is a live directory (P0 pass-through config), recompute its
+                # content hash — an in-place edit invalidates the entry.
                 cache_key = _cache_key(task, env, config_version_id)
                 hit = None if bypass_cache else self.result_cache.get(cache_key)
                 if hit is not None and hit[0] != config_version_id:
                     hit = None  # same content, different config version
+                if hit is not None and hit[1] and hit[1] != cfg_content_hash:
+                    hit = None  # D-6: config dir mutated in place -> miss
                 if hit is not None:
-                    _, verdict, run_id = hit
+                    _, _, verdict, run_id = hit
                     logger.debug("run_batch.cache_hit", task_id=task.task_id, run_id=run_id)
                     verdicts.append(verdict)
                     verdict_task_ids.append(task.task_id)
@@ -602,6 +637,7 @@ class BatchRunner:
                 if not verdict.missing and not bypass_cache:
                     self.result_cache[cache_key] = (
                         config_version_id,
+                        cfg_content_hash,
                         verdict,
                         self.last_run_ids.get(task.task_id, ""),
                     )
