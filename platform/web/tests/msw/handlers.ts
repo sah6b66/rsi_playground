@@ -333,6 +333,12 @@ const timeline = {
           status: 'succeeded', tokens: 150, latency_ms: 900,
           root_cause_match: true,
         },
+        {
+          // 同任务 t-001 第 2 轮复跑：轨迹跨轮对比 fixture（T5）
+          task_id: 't-001', batch_id: 'bat-2', run_id: 'run-4',
+          status: 'env_failed', tokens: null, latency_ms: null,
+          root_cause_match: null,
+        },
       ],
       scores: { accuracy: 0.8, noise_band: [0.6, 0.7] },
     },
@@ -388,10 +394,133 @@ export const sessionDetailHandlers = [
   }),
 ];
 
+// ── Task 5 fixtures：versions diff / sut 文件内容 / run 轨迹 ───────────────
+// versions.py GET /versions/{a}/diff/{b} → [{path, op, patch}]
+const versionDiff = (a: string, b: string) => [
+  {
+    path: 'skill/bgp.md',
+    op: 'modified',
+    patch: '@@ -1,3 +1,4 @@\n # BGP 排查\n+先查邻居状态\n 检查 peer',
+  },
+  {
+    path: 'mcp/tools.md',
+    op: 'added',
+    patch: '@@ -0,0 +1,2 @@\n+# 工具清单\n+show bgp summary',
+  },
+  ...(a === '2'
+    ? [
+        {
+          path: 'skill/ospf.md',
+          op: 'modified',
+          patch: '@@ -1 +1 @@\n-hello 30s\n+hello 10s',
+        },
+      ]
+    : []),
+];
+
+// suts.py list_sut_files：version 1 = 旧文；2/3 = 新文
+const sutFileBodies: Record<string, string> = {
+  'skill/bgp.md': '# BGP 排查\n检查 peer 状态\n查看路由表\n',
+  'skill/ospf.md': '# OSPF 排查\n检查 hello 定时器\n',
+  'mcp/tools.md': '# 工具清单\nshow bgp summary\nshow ip route\n',
+};
+const sutFileVersions: Record<string, Record<string, string>> = {
+  '1': {
+    'skill/bgp.md': '# BGP 排查\n检查 peer 状态\n',
+    'skill/ospf.md': '# OSPF 排查\n',
+    'mcp/tools.md': '',
+  },
+  '2': sutFileBodies,
+  '3': sutFileBodies,
+};
+
+// runs.py GET /runs/{id}/traces（事件 shape 对齐 core/models.py TraceEvent）
+const traceEvent = (
+  seq: number,
+  event_type: string,
+  data: Record<string, unknown>,
+  offsetMs = 0,
+) => ({
+  run_id: 'run-1',
+  task_id: 't-001',
+  lab_id: 'lab-1',
+  sut_id: 'sut-2',
+  seq,
+  ts: new Date(Date.parse('2026-11-05T08:00:00Z') + offsetMs).toISOString(),
+  event_type,
+  model: 'gpt-test',
+  data,
+  duration_ms: null,
+  session_id: null,
+  step_seq: null,
+  late: false,
+});
+const tracesByRun: Record<string, unknown[]> = {
+  'run-1': [
+    traceEvent(1, 'run_started', { profile: 'p1', evalset: 'eval-0001' }),
+    traceEvent(
+      2,
+      'llm_request',
+      { system: '你是网络排障智能体', prompt: 'BGP 邻居 down 排查' },
+      120,
+    ),
+    traceEvent(3, 'tool_call', { cli: 'show bgp summary', device: 'leaf-1' }, 300),
+    traceEvent(
+      4,
+      'tool_result',
+      { cli: 'show bgp summary', rc: 0, stdout: 'BGP neighbor is.Established' },
+      480,
+    ),
+    traceEvent(5, 'llm_response', { content: '邻居已建立，检查路由', tokens: 180 }, 700),
+    traceEvent(6, 'run_finalized', { verdict: 'pass', score: 1.0 }, 1200),
+  ],
+  'run-4': [
+    { ...traceEvent(1, 'run_started', { profile: 'p1' }), run_id: 'run-4' },
+    {
+      ...traceEvent(2, 'tool_call', { cli: 'show ip interface brief', device: 'leaf-1' }, 200),
+      run_id: 'run-4',
+    },
+    {
+      ...traceEvent(
+        3,
+        'env_failed',
+        { reason: 'device unreachable', device: 'spine-2' },
+        900,
+      ),
+      run_id: 'run-4',
+    },
+    { ...traceEvent(4, 'run_finalized', { verdict: 'env_failed' }, 1500), run_id: 'run-4' },
+  ],
+};
+
+export const task5Handlers = [
+  http.get(/\/api\/v1\/versions\/[^/]+\/diff\/[^/]+$/, ({ request }) => {
+    const m = request.url.match(/\/versions\/([^/]+)\/diff\/([^/]+)$/)!;
+    return HttpResponse.json(versionDiff(decodeURIComponent(m[1]), decodeURIComponent(m[2])));
+  }),
+  http.get('/api/v1/suts/sut-2/files', ({ request }) => {
+    const url = new URL(request.url);
+    const path = url.searchParams.get('path') ?? '';
+    const version = url.searchParams.get('version') ?? '';
+    const content = sutFileVersions[version]?.[path];
+    if (content === undefined) {
+      return HttpResponse.json({ detail: `no file '${path}' @ v${version}` }, { status: 404 });
+    }
+    return HttpResponse.json({ files: { [path]: content } });
+  }),
+  http.get(/\/api\/v1\/runs\/[^/]+\/traces$/, ({ request }) => {
+    const runId = new URL(request.url).pathname.split('/')[4]!;
+    const events = tracesByRun[runId];
+    if (!events) return HttpResponse.json({ detail: `run '${runId}' not found` }, { status: 404 });
+    return HttpResponse.json({ items: events, next_cursor: null, has_more: false });
+  }),
+];
+
 export const handlers = [
   loginHandler,
   meHandler,
   ...dashboardHandlers,
   ...sessionsHandlers,
   ...sessionDetailHandlers,
+  ...task5Handlers,
 ];

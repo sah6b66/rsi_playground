@@ -1,11 +1,15 @@
-// 会话详情（DD-14 §5.4，T4）：顶部概要 + PAUSED 审批横幅 + 五 Tab。
-// 前两 Tab（进展/效果）本任务实现；后三个 T5 替换为内嵌占位。
-import { Alert, Card, Descriptions, Skeleton, Tabs, Typography } from 'antd';
+// 会话详情（DD-14 §5.4，T4+T5）：顶部概要 + PAUSED 审批横幅 + 五 Tab
+// （进展/效果 T4；修改对比/任务明细/轨迹 T5）。
+import { Alert, Card, Descriptions, Skeleton, Tabs } from 'antd';
+import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useSession, useSuts, type Iteration } from '../../../api/hooks';
 import { StatusBadge } from '../../../components/StatusBadge';
 import { ProgressTab } from '../tabs/ProgressTab';
 import { EffectTab } from '../tabs/EffectTab';
+import { DiffTab } from '../tabs/DiffTab';
+import { TasksTab } from '../tabs/TasksTab';
+import { TraceTab } from '../tabs/TraceTab';
 
 // awaiting_* → 门中文名（横幅/Steps 高亮共用）
 export const AWAITING_LABEL: Record<string, string> = {
@@ -15,20 +19,19 @@ export const AWAITING_LABEL: Record<string, string> = {
   awaiting_decision: '决策执行',
 };
 
-function TabComingSoon({ title }: { title: string }) {
-  return (
-    <Card>
-      <Typography.Text type="secondary">
-        {title}将在后续版本提供（T5）
-      </Typography.Text>
-    </Card>
-  );
+// 任务明细行点击提升到页级：选中 run + 切到轨迹 Tab（T5）
+export interface SelectedTask {
+  runId: string;
+  round: number;
+  taskId: string | null;
 }
 
 export function SessionDetailPage() {
   const { id } = useParams<{ id: string }>();
   const session = useSession(id);
   const suts = useSuts();
+  const [activeKey, setActiveKey] = useState('progress');
+  const [selectedTask, setSelectedTask] = useState<SelectedTask | null>(null);
 
   if (session.isLoading) return <Skeleton active />;
   if (session.isError)
@@ -70,7 +73,8 @@ export function SessionDetailPage() {
         </Descriptions>
       </Card>
       <Tabs
-        defaultActiveKey="progress"
+        activeKey={activeKey}
+        onChange={setActiveKey}
         items={[
           {
             key: 'progress',
@@ -81,17 +85,25 @@ export function SessionDetailPage() {
           {
             key: 'diff',
             label: '修改对比',
-            children: <TabComingSoon title="修改对比" />,
+            children: <DiffTab id={it.id} sutId={it.sut_id} />,
           },
           {
             key: 'tasks',
             label: '任务明细',
-            children: <TabComingSoon title="任务明细" />,
+            children: (
+              <TasksTab
+                id={it.id}
+                onSelect={(t) => {
+                  setSelectedTask(t);
+                  setActiveKey('traces');
+                }}
+              />
+            ),
           },
           {
             key: 'traces',
             label: '轨迹',
-            children: <TabComingSoon title="轨迹" />,
+            children: <TraceTab id={it.id} selected={selectedTask} />,
           },
         ]}
       />

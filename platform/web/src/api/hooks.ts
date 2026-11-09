@@ -347,3 +347,86 @@ export function useGateAction(id: string, gate: GateName) {
     },
   });
 }
+
+// ── 会话详情（T5）：版本 diff / 文件内容 / run 轨迹 ───────────────────────
+
+// versions.py GET /versions/{a}/diff/{b}
+export interface VersionDiffItem {
+  path: string;
+  op: string;
+  patch: string;
+}
+
+export function useVersionDiff(
+  fromV: number | string | null,
+  toV: number | string | null,
+): UseQueryResult<VersionDiffItem[], Error> {
+  return useQuery({
+    queryKey: ['version-diff', fromV, toV],
+    queryFn: () =>
+      apiFetch<VersionDiffItem[]>('GET', `/versions/${fromV}/diff/${toV}`),
+    enabled: fromV != null && toV != null,
+  });
+}
+
+// suts.py GET /suts/{id}/files?path=&version= → FileTreeOut{files:{path:content}}
+function useSutFileContent(
+  sutId: string | undefined,
+  version: number | null | undefined,
+  path: string | null | undefined,
+): UseQueryResult<string | undefined, Error> {
+  return useQuery({
+    queryKey: ['sut-file', sutId, version, path],
+    queryFn: async () => {
+      const qs = new URLSearchParams({ path: path ?? '' });
+      if (version != null) qs.set('version', String(version));
+      const out = await apiFetch<{ files: Record<string, string> }>(
+        'GET',
+        `/suts/${sutId}/files?${qs.toString()}`,
+      );
+      return out.files[path ?? ''];
+    },
+    enabled: !!sutId && !!path,
+    retry: false,
+  });
+}
+
+export function useSutFilePair(
+  sutId: string | undefined,
+  fromV: number | null,
+  toV: number | null,
+  path: string | null | undefined,
+): { oldText?: string; newText?: string } {
+  const oldQ = useSutFileContent(sutId, fromV, path);
+  const newQ = useSutFileContent(sutId, toV, path);
+  return { oldText: oldQ.data, newText: newQ.data };
+}
+
+// runs.py GET /runs/{run_id}/traces → TracePage{items,...}
+// 事件 shape 对齐 rsi/core/models.py TraceEvent（seq/ts/event_type/data/...）
+export interface TraceEventDto {
+  seq: number;
+  ts: string;
+  event_type: string;
+  data: Record<string, unknown>;
+  run_id?: string;
+  task_id?: string | null;
+  model?: string | null;
+  duration_ms?: number | null;
+}
+
+export interface TracePage {
+  items: TraceEventDto[];
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
+export function useRunTrace(
+  runId: string | null | undefined,
+): UseQueryResult<TracePage, Error> {
+  return useQuery({
+    queryKey: ['run-trace', runId],
+    queryFn: () => apiFetch<TracePage>('GET', `/runs/${runId}/traces`),
+    enabled: !!runId,
+  });
+}
