@@ -33,7 +33,11 @@ const STEP_OF: Record<string, number> = {
 };
 
 function StepDots({ it }: { it: Iteration }) {
-  const idx = it.current_step ? STEP_OF[it.current_step] : undefined;
+  // T4：current 由 state 映射步序（attributing→0…）；paused 等待态回退
+  // current_step（awaiting_* 已在 STEP_OF 中对齐对应门步骤）。
+  const idx =
+    STEP_OF[it.state] ??
+    (it.current_step ? STEP_OF[it.current_step] : undefined);
   return (
     <span data-testid="step-dots" style={{ whiteSpace: 'nowrap' }}>
       {STEP_NAMES.map((name, i) => (

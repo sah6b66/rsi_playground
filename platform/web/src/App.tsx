@@ -9,6 +9,7 @@ import { ComingSoon } from './pages/placeholder';
 import { DashboardPage } from './pages/dashboard/DashboardPage';
 import { SessionListPage } from './pages/sessions/SessionListPage';
 import { CreateSessionWizard } from './pages/sessions/CreateSessionWizard';
+import { SessionDetailPage } from './pages/sessions/detail/SessionDetailPage';
 import { useEventStream } from './api/sse';
 
 const queryClient = new QueryClient({
@@ -25,7 +26,7 @@ function Shell() {
           <Route path="/" element={<DashboardPage />} />
           <Route path="/sessions" element={<SessionListPage />} />
           <Route path="/sessions/new" element={<CreateSessionWizard />} />
-          <Route path="/sessions/:id" element={<ComingSoon title="会话详情" />} />
+          <Route path="/sessions/:id" element={<SessionDetailPage />} />
           <Route path="/evalsets" element={<ComingSoon title="评测集" />} />
           <Route path="/suts" element={<ComingSoon title="SUT 管理" />} />
           <Route path="/suts/:id" element={<ComingSoon title="SUT 详情" />} />

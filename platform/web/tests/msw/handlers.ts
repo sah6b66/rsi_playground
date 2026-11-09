@@ -284,9 +284,114 @@ export const dashboardHandlers = [  http.get('/api/v1/iterations', () =>
   ),
   http.get('/api/v1/system/health', () => HttpResponse.json({ status: 'ok' })),
 ];
+
+// ── Task 4 会话详情 fixtures ───────────────────────────────────────────────
+// paused@awaiting_hypothesis 会话 + 2 轮 timeline + 门② 201/409。
+export const detailId = 'iter-bbbb2222';
+
+export const hypothesisRequests: unknown[] = [];
+// 测试切换：true 时门② 返回 409（step 不符）
+export let hypothesisShould409 = false;
+export const setHypothesisShould409 = (v: boolean) => {
+  hypothesisShould409 = v;
+};
+
+const timeline = {
+  iteration_id: detailId,
+  rounds: [
+    {
+      round: 1,
+      status: 'finalized',
+      batch_ids: ['bat-1'],
+      config_version_before: 1,
+      config_version_after: 2,
+      files_changed: [{ path: 'skill/bgp.md', target: 'skill' }],
+      tasks: [
+        {
+          task_id: 't-001', batch_id: 'bat-1', run_id: 'run-1',
+          status: 'succeeded', tokens: 100, latency_ms: 1200,
+          root_cause_match: true,
+        },
+        {
+          task_id: 't-002', batch_id: 'bat-1', run_id: 'run-2',
+          status: 'succeeded', tokens: 200, latency_ms: 1800,
+          root_cause_match: false,
+        },
+      ],
+      scores: { accuracy: 0.5, noise_band: [0.6, 0.7] },
+    },
+    {
+      round: 2,
+      status: 'finalized',
+      batch_ids: ['bat-2'],
+      config_version_before: 2,
+      config_version_after: 3,
+      files_changed: [{ path: 'skill/ospf.md', target: 'skill' }],
+      tasks: [
+        {
+          task_id: 't-003', batch_id: 'bat-2', run_id: 'run-3',
+          status: 'succeeded', tokens: 150, latency_ms: 900,
+          root_cause_match: true,
+        },
+      ],
+      scores: { accuracy: 0.8, noise_band: [0.6, 0.7] },
+    },
+  ],
+  summary: {
+    accuracy_series: [
+      { round: 1, value: 0.5 },
+      { round: 2, value: 0.8 },
+    ],
+    tokens_series: [
+      { round: 1, value: 300 },
+      { round: 2, value: 150 },
+    ],
+    latency_series: [
+      { round: 1, value: 1500 },
+      { round: 2, value: 900 },
+    ],
+  },
+};
+
+export const sessionDetailHandlers = [
+  http.get(`/api/v1/iterations/${detailId}`, () =>
+    HttpResponse.json(
+      iteration({
+        id: detailId,
+        sut_id: 'sut-2',
+        state: 'paused',
+        current_step: 'awaiting_hypothesis',
+        round: 2,
+        budget_used: { tokens: 210000 },
+      }),
+    ),
+  ),
+  http.get(`/api/v1/iterations/${detailId}/timeline`, () =>
+    HttpResponse.json(timeline),
+  ),
+  http.post(`/api/v1/iterations/${detailId}/hypothesis`, async ({ request }) => {
+    hypothesisRequests.length = 0;
+    hypothesisRequests.push(await request.json());
+    if (hypothesisShould409) {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: 'INVALID_TRANSITION',
+            message:
+              "gate 'hypothesis' expects current_step 'awaiting_hypothesis', got 'awaiting_review'",
+          },
+        },
+        { status: 409 },
+      );
+    }
+    return HttpResponse.json({ hypothesis_id: 'hyp-1234abcd' }, { status: 201 });
+  }),
+];
+
 export const handlers = [
   loginHandler,
   meHandler,
   ...dashboardHandlers,
   ...sessionsHandlers,
+  ...sessionDetailHandlers,
 ];

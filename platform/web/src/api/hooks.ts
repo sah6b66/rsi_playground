@@ -5,7 +5,8 @@ import {
   useQueryClient,
   type UseQueryResult,
 } from '@tanstack/react-query';
-import { apiFetch } from './client';
+import { message } from 'antd';
+import { ApiError, apiFetch } from './client';
 
 // iterations.py IterationOut
 export interface Iteration {
@@ -252,6 +253,97 @@ export function useSessionAction() {
     },
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['sessions'] });
+    },
+  });
+}
+
+// ── 会话详情（T4）─────────────────────────────────────────────────────────
+
+export function useSession(
+  id: string | undefined,
+): UseQueryResult<Iteration, Error> {
+  return useQuery({
+    queryKey: ['session', id],
+    queryFn: () => apiFetch<Iteration>('GET', `/iterations/${id}`),
+    enabled: !!id,
+  });
+}
+
+// GET /iterations/{id}/timeline（iterations.py get_iteration_timeline）
+export interface TimelineRound {
+  round: number;
+  status: string | null;
+  batch_ids: string[];
+  config_version_before: number | null;
+  config_version_after: number | null;
+  files_changed: { path: string | null; target: string | null }[];
+  tasks: {
+    task_id: string | null;
+    batch_id: string;
+    run_id: string;
+    status: string | null;
+    tokens: number | null;
+    latency_ms: number | null;
+    root_cause_match: boolean | null;
+  }[];
+  scores: { accuracy: number | null; noise_band: [number | null, number | null] };
+}
+
+export interface SessionTimeline {
+  iteration_id: string;
+  rounds: TimelineRound[];
+  summary: {
+    accuracy_series: { round: number; value: number }[];
+    tokens_series: { round: number; value: number }[];
+    latency_series: { round: number; value: number }[];
+  };
+}
+
+export function useSessionTimeline(
+  id: string | undefined,
+): UseQueryResult<SessionTimeline, Error> {
+  return useQuery({
+    queryKey: ['session-timeline', id],
+    queryFn: () => apiFetch<SessionTimeline>('GET', `/iterations/${id}/timeline`),
+    enabled: !!id,
+  });
+}
+
+// 四门（iterations.py _gate_router）：confirm-direction / hypothesis /
+// review / decision。门② 201 {hypothesis_id}，其余 204。
+export type GateName = 'confirm-direction' | 'hypothesis' | 'review' | 'decision';
+
+export interface GateBodyVars {
+  selected?: string[]; // 门① 多选
+  hypothesis?: string; // 门②
+  approved?: boolean; // 门③
+  decision?: string; // 门④ promote/revert/advise_hold
+  reasons?: string; // 门③/④ 备注（扩展字段）
+}
+
+export function useGateAction(id: string, gate: GateName) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (vars: GateBodyVars) =>
+      apiFetch<{ hypothesis_id?: string } | null>(
+        'POST',
+        `/iterations/${id}/${gate}`,
+        vars,
+      ),
+    onSuccess: (data) => {
+      if (data?.hypothesis_id) {
+        void message.info(`已提交假设：${data.hypothesis_id}`);
+      }
+      void qc.invalidateQueries({ queryKey: ['session', id] });
+      void qc.invalidateQueries({ queryKey: ['session-timeline', id] });
+      void qc.invalidateQueries({ queryKey: ['sessions'] });
+    },
+    onError: (err) => {
+      // 409（门不匹配/状态不符）→ 提示并 invalidate 让服务端状态自动纠正
+      if (err instanceof ApiError && err.status === 409) {
+        void message.error(err.message || '当前门状态已变化，已刷新会话状态');
+      }
+      void qc.invalidateQueries({ queryKey: ['session', id] });
     },
   });
 }

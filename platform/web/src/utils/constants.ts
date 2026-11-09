@@ -17,8 +17,23 @@ export const STATUS_META: Record<string, StatusMeta> = {
   created: { label: '已创建', color: 'default' },
 };
 
+// 后端 IterationState 真实态（rsi/core/enums.py）→ 中文文案/色（T4）。
+// StatusBadge 优先查此表；聚合值（running/paused_awaiting/finalized 等）
+// 回落到 STATUS_META 保持兼容。
+export const ITER_STATE_META: Record<string, StatusMeta> = {
+  attributing: { label: '归因中', color: 'processing' },
+  hypothesizing: { label: '假设中', color: 'processing' },
+  reviewing: { label: '预审中', color: 'processing' },
+  applying: { label: '应用中', color: 'processing' },
+  verifying: { label: '验证中', color: 'processing' },
+  deciding: { label: '决策中', color: 'processing' },
+  paused: { label: '已暂停待审批', color: 'warning' },
+  aborted: { label: '已终止', color: 'default' },
+  finished: { label: '已完成', color: 'success' },
+};
+
 export const statusMeta = (value: string): StatusMeta =>
-  STATUS_META[value] ?? { label: value, color: 'default' };
+  ITER_STATE_META[value] ?? STATUS_META[value] ?? { label: value, color: 'default' };
 
 export const TOKEN_KEY = 'rsi_token';
 export const USER_KEY = 'rsi_user'; // {username, role} JSON，随 token 一起清除
