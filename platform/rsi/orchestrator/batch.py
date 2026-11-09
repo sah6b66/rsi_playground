@@ -396,30 +396,15 @@ class BatchRunner:
         """
         if self.batch_resolver is not None:
             return self.batch_resolver(batch)
-        params = dict(batch.get("params") or {})
-        env = EnvSpec(
-            name=f"lab-{str(batch.get('id') or 'adhoc')}",
-            backend="fake",
-            devices=[DeviceSpec(name="R1", type="vrp", config="configs/R1.cfg")],
-            topology=Topology(),
-            ssh_access={
-                "R1": SshAccess(
-                    ip="10.0.0.1", port=2001, username="admin", password="pw"
-                )
-            },
-        )
-        tasks = [
-            TaskRecord(
-                task_id="fault/adhoc-00",
-                title="API-triggered ad-hoc task",
-                prepare=[],
-                task=TaskSpec(prompt="diagnose the fault and reply with FINAL_JSON"),
-                expected=ExpectedAnswer(),
-            )
-        ]
-        config_version_id = str(params.get("config_version_id", ""))
-        image_ref = str(batch.get("sut_id") or params.get("image_ref") or "sut")
-        return env, tasks, config_version_id, image_ref
+        return default_trigger_inputs(batch)
+
+    def resolve_inputs(self, batch: dict) -> tuple[Any, list[TaskRecord], str, str]:
+        """Public wrapper over ``_resolve_trigger_inputs``.
+
+        Production callers (noise-calibration bridge) resolve an API batch
+        dict without going through the trigger background-task machinery.
+        """
+        return self._resolve_trigger_inputs(batch)
 
     # -- batch loop (§5.1) ---------------------------------------------------
 
@@ -1363,6 +1348,38 @@ class BatchRunner:
             )
         )
         return events
+
+
+def default_trigger_inputs(batch: dict) -> tuple[Any, list[TaskRecord], str, str]:
+    """Offline canned (env, tasks, config_version_id, image_ref).
+
+    Shared by ``BatchRunner._resolve_trigger_inputs`` (resolver=None
+    fallback) and the production resolver's honest-degradation path
+    (evalset record without an env.yaml/tasks payload) so both produce
+    identical defaults.
+    """
+    params = dict(batch.get("params") or {})
+    env = EnvSpec(
+        name=f"lab-{str(batch.get('id') or 'adhoc')}",
+        backend="fake",
+        devices=[DeviceSpec(name="R1", type="vrp", config="configs/R1.cfg")],
+        topology=Topology(),
+        ssh_access={
+            "R1": SshAccess(ip="10.0.0.1", port=2001, username="admin", password="pw")
+        },
+    )
+    tasks = [
+        TaskRecord(
+            task_id="fault/adhoc-00",
+            title="API-triggered ad-hoc task",
+            prepare=[],
+            task=TaskSpec(prompt="diagnose the fault and reply with FINAL_JSON"),
+            expected=ExpectedAnswer(),
+        )
+    ]
+    config_version_id = str(params.get("config_version_id", ""))
+    image_ref = str(batch.get("sut_id") or params.get("image_ref") or "sut")
+    return env, tasks, config_version_id, image_ref
 
 
 def image_id_of(task: TaskRecord) -> str:
