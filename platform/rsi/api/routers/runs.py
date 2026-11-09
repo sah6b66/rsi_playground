@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 
+from rsi.api.db_reads import get_run_record
 from rsi.api.deps import audit, get_current_user, get_store, require_perms
 from rsi.api.pagination import DEFAULT_LIMIT, paginate
 from rsi.core.enums import RunStatus
@@ -43,18 +44,30 @@ def _get(store: dict, run_id: str) -> dict:
         ) from None
 
 
+def _get_anywhere(request: Request, store: dict, run_id: str) -> dict:
+    """Memory-first run lookup with a DB fallback (audit4 W-C)."""
+    run = get_run_record(request, run_id, store)
+    if run is None:
+        raise NotFoundError(
+            f"run {run_id!r} not found", context={"run_id": run_id}
+        )
+    return run
+
+
 @router.get("/{run_id}", response_model=RunOut)
 async def get_run(
     run_id: str,
+    request: Request,
     user: Claims = Depends(get_current_user),
     store: dict = Depends(get_store("runs")),
 ) -> RunOut:
-    return RunOut(**_get(store, run_id))
+    return RunOut(**_get_anywhere(request, store, run_id))
 
 
 @router.get("/{run_id}/traces", response_model=TracePage)
 async def list_traces(
     run_id: str,
+    request: Request,
     response: Response,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
@@ -62,7 +75,7 @@ async def list_traces(
     store: dict = Depends(get_store("runs")),
     traces: dict = Depends(get_store("traces")),
 ) -> TracePage:
-    _get(store, run_id)
+    _get_anywhere(request, store, run_id)
     events = sorted(traces.get(run_id, []), key=lambda e: e["seq"])
     items, page = paginate(events, cursor, limit)
     response.headers["x-pagination"] = json.dumps(page)
@@ -77,10 +90,11 @@ async def list_traces(
 @audit.audited("run.rejudge", object_type="run")
 async def rejudge_run(
     run_id: str,
-    user: Claims = Depends(require_perms("batch:trigger")),
+    request: Request,
+    user: Claims = Depends(require_perms("iteration:manage")),
     store: dict = Depends(get_store("runs")),
 ) -> RunOut:
-    run = _get(store, run_id)
+    run = _get_anywhere(request, store, run_id)
     if RunStatus(run["status"]) in _TERMINAL_RUN and run["status"] != RunStatus.DONE.value:
         raise InvalidTransitionError(
             f"cannot re-judge run in terminal state {run['status']}",

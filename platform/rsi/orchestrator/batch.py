@@ -297,6 +297,14 @@ class BatchRunner:
                     error=str(exc),
                 )
 
+        # W-B: forward per-task progress to on_update while running (the
+        # completion notification below keeps its original semantics).
+        def _progress(done: int, total: int) -> None:
+            _notify({
+                "status": "running",
+                "progress": {"done": done, "total": total},
+            })
+
         try:
             env, tasks, config_version_id, image_ref = (
                 self._resolve_trigger_inputs(batch)
@@ -313,7 +321,21 @@ class BatchRunner:
                     "sut_id": str(batch.get("sut_id", "")),
                     "profile_id": batch.get("profile_id"),
                 },
+                progress_fn=_progress,
             )
+        except asyncio.CancelledError:
+            # W-A: shutdown cancelled the in-flight batch — record a terminal
+            # aborted state (memory + DB + store) before the cancellation
+            # unwinds, then re-raise so the task ends cancelled.
+            self.last_status = "aborted"
+            logger.warning("batch.trigger_cancelled", batch_id=batch_id)
+            self._db_finish_batch(batch_id, "aborted", None)
+            _notify({
+                "status": "aborted",
+                "progress": {"done": 0, "total": 0},
+                "finished_at": _utcnow_iso(),
+            })
+            raise
         except Exception as exc:  # noqa: BLE001 - trigger must not 500 the API
             self.last_status = "failed"
             logger.warning(
@@ -380,7 +402,11 @@ class BatchRunner:
         permission: str = "read-only",
         bypass_cache: bool | None = None,
         db_meta: dict[str, str] | None = None,
+        progress_fn: Callable[[int, int], None] | None = None,
     ) -> BatchStats:
+        # W-B: optional per-task progress callback (done, total) so callers
+        # (API trigger) can surface running-state progress; None keeps the
+        # legacy completion-only notification.
         # D-4: None -> runner default; noise-calibration batches force bypass
         # (ADR-17) so repeated runs always execute.
         if bypass_cache is None:
@@ -425,6 +451,21 @@ class BatchRunner:
         # DB reverse lookup) — best effort, never blocks the batch.
         self._db_insert_batch(batch_id, config_version_id, permission, db_meta)
 
+        def _report_progress() -> None:
+            if progress_fn is None:
+                return
+            try:
+                progress_fn(len(completed), len(tasks))
+            except Exception as exc:  # noqa: BLE001 - progress must not kill the run
+                logger.warning(
+                    "run_batch.progress_failed", batch_id=batch_id, error=str(exc)
+                )
+
+        # B-21: ANY exception leaving the task loop must still walk the full
+        # terminal path (last_status + event_bus + _db_finish_batch) before
+        # propagating, otherwise the batches row stays "running" forever.
+        task_exc: BaseException | None = None
+        cancelled = False
         try:
             for seq, task in enumerate(pending):
                 # a. stop file -> abort
@@ -485,6 +526,7 @@ class BatchRunner:
                         batch_id, task.task_id, run_id, "cached", seq,
                         lab.lab_id, cache_key, verdict,
                     )
+                    _report_progress()
                     continue
 
                 # d. run task (9-step pipeline)
@@ -579,6 +621,24 @@ class BatchRunner:
                 await self.event_bus.publish(
                     "run", completed[-1]["run_id"], "judging", run_status.value
                 )
+                _report_progress()
+        except asyncio.CancelledError:
+            # W-A: shutdown cancellation is a terminal state, not a leak —
+            # mark the batches row aborted before the cancellation unwinds.
+            status = "aborted"
+            cancelled = True
+            logger.warning(
+                "run_batch.cancelled", batch_id=batch_id
+            )
+        except Exception as exc:  # noqa: BLE001 - B-21 terminal-state guarantee
+            status = "failed"
+            task_exc = exc
+            logger.warning(
+                "run_batch.task_exception",
+                batch_id=batch_id,
+                exc_type=type(exc).__name__,
+                error=str(exc),
+            )
         finally:
             # 5. destroy lab (always, also on abort)
             await self.sandbox.destroy(lab)
@@ -592,6 +652,11 @@ class BatchRunner:
         logger.debug(
             "run_batch.exit", batch_id=batch_id, status=status, n=stats.n
         )
+        if task_exc is not None:
+            raise task_exc
+        if cancelled:
+            # propagate the cancellation after the terminal path has run
+            raise asyncio.CancelledError
         return stats
 
     # -- task pipeline (§5.2) --------------------------------------------------
@@ -655,25 +720,71 @@ class BatchRunner:
             # create_instance. Smoke runs on throwaway instances.
             cache_key = (batch_id, config_version_id)
             if cache_key not in self._instrument_cache:
-                overlay_dir, report = self.instrumentor.instrument(
-                    Path(config_version_id),
-                    self.carrier_type,
-                    lambda cfg: self._smoke_run(lab, image_ref, cfg),
+                # B-22: an instrumentor crash (Scanner/Injector/copytree —
+                # disk full, permissions, nested-dir ValueError) must degrade
+                # to the original config dir (same semantics as the facade's
+                # verify-failure fallback, B-1), never kill the batch.
+                try:
+                    # B-23: the instrument pipeline (directory scan + overlay
+                    # copytree + injection + two smoke collects of up to 60s
+                    # each) is pure synchronous IO — run it on a worker
+                    # thread so the event loop keeps scheduling. The smoke
+                    # callback (_smoke_run) only touches sync carrier methods
+                    # and is thread-safe (no loop-bound state).
+                    overlay_dir, report = await asyncio.to_thread(
+                        self.instrumentor.instrument,
+                        Path(config_version_id),
+                        self.carrier_type,
+                        lambda cfg: self._smoke_run(lab, image_ref, cfg),
+                    )
+                except Exception as exc:  # noqa: BLE001 - degrade, don't crash
+                    logger.warning(
+                        "run_task.instrument_failed",
+                        run_id=run_id,
+                        exc_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                else:
+                    self._instrument_cache[cache_key] = (overlay_dir, report)
+                    self._record_instrumentation(
+                        batch_id, config_version_id, report
+                    )
+            if cache_key in self._instrument_cache:
+                effective_config = str(self._instrument_cache[cache_key][0])
+        # B-22: create_instance failures (CarrierError — host unconfigured,
+        # net attach failed) are TASK-level env faults: restore the prepare
+        # state, score the task env_failed and keep the batch alive (DD-12
+        # task-level env_failed semantics, feeds the F1 circuit breaker).
+        try:
+            instance = self.carrier.create_instance(
+                image_ref=image_ref,
+                config_version_id=effective_config,
+                lab=lab,
+                permission=permission,
+                instrument=True,
+                host=self.host,
+                cred=cred,
+                run_id=run_id,
+                carrier_type=self.carrier_type,
+            )
+        except Exception as exc:
+            logger.warning(
+                "run_task.create_instance_failed",
+                run_id=run_id,
+                task_id=task.task_id,
+                exc_type=type(exc).__name__,
+                error=str(exc),
+            )
+            try:
+                await self.sandbox.restore_task(lab, applied)
+            except Exception as cleanup_exc:  # noqa: BLE001 - degrading anyway
+                logger.debug(
+                    "run_task.create_instance_restore_failed",
+                    task_id=task.task_id,
+                    exc_type=type(cleanup_exc).__name__,
                 )
-                self._instrument_cache[cache_key] = (overlay_dir, report)
-                self._record_instrumentation(batch_id, config_version_id, report)
-            effective_config = str(self._instrument_cache[cache_key][0])
-        instance = self.carrier.create_instance(
-            image_ref=image_ref,
-            config_version_id=effective_config,
-            lab=lab,
-            permission=permission,
-            instrument=True,
-            host=self.host,
-            cred=cred,
-            run_id=run_id,
-            carrier_type=self.carrier_type,
-        )
+            logger.debug("run_task.exit", run_id=run_id, status="env_failed")
+            return TaskResult(task_complete=False), _env_failed_verdict()
         # F-2 (audit3): destroy the instance on EVERY exit path (normal,
         # instance_crashed early return, judge/restore exceptions). A leaked
         # handle keeps the HostService._instances entry and the host_pool
@@ -720,8 +831,15 @@ class BatchRunner:
                     )
                     return result, _env_failed_verdict()
 
-                # 6. collect trace events (P0: synthesized from the result actions)
+                # 6. collect trace events (P0: synthesized from the result
+                #    actions + wiretap channel files tailed into the collector)
                 events = self._trace_events(run_id, task, lab, result)
+                # F1.2 (audit4): tail the carrier's wiretap ndjson channel(s)
+                # so real OpenCode runs contribute LLM_REQUEST/usage events
+                # (one-shot read; missing files are skipped quietly).
+                events.extend(
+                    self._ingest_trace_channels(run_id, task, lab, instance)
+                )
                 self.collector.ingest(events)
             finally:
                 self.collector.finalize(run_id)
@@ -763,13 +881,48 @@ class BatchRunner:
                     )
             if not restored:
                 try:
-                    # L2: reset the lab to a clean state and re-run restore
-                    # (SandboxService.reset replays device state; a full
-                    # ops.jsonl replay rides on the backup re-apply inside
-                    # restore_task). No dedicated replay API exists in P0.
+                    # L2 (B-24, DD-12 §5.2): environment-level recovery back
+                    # to the batch-initial state — lab reset, then restore
+                    # the snap0 snapshot (the pre-task baseline the batch
+                    # started from; a bare reset only reaches the built-clean
+                    # state, not the post-build snap0 state), then replay the
+                    # lab's ops.jsonl journalled prepare ops so state applied
+                    # since snap0 is rebuilt (exec_cli records are re-sent;
+                    # call_api records are skipped with a warning — they are
+                    # config-API writes the snapshot may already carry and
+                    # are not idempotent). The failing task's own prepare is
+                    # excluded: this restore exists precisely to undo it.
                     logger.warning("run_task.restore_l2_recovery", run_id=run_id)
                     await self.sandbox.reset(lab)
-                    await self.sandbox.restore_task(lab, applied)
+                    snapshots = getattr(self.sandbox, "snapshots", None)
+                    snap_ref = None
+                    if callable(snapshots):
+                        snap_ref = next(
+                            (
+                                s
+                                for s in snapshots(lab.lab_id)
+                                if s.snapshot_id == snap0_id
+                            ),
+                            None,
+                        )
+                    if snap_ref is not None:
+                        await self.sandbox.restore(lab, snap_ref)
+                    else:
+                        logger.warning(
+                            "run_task.restore_l2_snapshot_missing",
+                            run_id=run_id,
+                            snapshot_id=snap0_id,
+                        )
+                    replay = getattr(self.sandbox, "replay_applied_ops", None)
+                    if callable(replay):
+                        replayed = await replay(
+                            lab, exclude_task_ids={task.task_id}
+                        )
+                        logger.debug(
+                            "run_task.restore_l2_replay",
+                            run_id=run_id,
+                            replayed=replayed,
+                        )
                     restored = True
                 except Exception as exc:  # noqa: BLE001 - task degrades, not batch
                     logger.warning(
@@ -1076,6 +1229,57 @@ class BatchRunner:
         lab = await self.sandbox.build_lab(env)
         await self.sandbox.wait_ready(lab, self.ready_timeout_s)
         return lab, await self.sandbox.snapshot(lab, "snap0")
+
+    def _ingest_trace_channels(
+        self,
+        run_id: str,
+        task: TaskRecord,
+        lab: LabHandle,
+        instance: Any,
+    ) -> list[TraceEvent]:
+        """Tail the carrier's ndjson trace channels into the collector (F1.2).
+
+        P0 one-shot semantics: each host-visible channel file is read once
+        after collect (before finalize). Channel paths that do not exist on
+        the host (offline/fake carriers, unmapped container volumes) are
+        skipped quietly. Returns the wiretap-derived events so callers can
+        include them in the events handed to the judge.
+        """
+        try:
+            channels = self.carrier.trace_channels(instance)
+        except Exception as exc:  # noqa: BLE001 - tracing must not fail runs
+            logger.debug(
+                "trace_channels.unavailable",
+                run_id=run_id,
+                exc_type=type(exc).__name__,
+            )
+            return []
+        if getattr(channels, "kind", None) != "ndjson":
+            return []
+        for raw_path in getattr(channels, "paths", None) or []:
+            path = Path(raw_path)
+            if not path.is_file():
+                logger.debug("trace_channels.skip_missing", run_id=run_id, path=raw_path)
+                continue
+            try:
+                self.collector.tail_ndjson(
+                    path,
+                    run_id,
+                    {
+                        "task_id": task.task_id,
+                        "lab_id": lab.lab_id,
+                        "sut_id": image_id_of(task),
+                        "run_id": run_id,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 - best effort trace ingest
+                logger.warning(
+                    "trace_channels.tail_failed",
+                    run_id=run_id,
+                    path=str(path),
+                    exc_type=type(exc).__name__,
+                )
+        return self.collector.events(run_id)
 
     @staticmethod
     def _trace_events(

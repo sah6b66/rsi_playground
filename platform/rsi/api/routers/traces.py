@@ -5,9 +5,10 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
+from rsi.api.db_reads import get_run_record
 from rsi.api.deps import get_current_user, get_store
 from rsi.core.errors import NotFoundError
 from rsi.security.auth import Claims
@@ -67,12 +68,16 @@ def _events(traces: dict, run_id: str | None) -> list[dict[str, Any]]:
 async def diff_traces(
     run_a: str,
     run_b: str,
+    request: Request,
     user: Claims = Depends(get_current_user),
     runs: dict = Depends(get_store("runs")),
     traces: dict = Depends(get_store("traces")),
 ) -> TraceDiffOut:
-    _get_run(runs, run_a)
-    _get_run(runs, run_b)
+    # audit4 W-C: run existence falls back to the DB (memory store is
+    # test-only in production assemblies).
+    for rid in (run_a, run_b):
+        if get_run_record(request, rid, runs) is None:
+            _get_run(runs, rid)  # raise the canonical 404
     ev_a = sorted(traces.get(run_a, []), key=lambda e: e["seq"])
     ev_b = sorted(traces.get(run_b, []), key=lambda e: e["seq"])
     types = sorted({e["type"] for e in ev_a} | {e["type"] for e in ev_b})

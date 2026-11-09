@@ -429,6 +429,69 @@ class SandboxService:
         logger.debug("restore_task.exit", status="failed", exc_type=type(last).__name__)
         raise last
 
+    async def replay_applied_ops(
+        self, lab: LabHandle, *, exclude_task_ids: set[str] | None = None
+    ) -> int:
+        """B-24: L2 ops-journal replay — re-apply journalled prepare actions.
+
+        Reads the lab's ops.jsonl (``OpsJournal.read``) and re-sends every
+        ``applied`` record's CLI lines to the recorded device; ``call_api``
+        records are skipped with a warning (config-API writes are not
+        idempotent and the snap0 restore already carries the API-side state).
+        Records whose ``task_id`` is in ``exclude_task_ids`` are skipped (the
+        failing task's own prepare is exactly what L2 is recovering from).
+
+        Returns the number of re-applied CLI lines; raises EnvError on the
+        first device error so the caller can degrade the task to env_failed.
+        """
+        exclude = set(exclude_task_ids or ())
+        env = self._require_env(lab)
+        backend = self._backend(lab)
+        records = self._journal(lab).read()
+        replayed = 0
+        for rec in records:
+            if rec.get("record") != "applied":
+                continue
+            if str(rec.get("task_id", "")) in exclude:
+                continue
+            applied = rec.get("applied") or {}
+            if applied.get("action") != "exec_cli":
+                logger.warning(
+                    "sandbox.replay_skip_call_api",
+                    lab_id=lab.lab_id,
+                    task_id=rec.get("task_id"),
+                    api=applied.get("api"),
+                )
+                continue
+            for entry in applied.get("entries") or []:
+                device = entry.get("device")
+                self._require_device(lab, env, device)
+                for line in entry.get("cli_lines") or []:
+                    output = backend.exec(lab, device, line)
+                    if output.startswith(_ERROR_OUTPUT_PREFIX):
+                        raise EnvError(
+                            f"journal replay failed on {device}: {line!r} -> {output}",
+                            context={
+                                "device": device,
+                                "cli": line,
+                                "lab_id": lab.lab_id,
+                                "task_id": rec.get("task_id"),
+                            },
+                        )
+                    replayed += 1
+        self._journal(lab).append(
+            {
+                "record": "l2_replay",
+                "ts": _utcnow_iso(),
+                "replayed": replayed,
+                "excluded": sorted(exclude),
+            }
+        )
+        logger.debug(
+            "sandbox.replay_applied_ops.exit", lab_id=lab.lab_id, replayed=replayed
+        )
+        return replayed
+
     async def _recover_once(self, lab: LabHandle, applied: list[AppliedAction]) -> None:
         env = self._require_env(lab)
         backend = self._backend(lab)

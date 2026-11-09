@@ -113,7 +113,7 @@ async def list_hypotheses(
 @audit.audited("hypothesis.create", object_type="hypothesis")
 async def create_hypothesis(
     body: HypothesisCreate,
-    user: Claims = Depends(require_perms("evalset:manage")),
+    user: Claims = Depends(require_perms("iteration:manage")),
     store: dict = Depends(get_store("hypotheses")),
 ) -> HypothesisOut:
     now = _now()
@@ -146,7 +146,7 @@ async def get_hypothesis(
 async def update_hypothesis(
     hyp_id: str,
     body: HypothesisUpdate,
-    user: Claims = Depends(require_perms("evalset:manage")),
+    user: Claims = Depends(require_perms("iteration:manage")),
     store: dict = Depends(get_store("hypotheses")),
 ) -> HypothesisOut:
     hyp = _get(store, hyp_id)
@@ -173,7 +173,7 @@ async def update_hypothesis(
 @audit.audited("hypothesis.submit_review", object_type="hypothesis")
 async def submit_review(
     hyp_id: str,
-    user: Claims = Depends(require_perms("evalset:manage")),
+    user: Claims = Depends(require_perms("iteration:manage")),
     store: dict = Depends(get_store("hypotheses")),
 ) -> Response:
     hyp = _get(store, hyp_id)

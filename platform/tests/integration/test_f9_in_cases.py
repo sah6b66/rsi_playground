@@ -150,6 +150,15 @@ class SpySandbox(SandboxService):
         self.calls.append(("restore", self._current_task))
         return await super().restore_task(lab, applied)
 
+    async def restore(self, lab, snap):
+        # B-24: the L2 snapshot restore fails for the same tasks so the
+        # env_failed degradation path is still exercised end-to-end.
+        if self._current_task in self.fail_restore_for:
+            raise EnvError(
+                f"simulated L2 restore failure for {self._current_task}"
+            )
+        return await super().restore(lab, snap)
+
 
 def _rig(tmp_path: Path, sandbox: SpySandbox, judge: MockJudge) -> BatchRunner:
     carrier = HostService(

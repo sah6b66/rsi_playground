@@ -284,6 +284,14 @@ class HostService:
         )
         return result
 
+    def trace_channels(self, instance: InstanceHandle) -> Any:
+        """Adapter passthrough: locate the carrier's trace output streams.
+
+        F1.2 (audit4): consumed by BatchRunner after collect to tail wiretap
+        ndjson files into the TraceCollector.
+        """
+        return self._adapter_for(instance.carrier).trace_channels(instance)
+
     def destroy(self, instance: InstanceHandle) -> None:
         """Detach networks, release the host slot and stop tracking."""
         logger.debug("destroy.entry", instance_id=instance.instance_id, host=instance.host)

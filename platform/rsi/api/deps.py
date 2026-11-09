@@ -15,7 +15,7 @@ from typing import Any
 from fastapi import Depends, Request
 from fastapi.security import OAuth2PasswordBearer
 
-from rsi.core.errors import ConfigError
+from rsi.core.errors import AuthError, ConfigError
 from rsi.security.audit import AuditLog, sanitize
 from rsi.security.auth import Claims
 from rsi.security.rbac import require as rbac_require
@@ -166,6 +166,18 @@ def get_current_user(
             }
     if users_store:
         auth.get_current_user(token, users_store)
+    elif getattr(auth, "_session_factory", None) is not None:
+        # D-2 (audit4): the default production assembly registers an empty
+        # inline users dict — without this branch the per-request disabled
+        # check would silently no-op. Fall back to the auth service's
+        # DB-first disabled check (session_factory). A user that exists in
+        # neither the DB nor an inline store still passes plain JWT
+        # verification (backward-compatible P0 mode).
+        try:
+            auth.get_current_user(token, users_store)
+        except AuthError as exc:
+            if "disabled" in str(exc).lower():
+                raise
     return auth.verify(token)
 
 

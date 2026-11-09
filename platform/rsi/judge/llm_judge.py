@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from rsi.core.errors import ConfigError
 from rsi.core.models import PathQuality
 from rsi.judge.summarizer import TraceSummarizer
 from rsi.llm.client import LLMClient
@@ -92,12 +93,20 @@ class LLMJudge:
         )
         try:
             root = await self._judge_root_cause(task, result)
+        except ConfigError:
+            # F3 (audit4, DD-02 §4): a template/code vars contract drift is a
+            # CONFIGURATION error, not a judgment-quality problem — surface it
+            # (ConfigError maps to 503 at the API layer) instead of silently
+            # degrading to indeterminate.
+            raise
         except Exception as exc:  # noqa: BLE001 - degrade to indeterminate, not raise
             logger.debug("judge.indeterminate", stage="root_cause", exc_type=type(exc).__name__)
             return self._indeterminate("root_cause judgment unavailable")
 
         try:
             quality = await self._judge_path_quality(task, result, events)
+        except ConfigError:
+            raise  # F3: see root_cause note above
         except Exception as exc:  # noqa: BLE001
             logger.debug("judge.indeterminate", stage="path_quality", exc_type=type(exc).__name__)
             return self._indeterminate("path_quality judgment unavailable")

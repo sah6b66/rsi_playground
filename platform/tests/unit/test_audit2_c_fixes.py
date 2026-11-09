@@ -122,13 +122,17 @@ class TestPromptHash:
     def test_hash_of_formula(self):
         lib = PromptLibrary({"judge/root_cause.v1": "t"})
         h = lib.hash_of("judge/root_cause", "glm-4.7", 0.0)
-        expected = hashlib.sha256("judge/root_cause@v1|glm-4.7|0.0".encode()).hexdigest()
+        # audit4 F2: payload now carries the template body sha16 segment
+        body_sha = hashlib.sha256(b"t").hexdigest()[:16]
+        expected = hashlib.sha256(
+            f"judge/root_cause@v1|glm-4.7|0.0|{body_sha}".encode()
+        ).hexdigest()
         assert h == expected
 
     def test_hash_of_no_template_version_zero(self):
         lib = PromptLibrary()
         h = lib.hash_of("judge/root_cause", "m", 0.0)
-        expected = hashlib.sha256("judge/root_cause@v0|m|0.0".encode()).hexdigest()
+        expected = hashlib.sha256("judge/root_cause@v0|m|0.0|".encode()).hexdigest()
         assert h == expected
 
     def test_client_prompt_hash_matches_library(self):
@@ -140,8 +144,11 @@ class TestPromptHash:
 
     def test_client_prompt_hash_without_library(self):
         client = LLMClient(model="m", prompt_version="v9", temperature=0.2)
-        expected = hashlib.sha256("judge/root_cause@v9|m|0.2".encode()).hexdigest()
+        # audit4 P0 (ADR-23): judge calls are forced to temperature 0
+        expected = hashlib.sha256("judge/root_cause@v9|m|0.0|".encode()).hexdigest()
         assert client.prompt_hash("judge", "root_cause") == expected
+        expected_critic = hashlib.sha256("critic/x@v9|m|0.2|".encode()).hexdigest()
+        assert client.prompt_hash("critic", "x") == expected_critic
 
     @pytest.mark.asyncio
     async def test_judge_run_persists_prompt_hash(self, tmp_path):

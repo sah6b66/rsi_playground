@@ -8,6 +8,7 @@ ALL_PERMISSIONS = {
     "evalset:manage",
     "profile:manage",
     "batch:trigger",
+    "iteration:manage",
     "version:promote_rollback",
     "approval:decide",
     "credential:manage",
@@ -31,9 +32,23 @@ class TestRbacMatrix:
             "evalset:manage",
             "profile:manage",
             "batch:trigger",
+            "iteration:manage",
             "version:promote_rollback",
             "view:read",
         }
+
+    def test_iteration_manage_not_on_service_or_researcher(self):
+        # audit4 A-14: iteration lifecycle (create/pause/resume/abort/
+        # archive, re-judge) is admin/agent_engineer only — the service
+        # automation role must not drive human-gated iterations.
+        for role in ("service", "researcher", "approver"):
+            assert "iteration:manage" not in ROLE_PERMISSIONS[role]
+        assert "iteration:manage" in ROLE_PERMISSIONS["admin"]
+        assert "iteration:manage" in ROLE_PERMISSIONS["agent_engineer"]
+        dep = require("iteration:manage")
+        with pytest.raises(HTTPException) as e:
+            dep(FakeUser("service"))
+        assert e.value.status_code == 403
 
     def test_researcher_readonly(self):
         perms = ROLE_PERMISSIONS["researcher"]

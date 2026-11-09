@@ -217,13 +217,18 @@ class JudgeService:
         for e in events:
             if e.event_type == EventType.TOOL_CALL:
                 tool_calls += 1
-            elif e.event_type == EventType.LLM_RESPONSE:
-                usage = e.data.get("usage") or {}
-                if isinstance(usage, dict):
-                    tokens += int(usage.get("input_tokens", 0)) + int(
-                        usage.get("output_tokens", 0)
-                    )
-                    estimated = estimated or bool(usage.get("estimated", False))
+            # F1.1 (audit4): the production usage writer is the wiretap
+            # parser, which attaches usage dicts to LLM_REQUEST frames
+            # (DD-07 §5.2). Read usage from ANY event type so Verdict
+            # efficiency and TraceStore.stats share the same semantics
+            # (F1.3) instead of diverging per event type.
+            usage = e.data.get("usage") or {}
+            if isinstance(usage, dict):
+                tokens += int(usage.get("input_tokens", 0)) + int(
+                    usage.get("output_tokens", 0)
+                )
+                estimated = estimated or bool(usage.get("estimated", False))
+            if e.event_type == EventType.LLM_RESPONSE:
                 tokens += int(e.data.get("tokens", 0))
             if e.duration_ms:
                 wall_ms += e.duration_ms

@@ -10,6 +10,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
 
+from rsi.api.db_reads import list_runs_for_batch
 from rsi.api.deps import audit, get_current_user, get_store, require_perms
 from rsi.api.pagination import DEFAULT_LIMIT, paginate
 from rsi.core.enums import BatchStatus
@@ -134,6 +135,7 @@ async def get_batch(
 @router.get("/{batch_id}/runs", response_model=RunPage)
 async def list_batch_runs(
     batch_id: str,
+    request: Request,
     response: Response,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
@@ -142,7 +144,10 @@ async def list_batch_runs(
     runs: dict = Depends(get_store("runs")),
 ) -> RunPage:
     _get(store, batch_id)
-    in_batch = [r for r in runs.values() if r["batch_id"] == batch_id]
+    # audit4 W-C: production runs live only in the DB; union memory hits
+    # (test rigs) with DB rows so the listing is non-empty after a real
+    # trigger even though the runner never writes the memory store.
+    in_batch = list_runs_for_batch(request, runs, batch_id)
     items, page = paginate(in_batch, cursor, limit)
     response.headers["x-pagination"] = json.dumps(page)
     return RunPage(

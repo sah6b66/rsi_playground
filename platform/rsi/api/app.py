@@ -90,7 +90,16 @@ def create_app(
 
             stop_task = asyncio.create_task(_stop_poll(), name="stop-polling")
         yield
-        # shutdown: stop background pollers, then reclaim pooled resources
+        # shutdown (W-A): cancel in-flight batches FIRST so their terminal
+        # paths (batches row -> aborted, lab destroy) run before the loop
+        # closes; only then stop pollers and reclaim pooled resources.
+        runner = services.get("batch_runner")
+        if runner is not None:
+            tasks = getattr(runner, "_tasks", None)
+            if tasks:
+                for t in list(tasks):
+                    t.cancel()
+                await asyncio.gather(*list(tasks), return_exceptions=True)
         if stop_task is not None:
             stop_task.cancel()
             # c) await the cancelled task so the poller actually finishes
@@ -110,6 +119,13 @@ def create_app(
                 sandbox.close()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("api.shutdown", component="sandbox", exc_type=type(exc).__name__)
+        # W-A: dispose the pooled DB engine last (after batch terminal writes)
+        engine = services.get("engine")
+        if engine is not None and hasattr(engine, "dispose"):
+            try:
+                engine.dispose()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("api.shutdown", component="engine", exc_type=type(exc).__name__)
 
     app = FastAPI(
         title="RSI Platform API",
