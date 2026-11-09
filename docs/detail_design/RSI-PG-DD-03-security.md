@@ -30,14 +30,15 @@ rsi/security/hygiene.py      # SecretHygiene（启动自检 + 日志脱密过滤
 Role = Literal["admin", "agent_engineer", "researcher", "approver", "service"]
 Permission = Literal[                        # 与设计 6.1 矩阵一一对应
   "sut:manage", "evalset:manage", "profile:manage",
-  "batch:trigger", "version:promote_rollback", "approval:decide",
+  "batch:trigger", "iteration:manage", "version:promote_rollback",
+  "approval:decide",
   "credential:manage", "user:manage", "system:stop",
   "view:read"]                               # 轨迹/看板/实验记录（全角色）
 
 ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
   "admin": 全部,
   "agent_engineer": {sut:manage, evalset:manage, profile:manage, batch:trigger,
-                     version:promote_rollback, view:read},
+                     iteration:manage, version:promote_rollback, view:read},
   "researcher": {view:read},
   "approver":  {view:read, approval:decide},
   "service":   {batch:trigger, view:read},

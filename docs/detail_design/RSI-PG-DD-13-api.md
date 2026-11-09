@@ -162,7 +162,7 @@ cursor 编码：base64(json({last_id, sort_key}))
 
 ```python
 @router.post("/iterations/{id}/confirm-direction")
-@require("batch:trigger")
+@require("iteration:manage")
 @audited("gate.confirm_direction")
 async def gate_direction(id: str, body: DirectionConfirm,
                          engine=Depends(get_service("iteration_engine"))):
