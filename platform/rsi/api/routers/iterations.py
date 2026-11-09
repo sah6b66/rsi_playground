@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, Field
 
 from rsi.api.deps import audit, get_current_user, get_store, require_perms
+from rsi.api.pagination import DEFAULT_LIMIT, paginate
 from rsi.core.enums import IterationState
 from rsi.core.errors import (
     ConflictError,
@@ -44,11 +45,21 @@ _GATE_NEXT_STEP: dict[str, str] = {
 
 
 class IterationCreate(BaseModel):
-    """§9.12：``mode ∈ p1|p2``；p2 在 P2 阶段开放（此前 409）。"""
+    """§9.12：``mode ∈ p1|p2``；p2 在 P2 阶段开放（此前 409）。
+
+    T3 web 向导形态：可携带 ``evalset_id`` 与内嵌 ``profile``（goals/guards/
+    budget）；此时 ``profile_id`` 可省略，由 API 自动铸号。
+    """
 
     sut_id: str = Field(json_schema_extra={"example": "sut-1a2b3c4d"})
-    profile_id: str = Field(json_schema_extra={"example": "prof-9f8e7d6c"})
+    profile_id: str | None = Field(
+        default=None, json_schema_extra={"example": "prof-9f8e7d6c"}
+    )
     mode: str = Field(default="p1", json_schema_extra={"example": "p1"})
+    evalset_id: str | None = Field(
+        default=None, json_schema_extra={"example": "eval-0001"}
+    )
+    profile: dict[str, Any] | None = None
 
 
 class IterationOut(BaseModel):
@@ -63,6 +74,14 @@ class IterationOut(BaseModel):
     budget_used: dict[str, Any]
     archived: bool
     created_at: str
+    evalset_id: str | None = None
+    profile: dict[str, Any] | None = None
+
+
+class IterationPage(BaseModel):
+    items: list[IterationOut]
+    next_cursor: str | None = None
+    has_more: bool = False
 
 
 class GateBody(BaseModel):
@@ -105,6 +124,7 @@ def _out(it: dict) -> IterationOut:
         round=it["round"], experiments=it["experiments"],
         budget_used=it["budget_used"], archived=it["archived"],
         created_at=it["created_at"],
+        evalset_id=it.get("evalset_id"), profile=it.get("profile"),
     )
 
 
@@ -146,7 +166,9 @@ async def create_iteration(
     it = {
         "id": f"iter-{uuid.uuid4().hex[:8]}",
         "sut_id": body.sut_id,
-        "profile_id": body.profile_id,
+        "profile_id": body.profile_id or f"prof-{uuid.uuid4().hex[:8]}",
+        "evalset_id": body.evalset_id,
+        "profile": body.profile,
         "mode": body.mode,
         "state": IterationState.ATTRIBUTING.value,
         "current_step": "awaiting_direction",
@@ -160,6 +182,33 @@ async def create_iteration(
     }
     store[it["id"]] = it
     return {"iteration_id": it["id"]}
+
+
+@router.get("", response_model=IterationPage)
+async def list_iterations(
+    response: Response,
+    status: str | None = None,
+    sut_id: str | None = None,
+    cursor: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+    user: Claims = Depends(get_current_user),
+    store: dict = Depends(get_store("iterations")),
+) -> IterationPage:
+    """会话列表（T3 web）。``status`` 匹配 IterationState 值；``sut_id`` 过滤。"""
+    items = list(store.values())
+    if status is not None:
+        items = [it for it in items if it["state"] == status]
+    if sut_id is not None:
+        items = [it for it in items if it["sut_id"] == sut_id]
+    # 最新创建在前（会话列表惯例）
+    items.sort(key=lambda it: it["created_at"], reverse=True)
+    window, page = paginate(items, cursor, limit)
+    response.headers["x-pagination"] = json.dumps(page)
+    return IterationPage(
+        items=[_out(it) for it in window],
+        next_cursor=page["next_cursor"],
+        has_more=page["has_more"],
+    )
 
 
 @router.get("/{iteration_id}", response_model=IterationOut)

@@ -7,6 +7,8 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import { LoginPage } from './pages/login/LoginPage';
 import { ComingSoon } from './pages/placeholder';
 import { DashboardPage } from './pages/dashboard/DashboardPage';
+import { SessionListPage } from './pages/sessions/SessionListPage';
+import { CreateSessionWizard } from './pages/sessions/CreateSessionWizard';
 import { useEventStream } from './api/sse';
 
 const queryClient = new QueryClient({
@@ -21,7 +23,8 @@ function Shell() {
       <Route element={<AuthGuard />}>
         <Route element={<Layout />}>
           <Route path="/" element={<DashboardPage />} />
-          <Route path="/sessions" element={<ComingSoon title="会话管理" />} />
+          <Route path="/sessions" element={<SessionListPage />} />
+          <Route path="/sessions/new" element={<CreateSessionWizard />} />
           <Route path="/sessions/:id" element={<ComingSoon title="会话详情" />} />
           <Route path="/evalsets" element={<ComingSoon title="评测集" />} />
           <Route path="/suts" element={<ComingSoon title="SUT 管理" />} />

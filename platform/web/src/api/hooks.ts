@@ -1,5 +1,10 @@
 // 查询 hooks（DD-14 §5.2）：字段名对齐 rsi/api/routers/* 实际响应。
-import { useQuery, type UseQueryResult } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseQueryResult,
+} from '@tanstack/react-query';
 import { apiFetch } from './client';
 
 // iterations.py IterationOut
@@ -15,6 +20,8 @@ export interface Iteration {
   budget_used: Record<string, unknown>;
   archived: boolean;
   created_at: string;
+  evalset_id?: string | null;
+  profile?: Record<string, unknown> | null;
 }
 
 export interface IterationPage {
@@ -151,5 +158,100 @@ export function useSystemHealth(): UseQueryResult<SystemHealth, Error> {
     queryKey: ['system-health'],
     queryFn: () => apiFetch<SystemHealth>('GET', '/system/health'),
     staleTime: 15_000,
+  });
+}
+
+// evalsets.py EvalsetPage / EvalsetOut
+export interface Evalset {
+  id: string;
+  name: string;
+  purpose: string;
+  tasks: Record<string, unknown>[];
+  description: string;
+  frozen: boolean;
+  version: number;
+  created_at: string;
+}
+
+export interface EvalsetPage {
+  items: Evalset[];
+  next_cursor?: string | null;
+  has_more?: boolean;
+}
+
+export function useEvalsets(): UseQueryResult<EvalsetPage, Error> {
+  return useQuery({
+    queryKey: ['evalsets'],
+    queryFn: () => apiFetch<EvalsetPage>('GET', '/evalsets'),
+    staleTime: 15_000,
+  });
+}
+
+// T6 GET /carrier/hosts 契约（本任务以 MSW stub 消费，T6 落真端点后无缝）
+export interface EnvironmentHost {
+  key: string;
+  mode: 'local' | 'remote';
+  endpoint: string;
+  online: boolean;
+  active_instances: number;
+  max_instances: number;
+  subnets?: string[];
+}
+
+export interface EnvironmentPage {
+  items: EnvironmentHost[];
+}
+
+export function useEnvironments(): UseQueryResult<EnvironmentPage, Error> {
+  return useQuery({
+    queryKey: ['environments'],
+    queryFn: () => apiFetch<EnvironmentPage>('GET', '/carrier/hosts'),
+    staleTime: 15_000,
+  });
+}
+
+// ── 会话写操作（T3）───────────────────────────────────────────────────────
+
+// iterations.py IterationCreate：{sut_id, profile_id?, mode, evalset_id?, profile?}
+export interface CreateSessionBody {
+  sut_id: string;
+  mode: string;
+  evalset_id?: string;
+  profile_id?: string;
+  profile?: Record<string, unknown>;
+}
+
+export function useCreateSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CreateSessionBody) =>
+      apiFetch<{ iteration_id: string }>('POST', '/iterations', body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['sessions'] });
+    },
+  });
+}
+
+export type SessionAction = 'pause' | 'resume' | 'abort' | 'archive';
+
+export function useSessionAction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      id,
+      action,
+    }: {
+      id: string;
+      action: SessionAction;
+    }): Promise<void> => {
+      if (action === 'archive') {
+        await apiFetch<void>('DELETE', `/iterations/${id}`);
+        return;
+      }
+      await apiFetch<Iteration>('POST', `/iterations/${id}:${action}`);
+    },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['sessions'] });
+    },
   });
 }
