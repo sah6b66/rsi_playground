@@ -824,8 +824,15 @@ class BatchRunner:
                     )
                     return result, _env_failed_verdict()
 
-                # 6. collect trace events (P0: synthesized from the result actions)
+                # 6. collect trace events (P0: synthesized from the result
+                #    actions + wiretap channel files tailed into the collector)
                 events = self._trace_events(run_id, task, lab, result)
+                # F1.2 (audit4): tail the carrier's wiretap ndjson channel(s)
+                # so real OpenCode runs contribute LLM_REQUEST/usage events
+                # (one-shot read; missing files are skipped quietly).
+                events.extend(
+                    self._ingest_trace_channels(run_id, task, lab, instance)
+                )
                 self.collector.ingest(events)
             finally:
                 self.collector.finalize(run_id)
@@ -1180,6 +1187,57 @@ class BatchRunner:
         lab = await self.sandbox.build_lab(env)
         await self.sandbox.wait_ready(lab, self.ready_timeout_s)
         return lab, await self.sandbox.snapshot(lab, "snap0")
+
+    def _ingest_trace_channels(
+        self,
+        run_id: str,
+        task: TaskRecord,
+        lab: LabHandle,
+        instance: Any,
+    ) -> list[TraceEvent]:
+        """Tail the carrier's ndjson trace channels into the collector (F1.2).
+
+        P0 one-shot semantics: each host-visible channel file is read once
+        after collect (before finalize). Channel paths that do not exist on
+        the host (offline/fake carriers, unmapped container volumes) are
+        skipped quietly. Returns the wiretap-derived events so callers can
+        include them in the events handed to the judge.
+        """
+        try:
+            channels = self.carrier.trace_channels(instance)
+        except Exception as exc:  # noqa: BLE001 - tracing must not fail runs
+            logger.debug(
+                "trace_channels.unavailable",
+                run_id=run_id,
+                exc_type=type(exc).__name__,
+            )
+            return []
+        if getattr(channels, "kind", None) != "ndjson":
+            return []
+        for raw_path in getattr(channels, "paths", None) or []:
+            path = Path(raw_path)
+            if not path.is_file():
+                logger.debug("trace_channels.skip_missing", run_id=run_id, path=raw_path)
+                continue
+            try:
+                self.collector.tail_ndjson(
+                    path,
+                    run_id,
+                    {
+                        "task_id": task.task_id,
+                        "lab_id": lab.lab_id,
+                        "sut_id": image_id_of(task),
+                        "run_id": run_id,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001 - best effort trace ingest
+                logger.warning(
+                    "trace_channels.tail_failed",
+                    run_id=run_id,
+                    path=str(path),
+                    exc_type=type(exc).__name__,
+                )
+        return self.collector.events(run_id)
 
     @staticmethod
     def _trace_events(

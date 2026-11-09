@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import time
 from typing import TYPE_CHECKING, Any, Callable, Literal
@@ -29,6 +30,8 @@ from pydantic import BaseModel, ValidationError
 from rsi.core.errors import LLMOutputInvalid
 from rsi.core.models import LLMResponse, LLMUsage
 from rsi.llm.cassette import CassetteMissError
+from rsi.llm.salvage import salvage_json
+from rsi.log import get_logger
 
 if TYPE_CHECKING:
     from rsi.llm.accounting import Accountant
@@ -37,11 +40,24 @@ if TYPE_CHECKING:
 
 __all__ = ["Component", "LLMClient", "Handler"]
 
+logger = get_logger(__name__)
+
 Component = Literal["attribution", "hypothesis", "critic", "judge", "sft"]
 
 Handler = Callable[[str, str, dict[str, str]], str]
 
 _MAX_SCHEMA_RETRIES = 2  # extra attempts after the initial one (DD-02 §5.1 ④)
+
+
+def _accepts_temperature(handler: Handler) -> bool:
+    """True when the injected handler wants the effective temperature kwarg."""
+    try:
+        params = inspect.signature(handler).parameters
+    except (TypeError, ValueError):  # pragma: no cover - exotic callables
+        return False
+    return "temperature" in params or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
 
 
 def _default_handler(component: str, prompt_name: str, vars: dict[str, str]) -> str:
@@ -76,25 +92,44 @@ class LLMClient:
         self._cassette_store = cassette
         self._cassette_name = cassette_name
         self._semaphore = asyncio.Semaphore(max_concurrent_calls)
+        self._judge_temp_override_logged = False
 
     # -- public API ---------------------------------------------------------------
+
+    def _effective_temperature(self, component: Component) -> float:
+        """Temperature actually used for a component's calls.
+
+        ADR-23 fairness guard (audit4 P0): judge calls are ALWAYS forced to
+        temperature 0 regardless of the configured value (logged once).
+        """
+        if component == "judge" and self.temperature != 0.0:
+            if not self._judge_temp_override_logged:
+                logger.debug(
+                    "llm.judge_temperature_forced_to_zero",
+                    configured=self.temperature,
+                )
+                self._judge_temp_override_logged = True
+            return 0.0
+        return self.temperature
 
     def prompt_hash(self, component: Component, prompt_name: str) -> str:
         """Fingerprint of the active prompt+model+temperature (C-1, DD-08 §5.1).
 
-        ``sha256("<component>/<name>@<version>|<model>|<temperature>")`` where
-        the version is the library's active version when a PromptLibrary is
-        attached, else the client's static ``prompt_version``.
+        ``sha256("<component>/<name>@<version>|<model>|<temperature>|<body_sha16>")``
+        where the version/body come from the library when a PromptLibrary is
+        attached (F2: body-bound so same-version edits change the hash), else
+        the client's static ``prompt_version`` with an empty body segment.
+        The temperature is the EFFECTIVE temperature (judge is always 0).
         """
-        version = self.prompt_version
+        temperature = self._effective_temperature(component)
         if self.prompt_library is not None:
-            v = self.prompt_library.latest_version(component, prompt_name)
-            if v > 0:
-                version = f"v{v}"
             return self.prompt_library.hash_of(
-                f"{component}/{prompt_name}", self.model, self.temperature
+                f"{component}/{prompt_name}", self.model, temperature
             )
-        payload = f"{component}/{prompt_name}@{version}|{self.model}|{self.temperature}"
+        payload = (
+            f"{component}/{prompt_name}@{self.prompt_version}"
+            f"|{self.model}|{temperature}|"
+        )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     async def complete(
@@ -128,6 +163,8 @@ class LLMClient:
         raw: str | None = None
         parsed: Any | None = None
         validation_error: str | None = None
+        temperature = self._effective_temperature(component)
+        pass_temperature = _accepts_temperature(self._handler)
         started = time.perf_counter()
         async with self._semaphore:
             for _attempt in range(_MAX_SCHEMA_RETRIES + 1):
@@ -136,8 +173,11 @@ class LLMClient:
                     call_vars.setdefault("prompt", prompt_text)
                 if validation_error is not None:
                     call_vars["validation_error"] = validation_error
+                kwargs: dict[str, Any] = (
+                    {"temperature": temperature} if pass_temperature else {}
+                )
                 raw = await asyncio.to_thread(
-                    self._handler, component, prompt_name, call_vars
+                    self._handler, component, prompt_name, call_vars, **kwargs
                 )
                 if schema is None:
                     break
@@ -294,7 +334,13 @@ class LLMClient:
         try:
             obj = json.loads(raw)
         except json.JSONDecodeError as exc:
-            return None, f"schema validation failed: output is not JSON: {exc}"
+            # DD-02 §5.3 salvage (audit4 P0): LLMs often wrap JSON in
+            # markdown fences or prose. Try the salvage strategies before
+            # declaring the output invalid (failure still feeds the retry /
+            # LLMOutputInvalid path unchanged).
+            obj = salvage_json(raw)
+            if obj is None:
+                return None, f"schema validation failed: output is not JSON: {exc}"
         try:
             return schema.model_validate(obj), None
         except ValidationError as exc:

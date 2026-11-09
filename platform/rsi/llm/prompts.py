@@ -17,10 +17,25 @@ entries while the fallback concatenation stays as last resort.
 from __future__ import annotations
 
 import hashlib
+import string
 from pathlib import Path
 from typing import Any
 
+from rsi.core.errors import ConfigError
+from rsi.log import get_logger
+
 __all__ = ["PromptLibrary"]
+
+logger = get_logger(__name__)
+
+
+def _placeholders(body: str) -> set[str]:
+    """Named placeholders (``{var}``) used by a template body (F3)."""
+    return {
+        field_name
+        for _, field_name, _, _ in string.Formatter().parse(body)
+        if field_name
+    }
 
 
 class PromptLibrary:
@@ -61,7 +76,13 @@ class PromptLibrary:
         return loaded
 
     def render(self, component: str, name: str, vars: dict[str, Any]) -> str:
-        """Find latest version of component/name, format with vars."""
+        """Find latest version of component/name, format with vars.
+
+        F3 (audit4, DD-02 §4): a template placeholder the caller does not
+        supply is a template/code contract drift — raise ConfigError instead
+        of failing later with a KeyError (or silently degrading to an
+        indeterminate judgment). Extra vars are tolerated (debug log only).
+        """
         best = self._latest_key(component, name)
         if best is None:
             # Fallback: return a generic prompt
@@ -69,6 +90,16 @@ class PromptLibrary:
                 f"Component: {component}, Task: {name}\n"
                 + "\n".join(f"{k}: {v}" for k, v in vars.items())
             )
+        required = _placeholders(self._templates[best])
+        missing = required - set(vars)
+        if missing:
+            raise ConfigError(
+                f"prompt {best!r} requires vars not supplied: {sorted(missing)}",
+                context={"template": best, "missing": sorted(missing)},
+            )
+        extra = set(vars) - required
+        if extra:
+            logger.debug("render.extra_vars", template=best, extra=sorted(extra))
         return self._templates[best].format(**vars)
 
     def latest_version(self, component: str, name: str) -> int:
@@ -85,17 +116,29 @@ class PromptLibrary:
         return best
 
     def hash_of(self, name: str, model: str, temperature: float) -> str:
-        """Prompt fingerprint: sha256(name@version|model|temperature).
+        """Prompt fingerprint: sha256(name@version|model|temperature|body_sha16).
 
         ``name`` is the full ``"<component>/<name>"`` key; the version is the
         current active (latest) version, 0 when only the fallback exists.
+
+        F2 (audit4): the first 16 hex chars of the ACTIVE template body's
+        sha256 are part of the payload, so editing a template's body without
+        bumping its version still changes the fingerprint — a cassette
+        recorded under the old body can never silently replay for the new
+        one (ADR-7: prompt evolution invalidates regression assets).
         """
         if "/" in name:
             component, short = name.split("/", 1)
             version = self.latest_version(component, short)
+            best = self._latest_key(component, short)
         else:
             version = 0
-        payload = f"{name}@v{version}|{model}|{temperature}"
+            best = None
+        body_sha = ""
+        if best is not None:
+            body = self._templates[best]
+            body_sha = hashlib.sha256(body.encode("utf-8")).hexdigest()[:16]
+        payload = f"{name}@v{version}|{model}|{temperature}|{body_sha}"
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _latest_key(self, component: str, name: str) -> str | None:
