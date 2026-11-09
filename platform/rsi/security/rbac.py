@@ -12,6 +12,7 @@ Permission = Literal[
     "evalset:manage",
     "profile:manage",
     "batch:trigger",
+    "iteration:manage",
     "version:promote_rollback",
     "approval:decide",
     "credential:manage",
@@ -27,6 +28,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             "evalset:manage",
             "profile:manage",
             "batch:trigger",
+            "iteration:manage",
             "version:promote_rollback",
             "approval:decide",
             "credential:manage",
@@ -41,6 +43,7 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             "evalset:manage",
             "profile:manage",
             "batch:trigger",
+            "iteration:manage",
             "version:promote_rollback",
             "view:read",
         }

@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
+from rsi.api.db_reads import db_verdict, get_run_record
 from rsi.api.deps import get_current_user, get_store
 from rsi.core.errors import NotFoundError
 from rsi.security.auth import Claims
@@ -22,6 +23,24 @@ def _get_run(store: dict, run_id: str) -> dict:
         raise NotFoundError(
             f"run {run_id!r} not found", context={"run_id": run_id}
         ) from None
+
+
+def _get_run_anywhere(request: Request, store: dict, run_id: str) -> dict:
+    """Memory-first run lookup with a DB fallback (audit4 W-C)."""
+    run = get_run_record(request, run_id, store)
+    if run is None:
+        raise NotFoundError(
+            f"run {run_id!r} not found", context={"run_id": run_id}
+        )
+    return run
+
+
+def _run_verdict(request: Request, run: dict) -> dict:
+    """Verdict dict for a run record; DB runs read the judgments table."""
+    v = run.get("verdict")
+    if v:
+        return v
+    return db_verdict(request, run["id"]) or {}
 
 
 class VerdictOut(BaseModel):
@@ -47,11 +66,12 @@ class PairwiseOut(BaseModel):
 @runs_router.get("/{run_id}/judgment", response_model=VerdictOut)
 async def get_run_judgment(
     run_id: str,
+    request: Request,
     user: Claims = Depends(get_current_user),
     store: dict = Depends(get_store("runs")),
 ) -> VerdictOut:
-    run = _get_run(store, run_id)
-    v = run.get("verdict") or {}
+    run = _get_run_anywhere(request, store, run_id)
+    v = _run_verdict(request, run)
     return VerdictOut(
         run_id=run_id,
         verdict=v.get("verdict", "pending"),
@@ -64,13 +84,14 @@ async def get_run_judgment(
 @router.post("/judgments:pairwise", response_model=PairwiseOut)
 async def pairwise_judgment(
     body: PairwiseBody,
+    request: Request,
     user: Claims = Depends(get_current_user),
     store: dict = Depends(get_store("runs")),
 ) -> PairwiseOut:
-    a = _get_run(store, body.run_a)
-    b = _get_run(store, body.run_b)
-    sa = (a.get("verdict") or {}).get("score", 0.0)
-    sb = (b.get("verdict") or {}).get("score", 0.0)
+    a = _get_run_anywhere(request, store, body.run_a)
+    b = _get_run_anywhere(request, store, body.run_b)
+    sa = _run_verdict(request, a).get("score", 0.0)
+    sb = _run_verdict(request, b).get("score", 0.0)
     if sa > sb:
         winner, reason = body.run_a, f"score {sa} > {sb}"
     elif sb > sa:

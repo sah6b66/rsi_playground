@@ -112,7 +112,7 @@ def _out(it: dict) -> IterationOut:
 @audit.audited("iteration.create", object_type="iteration")
 async def create_iteration(
     body: IterationCreate,
-    user: Claims = Depends(require_perms("batch:trigger")),
+    user: Claims = Depends(require_perms("iteration:manage")),
     store: dict = Depends(get_store("iterations")),
     suts: dict = Depends(get_store("suts")),
 ) -> dict:
@@ -183,7 +183,7 @@ def _transition(it: dict, action: str) -> None:
 @audit.audited("iteration.pause", object_type="iteration")
 async def pause_iteration(
     iteration_id: str,
-    user: Claims = Depends(require_perms("batch:trigger")),
+    user: Claims = Depends(require_perms("iteration:manage")),
     store: dict = Depends(get_store("iterations")),
 ) -> IterationOut:
     it = _get(store, iteration_id)
@@ -209,7 +209,7 @@ async def pause_iteration(
 @audit.audited("iteration.resume", object_type="iteration")
 async def resume_iteration(
     iteration_id: str,
-    user: Claims = Depends(require_perms("batch:trigger")),
+    user: Claims = Depends(require_perms("iteration:manage")),
     store: dict = Depends(get_store("iterations")),
 ) -> IterationOut:
     it = _get(store, iteration_id)
@@ -227,7 +227,7 @@ async def resume_iteration(
 @audit.audited("iteration.abort", object_type="iteration")
 async def abort_iteration(
     iteration_id: str,
-    user: Claims = Depends(require_perms("batch:trigger")),
+    user: Claims = Depends(require_perms("iteration:manage")),
     store: dict = Depends(get_store("iterations")),
 ) -> IterationOut:
     it = _get(store, iteration_id)
@@ -241,7 +241,7 @@ async def abort_iteration(
 @audit.audited("iteration.archive", object_type="iteration")
 async def delete_iteration(
     iteration_id: str,
-    user: Claims = Depends(require_perms("batch:trigger")),
+    user: Claims = Depends(require_perms("iteration:manage")),
     store: dict = Depends(get_store("iterations")),
 ) -> Response:
     it = _get(store, iteration_id)
