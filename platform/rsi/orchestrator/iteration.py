@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+
+from sqlalchemy import text as _sa_text
 from typing import Any, Awaitable, Callable
 
 from rsi.core.enums import IterationState, is_valid_transition
@@ -39,7 +41,7 @@ from rsi.core.models import (
 from rsi.core.naming import new_id
 from rsi.log import get_logger
 
-__all__ = ["IterationEngine", "RUNNING_ENGINES"]
+__all__ = ["IterationEngine", "RUNNING_ENGINES", "InMemoryPauseStore", "DbPauseStore"]
 
 logger = get_logger(__name__)
 
@@ -141,6 +143,113 @@ class InMemoryPauseStore:
         return self._paused.get(iteration_id)
 
 
+class DbPauseStore:
+    """DB-backed PAUSED persistence (D-4, 设计 §5.4): iterations 表可空列
+    ``paused_step``/``paused_at``。
+
+    Same interface as :class:`InMemoryPauseStore` (``save_pause`` /
+    ``clear_pause`` / ``get_pause``), plus ``list_active_pauses`` for the
+    engine-startup stale-record warning. The iterations row itself is owned
+    by the API (created when the iteration is started); this store only
+    UPDATEs the pause columns — a missing row logs a warning and is skipped
+    (the engine keeps its in-process state either way).
+
+    Persistence depth (honest scope, single-process engine semantics): after
+    a process restart ``iterate_once`` no longer runs, so the DB record
+    cannot resume the waiting loop by itself — it makes the PAUSED state and
+    gate step *queryable* (API / operators) and lets the next engine start
+    warn about stale pause records needing the manual resume path.
+    """
+
+    _COLUMNS = ("paused_step", "paused_at")
+
+    def __init__(self, session_factory) -> None:
+        self.session_factory = session_factory
+        self._ensure_columns()
+
+    def _ensure_columns(self) -> None:
+        """Best-effort ALTER for pre-existing DBs (create_all covers fresh)."""
+        try:
+            with self.session_factory() as session:
+                conn = session.connection()
+                cols = {
+                    row[1] for row in conn.exec_driver_sql(
+                        "PRAGMA table_info(iterations)"
+                    )
+                }
+                for col in self._COLUMNS:
+                    if col not in cols:
+                        conn.exec_driver_sql(
+                            f"ALTER TABLE iterations ADD COLUMN {col} TEXT"
+                        )
+                session.commit()
+        except Exception as exc:  # noqa: BLE001 - fresh DB / non-SQLite
+            logger.debug("db_pause_store.ensure_columns_skipped", error=str(exc))
+
+    def save_pause(self, iteration_id: str, current_step: str, paused_at: str) -> None:
+        with self.session_factory() as session:
+            conn = session.connection()
+            updated = conn.exec_driver_sql(
+                "UPDATE iterations SET paused_step = ?, paused_at = ? "
+                "WHERE id = ?",
+                (current_step, paused_at, iteration_id),
+            ).rowcount
+            session.commit()
+        if not updated:
+            logger.warning(
+                "db_pause_store.save_no_row",
+                iteration_id=iteration_id,
+                current_step=current_step,
+            )
+
+    def clear_pause(self, iteration_id: str) -> None:
+        with self.session_factory() as session:
+            conn = session.connection()
+            conn.exec_driver_sql(
+                "UPDATE iterations SET paused_step = NULL, paused_at = NULL "
+                "WHERE id = ?",
+                (iteration_id,),
+            )
+            session.commit()
+
+    def get_pause(self, iteration_id: str) -> dict[str, Any] | None:
+        with self.session_factory() as session:
+            row = session.execute(
+                _sa_text(
+                    "SELECT id, paused_step, paused_at FROM iterations "
+                    "WHERE id = :iid AND paused_step IS NOT NULL"
+                ),
+                {"iid": iteration_id},
+            ).first()
+        if row is None:
+            return None
+        return {
+            "iteration_id": row[0],
+            "current_step": row[1],
+            "paused_at": row[2],
+        }
+
+    def list_active_pauses(self) -> list[dict[str, Any]]:
+        """Pause records of iterations still in a non-terminal state."""
+        with self.session_factory() as session:
+            rows = session.execute(
+                _sa_text(
+                    "SELECT id, paused_step, paused_at, state FROM iterations "
+                    "WHERE paused_step IS NOT NULL"
+                )
+            ).all()
+        return [
+            {
+                "iteration_id": r[0],
+                "current_step": r[1],
+                "paused_at": r[2],
+                "state": r[3],
+            }
+            for r in rows
+            if r[3] not in ("FINISHED", "ABORTED", "ARCHIVED")
+        ]
+
+
 class IterationEngine:
     """Optimization iteration state machine with human gates (P0/P1 mode)."""
 
@@ -160,7 +269,7 @@ class IterationEngine:
         critic=None,
         decision_recorder=None,
         gitstore=None,
-        state_store: InMemoryPauseStore | None = None,
+        state_store: InMemoryPauseStore | DbPauseStore | None = None,
         enable_manual_gates: bool = False,
         critic_max_repair_rounds: int = 5,
         no_gain_rounds: int = 3,
@@ -396,6 +505,7 @@ class IterationEngine:
             iteration_id = new_id("iter")
         self.last_iteration_id = iteration_id
         from_ = None
+        self._warn_stale_pauses(iteration_id)
         RUNNING_ENGINES[iteration_id] = self
         try:
             return await self._iterate_body(
@@ -427,6 +537,34 @@ class IterationEngine:
             raise
         finally:
             RUNNING_ENGINES.pop(iteration_id, None)
+
+    def _warn_stale_pauses(self, current_id: str) -> None:
+        """D-4 honest-degradation check: pause records left behind by a
+        previous engine process (crash/restart while PAUSED) cannot be
+        resumed automatically — ``iterate_once`` of the dead process no
+        longer runs. Warn so the operator takes the manual resume path
+        (API :resume / gate endpoints in store-only mode). Store
+        implementations without ``list_active_pauses`` (in-memory) skip.
+        """
+        lister = getattr(self.state_store, "list_active_pauses", None)
+        if lister is None:
+            return
+        try:
+            stale = [r for r in lister() if r["iteration_id"] != current_id]
+        except Exception as exc:  # noqa: BLE001 - a warning must never block
+            logger.warning(
+                "iteration.stale_pause_check_failed", error=str(exc)
+            )
+            return
+        for rec in stale:
+            logger.warning(
+                "iteration.stale_pause_record",
+                iteration_id=rec["iteration_id"],
+                current_step=rec.get("current_step"),
+                paused_at=rec.get("paused_at"),
+                hint="engine restarted while PAUSED; use the API resume/"
+                "gate endpoints (store-only mode) to progress this iteration",
+            )
 
     async def _abort_on_exception(self, iteration_id: str, error: str) -> None:
         """D-1: leave a terminal ABORTED record when the body blows up.

@@ -24,6 +24,10 @@ logger = get_logger(__name__)
 # Body-summary keys stripped recursively before audit detail is stored.
 SENSITIVE_FIELDS = frozenset({"password", "secret", "token", "api_key"})
 
+# A-11②: persisted audit detail cap (2 KiB) + truncation marker
+DETAIL_JSON_MAX = 2048
+TRUNCATION_MARK = "…truncated"
+
 # Canonical audit action table (DD-03 §4). Union of the design's standard
 # names and every action string used by the API layer; unknown actions are
 # still recorded but flagged with a warning so the table can evolve.
@@ -122,13 +126,18 @@ class AuditLog:
             detail=detail or {},
         )
         self.entries.append(entry)
+        # A-11②: cap the persisted detail at 2 KiB so a huge body (e.g. an
+        # evalset import summary) cannot blow up the audit_log row.
+        detail_json = json.dumps(entry.detail, default=str)
+        if len(detail_json) > DETAIL_JSON_MAX:
+            detail_json = detail_json[:DETAIL_JSON_MAX] + TRUNCATION_MARK
         row = AuditLogEntry(
             ts=entry.ts,
             actor=actor,
             action=action,
             object_type=object_type,
             object_id=object_id,
-            detail_json=json.dumps(entry.detail, default=str),
+            detail_json=detail_json,
         )
         if self._session_factory is not None:
             try:
@@ -175,12 +184,19 @@ class AuditLog:
                 bound.apply_defaults()
                 all_kwargs = dict(bound.arguments)
                 actor = str(all_kwargs.get("actor", "system"))
+                # A-11②: record the client ip when the wrapped function
+                # receives a request-like object (skipped otherwise).
+                request = all_kwargs.pop("request", None)
+                detail = sanitize(all_kwargs)
+                ip = getattr(getattr(request, "client", None), "host", None)
+                if ip:
+                    detail["ip"] = ip
                 self.record(
                     actor=actor,
                     action=action,
                     object_type=object_type,
                     object_id=str(all_kwargs.get("object_id", object_id)),
-                    detail=sanitize(all_kwargs),
+                    detail=detail,
                 )
                 return fn(*args, **kwargs)
 

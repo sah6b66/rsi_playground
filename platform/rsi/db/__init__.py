@@ -63,8 +63,10 @@ def init_db(engine: Engine, admin_user: str, admin_password_hash: str) -> None:
                 )
             )
         else:
-            existing.role = "admin"
-            existing.password_hash = admin_password_hash
+            # A-11①: a re-run of init_db must NOT overwrite the existing
+            # admin's role/password (e.g. after a rotation). Seeding is
+            # first-run only.
+            pass
         session.commit()
 
 

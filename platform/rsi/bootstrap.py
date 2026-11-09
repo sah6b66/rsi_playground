@@ -17,6 +17,7 @@ import base64
 import functools
 import json
 import os
+from functools import partial
 from typing import Any, Callable
 
 from rsi.carrier.adapters.fake import FakeCarrier
@@ -49,7 +50,8 @@ from rsi.orchestrator.budget import BudgetController
 from rsi.orchestrator.checkpoint import CheckpointStore
 from rsi.orchestrator.event_bus import EventBus
 from rsi.orchestrator.health import HealthMonitor, build_checkers
-from rsi.orchestrator.iteration import IterationEngine
+from rsi.orchestrator.iteration import DbPauseStore, IterationEngine
+from rsi.orchestrator.resolver import build_batch_resolver, build_noise_run_batch_fn
 from rsi.sandbox.backends.fake import FakeSandboxBackend
 from rsi.sandbox.config_api import ConfigApiCaller
 from rsi.sandbox.scheduler import LabScheduler
@@ -294,6 +296,18 @@ def build_services(
     # versions (scan -> plan -> inject -> smoke verify) before create_instance.
     from rsi.instrumentor.facade import Instrumentor
 
+    # D-10/N-2 (audit4): the app's in-memory stores must be owned here so
+    # the batch resolver and create_app's app.state.stores share the same
+    # dicts (routers register evalsets/suts; the resolver reads them).
+    from rsi.api.deps import default_stores
+
+    stores = default_stores()
+    batch_resolver = build_batch_resolver(
+        session_factory=session_factory,
+        gitstore=git_store,
+        evalsets_store=stores["evalsets"],
+        suts_store=stores["suts"],
+    )
     batch_runner = BatchRunner(
         sandbox=sandbox_service,
         carrier=host_service,
@@ -309,6 +323,20 @@ def build_services(
         instrumentor=Instrumentor(),
         session_factory=session_factory,
         carrier_type="opencode",
+        batch_resolver=batch_resolver,
+    )
+    # N-3 (audit4): noise-calibration run_batch_fn factory — the
+    # /dashboard/noise-bands:calibrate endpoint calls it per (evalset, sut).
+    noise_run_batch_fn = partial(
+        build_noise_run_batch_fn, batch_resolver, batch_runner
+    )
+    # D-4 (设计 §5.4): PAUSED 落库 — DbPauseStore persists gate pause records
+    # to the iterations table so the PAUSED state + gate step survive a
+    # process restart (queryable via API; engine start warns on stale
+    # records). Falls back to the in-memory store only when no DB session
+    # factory is available.
+    pause_store = (
+        DbPauseStore(session_factory) if session_factory is not None else None
     )
     iteration_engine = IterationEngine(
         batch_runner=batch_runner,
@@ -326,6 +354,7 @@ def build_services(
         decision_recorder=decision_recorder,
         gitstore=git_store,
         noise_lookup=_noise_lookup,
+        state_store=pause_store,
     )
 
     # -- HealthMonitor (D-1, DD-12 §4.7) -----------------------------------
@@ -376,6 +405,10 @@ def build_services(
         "budget_controller": budget_controller,
         "batch_runner": batch_runner,
         "iteration_engine": iteration_engine,
+        # audit4 D-10/N-2: app-owned in-memory stores (shared with the
+        # batch resolver) + N-3 noise-calibration bridge factory
+        "stores": stores,
+        "noise_run_batch_fn": noise_run_batch_fn,
         # api compatibility (users store for per-request disable checks)
         "users": {},
     }

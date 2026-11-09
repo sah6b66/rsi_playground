@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from rsi.api.deps import get_current_user, get_store
+from rsi.api.deps import audit, get_current_user, get_store, require_perms
 from rsi.security.auth import Claims
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -136,6 +136,84 @@ async def noise_bands(
                 )
             )
     return NoiseBandsOut(items=items)
+
+
+class CalibrateBody(BaseModel):
+    sut_id: str = Field(json_schema_extra={"example": "sut-1a2b3c4d"})
+    evalset_id: str = Field(json_schema_extra={"example": "es-abc12345"})
+    k: int = Field(default=3, ge=2, le=10)
+
+
+class CalibrateOut(BaseModel):
+    metrics: dict[str, dict[str, float]]
+    k: int
+    evalset_hash: str
+    low_confidence: bool
+    valid: bool
+    n_pairs: int
+
+
+@router.post("/noise-bands:calibrate", response_model=CalibrateOut)
+@audit.audited("noise_band.calibrate", object_type="evalset")
+async def calibrate_noise_bands(
+    body: CalibrateBody,
+    request: Request,
+    user: Claims = Depends(require_perms("iteration:manage")),
+    evalsets: dict = Depends(get_store("evalsets")),
+) -> CalibrateOut:
+    """显式噪声带标定（ADR-17 / DD-10 §5）。
+
+    文档（interfaces §9.17）只定义了 ``GET /dashboard/noise-bands`` 的读取
+    契约，未定义标定触发端点；实现取 ``POST /dashboard/noise-bands:calibrate``
+    与读取端点同族（同前缀）。权限 ``iteration:manage``（标定会烧预算并
+    影响后续 promote 决策，与 A-14 迭代管理端点同族）。
+
+    同步语义：离线/伪执行下标定很快，端点同步执行 k 轮重复批并 200 返回
+    ``NoiseBandInfo``（结果同时由 calibrator 落库至 ``noise_bands`` 表，
+    ``GET /dashboard/noise-bands?evalset_id=`` 即可读取）。
+    """
+    es = evalsets.get(body.evalset_id)
+    if es is None:
+        from rsi.core.errors import NotFoundError
+
+        raise NotFoundError(
+            f"evalset {body.evalset_id!r} not found",
+            context={"evalset_id": body.evalset_id},
+        )
+    calibrator = request.app.state.services.get("noise_band")
+    if calibrator is None:
+        from rsi.core.errors import ConfigError
+
+        raise ConfigError("noise_band calibrator not registered")
+    factory = request.app.state.services.get("noise_run_batch_fn")
+    if factory is None:
+        from rsi.core.errors import ConfigError
+
+        raise ConfigError("noise_run_batch_fn not registered")
+    task_index = {str(t["id"]): t for t in es.get("tasks") or [] if "id" in t}
+    if not task_index:
+        from rsi.core.errors import ValidationError as RsiValidationError
+
+        raise RsiValidationError(
+            f"evalset {body.evalset_id!r} has no tasks to calibrate",
+            context={"evalset_id": body.evalset_id},
+        )
+    run_batch_fn = factory(body.evalset_id, body.sut_id)
+    info = await calibrator.calibrate(
+        body.sut_id,
+        evalset_id=body.evalset_id,
+        k=body.k,
+        run_batch_fn=run_batch_fn,
+        task_index=task_index,
+    )
+    return CalibrateOut(
+        metrics=info.metrics,
+        k=info.k,
+        evalset_hash=info.evalset_hash,
+        low_confidence=info.low_confidence,
+        valid=info.valid,
+        n_pairs=info.n_pairs,
+    )
 
 
 def _noise_bands_from_db(

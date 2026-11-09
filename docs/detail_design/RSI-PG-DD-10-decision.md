@@ -3,7 +3,8 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DD-10 |
-| 版本 | v1.0 |
+| 版本 | v1.1 |
+| 修订 | v1.1（2026-11-09）第四轮审计文档-代码对齐：§4 NoiseBandCalibrator.calibrate 补 orchestrated/legacy 双形态说明（D-3） |
 | 上游 | 设计 3.9；FR9、ADR-17；ADR-21（Selector P0 辅助人工） |
 | 交付切片 | S6b（P0 随 optimizer+IterationEngine 交付） |
 
@@ -65,7 +66,9 @@ class NoiseBandCalibrator:              # ADR-17
         """编排 batches.purpose='noise_calibration'（bypass_cache）：
         分层抽样（按 task_id 域前缀分层，总量 min(10, 任务总数)）→ 复用 BatchRunner 跑 k 次
         → 逐指标 σ → δ=factor×σ（1.96）→ 写 noise_bands 表
-        有效任务 < 抽样数/2 → low_confidence=True"""
+        有效任务 < 抽样数/2 → low_confidence=True
+        实现支持双形态（D-3）：orchestrated（注入 run_batch_fn 编排 k 次真实双跑）
+        与 legacy（消费现成 batch 统计的纯函数形态，供 bootstrap/离线路径）"""
 
 class SignificanceTester:               # FR9.2 P1
     def test(self, base: list[float], cand: list[float], alpha: float = 0.05) -> SignificanceResult
