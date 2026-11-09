@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import asyncio
@@ -22,7 +23,9 @@ logger = get_logger(__name__)
 
 
 def create_app(
-    services: dict[str, Any] | None = None, run_doctor: bool = False
+    services: dict[str, Any] | None = None,
+    run_doctor: bool = False,
+    web_dist: Path | None = None,
 ) -> FastAPI:
     """Assemble the API app: DI container, routers, error handlers, middleware.
 
@@ -166,6 +169,14 @@ def create_app(
 
     # N-6 (DD-13 §4.5): servers / tags / Error schema customization.
     app.openapi = lambda: customize_openapi(app, API_PREFIX)
+
+    # DD-14 §7: 生产模式挂载 SPA 静态产物（必须放在全部 API 路由之后，
+    # 否则 mount("/") 会吞掉 /api/v1/*）；web/dist 不存在时跳过（开发走 vite）。
+    dist = web_dist if web_dist is not None else Path(__file__).resolve().parents[2] / "web" / "dist"
+    if dist.is_dir():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/", StaticFiles(directory=dist, html=True), name="web")
 
     return app
 
