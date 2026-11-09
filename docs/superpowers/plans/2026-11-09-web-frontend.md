@@ -42,6 +42,8 @@
 
 - [ ] **Step 1: 脚手架与依赖**
 
+> 顺序修正（2026-11-09 实施教训）：**先**在 `platform/.gitignore` 追加 `web/node_modules/`、`web/dist/`、`web/playwright-report/`、`web/test-results/`（约 3.1 万个依赖文件否则会被 git 计为未跟踪），**再**执行 `npm install`。
+
 `platform/web/package.json`（关键 scripts 与依赖，版本固定主版本）：
 
 ```json
