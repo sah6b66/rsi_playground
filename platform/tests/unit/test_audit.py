@@ -53,6 +53,47 @@ class TestAuditLog:
     def test_sensitive_fields(self):
         assert SENSITIVE_FIELDS == {"password", "secret", "token", "api_key"}
 
+    def test_audited_records_client_ip(self):
+        # A-11②: a request-like object in kwargs contributes detail["ip"]
+        import types
+
+        log = AuditLog()
+
+        @log.audited("iteration.pause", object_type="iteration")
+        def pause(request=None, actor: str = "system", object_id: str = ""):
+            return "ok"
+
+        req = types.SimpleNamespace(client=types.SimpleNamespace(host="203.0.113.9"))
+        assert pause(request=req, actor="u1", object_id="it-1") == "ok"
+        e = log.entries[-1]
+        assert e.detail["ip"] == "203.0.113.9"
+        # no request -> no ip key (sync path without a request is skipped)
+        pause(actor="u2", object_id="it-2")
+        assert "ip" not in log.entries[-1].detail
+
+    def test_detail_json_truncated_to_2kb(self, tmp_path):
+        # A-11②: persisted detail_json is capped at 2 KiB + marker
+        from sqlmodel import SQLModel
+
+        from rsi.db import create_engine, get_session
+        from rsi.db.tables import AuditLogEntry
+        from rsi.security.audit import DETAIL_JSON_MAX, TRUNCATION_MARK
+
+        engine = create_engine(f"sqlite:///{tmp_path}/audit.db")
+        SQLModel.metadata.create_all(engine)
+        log = AuditLog(session_factory=lambda: get_session(engine))
+        log.record("u1", "evalset.import", "evalset", "es-1",
+                   detail={"blob": "x" * 3072})
+        with get_session(engine) as s:
+            row = s.query(AuditLogEntry).one()
+        assert len(row.detail_json) <= DETAIL_JSON_MAX + len(TRUNCATION_MARK)
+        assert row.detail_json.endswith(TRUNCATION_MARK)
+        # short detail passes through untouched
+        log.record("u1", "evalset.import", "evalset", "es-2", detail={"k": "v"})
+        with get_session(engine) as s:
+            rows = s.query(AuditLogEntry).order_by(AuditLogEntry.id).all()
+        assert rows[1].detail_json == '{"k": "v"}'
+
 
 class TestSecretHygiene:
     def test_pass(self):
@@ -81,3 +122,18 @@ class TestSecretHygiene:
         out = proc(None, "info", {"event": "connected with pw-secret", "other": 1})
         assert out["event"] == "connected with ***"
         assert out["other"] == 1
+
+    def test_failure_uses_logger_critical(self, monkeypatch):
+        # A-11③: startup failure goes through structlog, not print
+        from rsi.security import hygiene
+
+        calls = []
+        monkeypatch.setattr(
+            hygiene._logger, "critical",
+            lambda event, **kw: calls.append((event, kw)),
+        )
+        with pytest.raises(SystemExit):
+            SecretHygiene.startup_check(None, GOOD_JWT)
+        assert calls and calls[0][0] == "secret_hygiene_check_failed"
+        assert "RSI_MASTER_KEY" in calls[0][1]["problems"]
+

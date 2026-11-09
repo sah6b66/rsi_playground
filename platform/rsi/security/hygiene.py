@@ -7,12 +7,14 @@ fingerprinted patterns with "***"), not the primary redaction path.
 from __future__ import annotations
 
 import base64
-import sys
 from typing import Any, Iterable
 
+from rsi.log import get_logger
 from rsi.security.credentials import SecretFingerprint
 
 _MASK = "***"
+
+_logger = get_logger(__name__)
 
 
 class SecretHygiene:
@@ -35,7 +37,11 @@ class SecretHygiene:
         elif len(jwt_secret.encode()) < 32:
             problems.append("RSI_JWT_SECRET is shorter than 32 bytes")
         if problems:
-            print(f"CRITICAL: secret hygiene check failed: {'; '.join(problems)}", file=sys.stderr)
+            # A-11③: route through structured logging (JSON console) instead
+            # of a bare print — same CRITICAL severity + SystemExit(1).
+            _logger.critical(
+                "secret_hygiene_check_failed", problems="; ".join(problems)
+            )
             raise SystemExit(1)
 
     @staticmethod

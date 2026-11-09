@@ -50,14 +50,24 @@ class TestDatabase:
         assert user.disabled == 0
 
     def test_admin_seed_idempotent(self, tmp_path):
+        # A-11①: a re-run must NOT overwrite the seeded admin's hash/role
         engine = create_engine(f"sqlite:///{tmp_path}/test.db")
         init_db(engine, admin_user="admin", admin_password_hash="h1")
-        init_db(engine, admin_user="admin", admin_password_hash="h2")
+        # simulate a password rotation between the two init_db runs
+        with get_session(engine) as s:
+            from rsi.db.tables import User
+            user = s.query(User).filter_by(username="admin").first()
+            user.password_hash = "rotated-h2"
+            user.role = "agent_engineer"
+            s.add(user)
+            s.commit()
+        init_db(engine, admin_user="admin", admin_password_hash="h3")
         with get_session(engine) as s:
             from rsi.db.tables import User
             users = s.query(User).filter_by(username="admin").all()
         assert len(users) == 1
-        assert users[0].password_hash == "h2"
+        assert users[0].password_hash == "rotated-h2"
+        assert users[0].role == "agent_engineer"
 
     def test_foreign_keys_present(self, tmp_path):
         engine = create_engine(f"sqlite:///{tmp_path}/test.db")

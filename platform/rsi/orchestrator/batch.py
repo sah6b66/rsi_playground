@@ -329,7 +329,10 @@ class BatchRunner:
             # unwinds, then re-raise so the task ends cancelled.
             self.last_status = "aborted"
             logger.warning("batch.trigger_cancelled", batch_id=batch_id)
-            self._db_finish_batch(batch_id, "aborted", None)
+            # W-D: sync DB write off the event loop
+            await asyncio.to_thread(
+                self._db_finish_batch, batch_id, "aborted", None
+            )
             _notify({
                 "status": "aborted",
                 "progress": {"done": 0, "total": 0},
@@ -449,7 +452,11 @@ class BatchRunner:
         await self.event_bus.publish("batch", batch_id, "created", "running")
         # F10: batches/runs persistence (IN-016 run->batch->config_version
         # DB reverse lookup) — best effort, never blocks the batch.
-        self._db_insert_batch(batch_id, config_version_id, permission, db_meta)
+        # W-D: sync DB writes run off the event loop (to_thread).
+        await asyncio.to_thread(
+            self._db_insert_batch,
+            batch_id, config_version_id, permission, db_meta,
+        )
 
         def _report_progress() -> None:
             if progress_fn is None:
@@ -522,7 +529,8 @@ class BatchRunner:
                     await self.event_bus.publish("run", run_id, "judging", "cached")
                     # F10: cached hits reuse the original run_id — insert only
                     # when no row exists yet (fresh DB / cleared cache entry).
-                    self._db_insert_run(
+                    await asyncio.to_thread(
+                        self._db_insert_run,
                         batch_id, task.task_id, run_id, "cached", seq,
                         lab.lab_id, cache_key, verdict,
                     )
@@ -546,7 +554,8 @@ class BatchRunner:
                     RunStatus.ENV_FAILED if verdict.missing else RunStatus.DONE
                 )
                 # F10: persist the executed run row
-                self._db_insert_run(
+                await asyncio.to_thread(
+                    self._db_insert_run,
                     batch_id,
                     task.task_id,
                     self.last_run_ids.get(task.task_id, ""),
@@ -648,7 +657,7 @@ class BatchRunner:
         await self.event_bus.publish("batch", batch_id, "running", status)
         # 4. aggregate verdicts -> BatchStats
         stats = self.stats_agg.aggregate(verdicts, task_ids=verdict_task_ids)
-        self._db_finish_batch(batch_id, status, stats)
+        await asyncio.to_thread(self._db_finish_batch, batch_id, status, stats)
         logger.debug(
             "run_batch.exit", batch_id=batch_id, status=status, n=stats.n
         )

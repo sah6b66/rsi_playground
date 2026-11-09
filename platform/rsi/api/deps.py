@@ -265,6 +265,11 @@ class _AuditProxy:
                     if hasattr(body, "model_dump")
                     else {}
                 )
+                # A-11②: best-effort client ip from the FastAPI Request
+                request = all_kwargs.get("request")
+                ip = getattr(getattr(request, "client", None), "host", None)
+                if ip:
+                    detail["ip"] = ip
                 log = _audit_log_var.get()
                 if log is not None:
                     log.record(
