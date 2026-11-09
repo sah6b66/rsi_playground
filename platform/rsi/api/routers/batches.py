@@ -264,7 +264,10 @@ async def rerun_batch(
     user: Claims = Depends(require_perms("batch:trigger")),
     store: dict = Depends(get_store("batches")),
 ) -> Response:
-    """重测（FR9.1）：构造 purpose=rerun 的新批次并以 bypass_cache 重跑 → 204。
+    """重测（FR9.1）：复制原批次 purpose 构造新批次并以 bypass_cache 重跑 → 204。
+
+    rerun 批次不引入新 purpose 值：purpose 复制原批次，重测来源与范围由
+    ``params.rerun_of``（原批 id）与 ``params.rerun_scope``（failed|all）标记。
 
     批次仍在 created/running（无可重测对象）→ 409。BatchRunner 的缓存旁路
     改造属 F4 批次；此处把 ``bypass_cache``/``rerun_scope`` 写入批次记录并

@@ -3,7 +3,8 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DD-01 |
-| 版本 | v1.0 |
+| 版本 | v1.1 |
+| 修订 | v1.1（2026-11-09）第四轮审计文档-代码对齐：§3.11 RunStatus 转换表补 env_ready→aborted、collecting→aborted（D-1） |
 | 上游 | 设计 2.4/2.5、接口 §2.1/§2.2；FR 全部（数据基座） |
 | 交付切片 | S1（一切的地基） |
 
@@ -381,6 +382,8 @@ class ExperimentDecision(StrEnum): PROMOTED="promoted"; REVERTED="reverted";
 BatchStatus:  created→running→judging→{finalized|failed}; running/judging→aborted
 RunStatus:    pending→env_building→env_ready→sut_running→collecting→judging→done
               env_building→env_failed; sut_running→sut_timeout|aborted; pending→cached
+              env_ready→aborted; collecting→aborted
+              # abort 语义允许运行期任意活跃态中止（与 enums.py 实现一致）
 Hypothesis:   draft→proposed→critic_passed→applied→{accepted|rejected}; 任意→withdrawn（人工）
 Iteration:    ATTRIBUTING→HYPOTHESIZING→REVIEWING→APPLYING→VERIFYING→DECIDING→ATTRIBUTING(下一轮)|FINISHED
               任意运行态→PAUSED→原状态；任意→ABORTED；FINISHED/ABORTED→ARCHIVED（软删）

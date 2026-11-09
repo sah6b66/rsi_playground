@@ -3,7 +3,8 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DD-08 |
-| 版本 | v1.0 |
+| 版本 | v1.1 |
+| 修订 | v1.1（2026-11-09）第四轮审计文档-代码对齐：§5.2 补盲判约束（D-8）与 checklist 条目级绝对计数口径（D-2） |
 | 上游 | 设计 3.6；FR7、ADR-23；ADR-10（温度 0/冻结） |
 | 交付切片 | S7（DSL+safety+LLMJudge+aggregate） |
 
@@ -120,6 +121,10 @@ prompts:
   judge/checklist.v1   → checklist_missed/false_positive
 输出 SemanticScores（JSON schema 校验，retry≤2→indeterminate）
 ```
+
+**盲判约束（ADR-23 补充，D-8）**：judge_run 接受 config_version_id/batch_purpose 仅作溯源（落 judgments.eval_context_json），**禁止注入裁判 LLM 的 prompt**——裁判不得感知臂别（baseline/candidate），防止判分偏倚；prompt_hash 绑定模板正文哈希防卡带回放过期答案。
+
+**判分口径（D-2）**：checklist_missed / checklist_false_positive 为**条目级绝对计数**（保留逐条证据、可审计），不做 0-100 有损压缩；如需百分制分数，由 StatsAggregator 聚合层按需换算。
 
 ### 5.3 VerdictAggregator 聚合规则表
 
