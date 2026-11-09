@@ -52,8 +52,12 @@ from rsi.orchestrator.event_bus import EventBus
 from rsi.orchestrator.health import HealthMonitor, build_checkers
 from rsi.orchestrator.iteration import DbPauseStore, IterationEngine
 from rsi.orchestrator.resolver import build_batch_resolver, build_noise_run_batch_fn
+from rsi.sandbox.backends.base import SandboxBackend
 from rsi.sandbox.backends.fake import FakeSandboxBackend
+from rsi.sandbox.backends.prebuilt import PrebuiltBackend
 from rsi.sandbox.config_api import ConfigApiCaller
+from rsi.sandbox.platform_probe import PlatformProbe
+from rsi.sandbox.readiness import ReadinessChecker
 from rsi.sandbox.scheduler import LabScheduler
 from rsi.sandbox.service import SandboxService
 from rsi.sandbox.sshpool import SshPool
@@ -228,12 +232,40 @@ def build_services(
         settings=settings,
     )
 
-    # -- Sandbox (P0: Fake backends; real backends land in S11) ----------
+    # -- Sandbox (T4: kind routing — fake offline, prebuilt platforms) ---
+    # Bug fix (T4): every settings backend used to be setdefault'd to
+    # FakeSandboxBackend, so env.backend="ensp-pro" had no real candidate.
+    # Now each settings backend is dispatched on its ``kind``; prebuilt
+    # platform backends (ensp-pro / pnetlab) share one SshPool +
+    # ReadinessChecker with SandboxService (same (ip, port) session keys).
     ssh_pool = SshPool()  # default factory = MockDeviceSession (offline)
-    backends: dict[str, Any] = {"fake": FakeSandboxBackend()}
-    for name in settings.sandbox.backends:
-        backends.setdefault(name, FakeSandboxBackend())
-    from rsi.sandbox.readiness import ReadinessChecker
+    readiness_checker = ReadinessChecker(pool=ssh_pool)
+    backends: dict[str, SandboxBackend] = {"fake": FakeSandboxBackend()}
+    platform_probes: dict[str, PlatformProbe] = {}
+    for name, cfg in settings.sandbox.backends.items():
+        if cfg.kind == "fake":
+            backends.setdefault(name, FakeSandboxBackend())
+            continue
+        if not cfg.url:
+            # Keep the backend constructed so the registry matches settings,
+            # but its probe reports offline for an empty URL (probing ""
+            # never raises) — the scheduler skips it and doctor flags the
+            # config. This prevents "no candidate" EnvErrors from bad YAML
+            # while still surfacing the misconfiguration.
+            logger.warning(
+                "bootstrap.sandbox_backend_missing_url",
+                backend=name,
+                kind=cfg.kind,
+            )
+        probe = PlatformProbe(url=cfg.url, verify_tls=cfg.verify_tls)
+        platform_probes[name] = probe
+        backends[name] = PrebuiltBackend(
+            key=name,
+            kind=cfg.kind,
+            probe=probe,
+            ssh_pool=ssh_pool,
+            readiness=readiness_checker,
+        )
 
     sandbox_service = SandboxService(
         backends=backends,
@@ -243,7 +275,7 @@ def build_services(
         settings=settings,
         ssh_pool=ssh_pool,
         session_factory=session_factory,
-        readiness_checker=ReadinessChecker(pool=ssh_pool),
+        readiness_checker=readiness_checker,
     )
 
     # -- Decision / Optimizer ---------------------------------------------
@@ -388,6 +420,8 @@ def build_services(
         # sandbox
         "sandbox_service": sandbox_service,
         "ssh_pool": ssh_pool,
+        # T4: platform URL probes per backend key (health / doctor share these)
+        "platform_probes": platform_probes,
         # decision
         "stats_agg": stats_agg,
         "selector": selector,
