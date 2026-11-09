@@ -227,3 +227,4 @@ __marimo__/
 
 # judge frozen-domain manifest (C-6) is a tracked source asset
 !platform/rsi/judge/rules/freeze.manifest
+web/tsconfig.tsbuildinfo
