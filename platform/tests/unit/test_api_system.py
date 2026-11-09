@@ -251,3 +251,62 @@ class TestWS:
             ) as ws:
                 msg = ws.receive_json()
                 assert msg["type"] == "error"
+
+    def test_ws_append_incremental_and_heartbeat(self, services):
+        # N-5: after the tail frame the socket stays open, pushes
+        # {"type":"append"} frames for new trace events and sends
+        # {"type":"ping"} heartbeats when idle (short interval injected
+        # via the settings store for testability).
+        app = create_app(services)
+        app.state.stores["runs"]["run-1"] = {
+            "id": "run-1", "batch_id": "b", "status": "running",
+        }
+        app.state.stores["traces"]["run-1"] = [
+            {"seq": 0, "type": "tool_call", "run_id": "run-1"},
+        ]
+        app.state.stores["settings"]["ws.heartbeat_s"] = {
+            "value": 0.1, "mutable": True,
+        }
+        with TestClient(app) as tc:
+            with tc.websocket_connect(
+                f"/api/v1/streams/runs/run-1?token={_ws_token(services)}"
+            ) as ws:
+                msg = ws.receive_json()
+                assert msg["type"] == "tail"
+                # new trace event appears -> append frame on the next tick
+                app.state.stores["traces"]["run-1"].append(
+                    {"seq": 1, "type": "tool_call", "run_id": "run-1"}
+                )
+                m2 = ws.receive_json()
+                if m2["type"] == "ping":  # tolerate a leading heartbeat
+                    m2 = ws.receive_json()
+                assert m2["type"] == "append"
+                assert [e["seq"] for e in m2["events"]] == [1]
+                assert m2["cursor"] == 2
+                # idle -> heartbeat ping frames arrive within a few ticks
+                got_ping = False
+                for _ in range(30):
+                    m3 = ws.receive_json()
+                    if m3["type"] == "ping" and "ts" in m3:
+                        got_ping = True
+                        break
+                assert got_ping, "no heartbeat ping received while idle"
+            # after the client disconnects the subscription is cleaned up
+            bus = app.state.event_bus
+            assert len(bus._subs) == 0
+
+
+class TestOpenAPI:
+    async def test_openapi_customized(self, client):
+        # N-6: servers / tags / Error schema customization is live.
+        resp = await client.get("/api/v1/openapi.json")
+        assert resp.status_code == 200
+        schema = resp.json()
+        assert any(str(s.get("url", "")).endswith("/api/v1")
+                   for s in schema.get("servers", []))
+        tags = {t["name"]: t.get("description", "") for t in schema["tags"]}
+        assert tags.get("auth"), "tag descriptions missing"
+        assert len(tags) >= 15
+        err = schema["components"]["schemas"]["Error"]
+        assert "code" in err["properties"]
+        assert "message" in err["properties"]

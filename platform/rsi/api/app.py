@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from rsi.api.deps import default_stores, reset_audit_log, set_current_audit_log
 from rsi.api.errors import register_exception_handlers
+from rsi.api.openapi import customize_openapi
 from rsi.api.routers import ALL_ROUTERS
 from rsi.log import get_logger
 
@@ -162,6 +163,9 @@ def create_app(
     @app.get(f"{API_PREFIX}/health", tags=["system"])
     async def health() -> dict:
         return {"status": "ok"}
+
+    # N-6 (DD-13 §4.5): servers / tags / Error schema customization.
+    app.openapi = lambda: customize_openapi(app, API_PREFIX)
 
     return app
 
