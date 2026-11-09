@@ -1,8 +1,9 @@
 """SandboxBackend ABC (DD-04 §2 backends/base.py).
 
 A backend owns lab lifecycle (build/destroy), snapshots, and synchronous
-device CLI execution. Concrete adapters: ENSPPro (host SSH + pg-enspctl),
-PNETLab, and the in-memory Fake used for offline tests.
+device CLI execution. Concrete adapters: PrebuiltBackend for eNSP Pro /
+PNETLab (platform URL probe — prebuilt mode; device-level SSH goes through
+the shared SshPool) and the in-memory Fake used for offline tests.
 """
 
 from __future__ import annotations
@@ -75,3 +76,12 @@ class SandboxBackend(ABC):
     @abstractmethod
     def active_lab_count(self) -> int:
         """Number of currently live labs (LabScheduler input, ADR-24)."""
+
+    def status(self) -> BackendStatus:
+        """Availability snapshot (scheduler filter / status endpoint).
+
+        Default: always available with no detail — backends without an
+        external health signal (e.g. the in-memory Fake) keep this default;
+        real platform backends override with a probe-backed status.
+        """
+        return BackendStatus(key="", kind=self.kind, active_labs=self.active_lab_count)

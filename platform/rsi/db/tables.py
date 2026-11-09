@@ -219,7 +219,7 @@ class LabSnapshot(SQLModel, table=True):
     __tablename__ = "lab_snapshots"
     __table_args__ = (
         CheckConstraint(
-            "impl_kind IN ('native','degraded')", name="ck_lab_snapshots_impl_kind"
+            "impl_kind IN ('native','degraded','noop')", name="ck_lab_snapshots_impl_kind"
         ),
     )
 
