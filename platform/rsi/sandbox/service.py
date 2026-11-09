@@ -662,15 +662,19 @@ class SandboxService:
         return healthy
 
     async def backend_status(self) -> list[BackendStatus]:
-        return [
-            BackendStatus(
-                key=key,
-                kind=b.kind,
-                active_labs=b.active_lab_count,
-                available=True,
-            )
-            for key, b in self._backends.items()
-        ]
+        """Aggregate every backend's ``status()`` (T4).
+
+        Backends whose default ``status()`` leaves ``key`` empty (e.g. the
+        Fake) get the registry key filled in so callers see configuration
+        keys, not blank identifiers.
+        """
+        statuses: list[BackendStatus] = []
+        for key, b in self._backends.items():
+            st = b.status()
+            if not st.key:
+                st = st.model_copy(update={"key": key})
+            statuses.append(st)
+        return statuses
 
     def snapshots(self, lab_id: str) -> list[SnapRef]:
         return list(self._snapshots.get(lab_id, []))

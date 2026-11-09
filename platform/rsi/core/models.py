@@ -594,7 +594,7 @@ class AppliedAction(_M):
 
 class SnapRef(_M):
     snapshot_id: str
-    impl_kind: Literal["native", "degraded"]
+    impl_kind: Literal["native", "degraded", "noop"]
     backend_ref: str | None = None
 
 

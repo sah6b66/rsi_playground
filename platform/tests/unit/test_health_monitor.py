@@ -96,29 +96,40 @@ class TestHealthMonitorUnit:
         assert any(a["event"] == "system.alert" for a in alerts)
 
     async def test_build_checkers_offline_safe(self):
-        # empty services -> all 8 checkers return results, none raise
+        # empty services -> all 8 checkers + platform not_configured, none raise
         checkers = build_checkers({})
         assert set(checkers) == {
             "docker", "lab", "instances", "llm", "git", "db", "collector",
-            "config_api",
+            "config_api", "platform",
         }
         mon = HealthMonitor(checkers)
         results = mon.check_all()
-        assert len(results) == 8
+        assert len(results) == 9
 
     async def test_build_checkers_on_bootstrap_services(self):
+        import time
+
         from rsi.bootstrap import build_services
+        from rsi.sandbox.platform_probe import PlatformProbeResult
 
         services = build_services()
+        # default settings carry placeholder platform URLs — seed each
+        # probe's TTL cache so the sweep stays offline and deterministic
+        for probe in services.get("platform_probes", {}).values():
+            probe._cached = PlatformProbeResult(ok=True, detail="HTTP 200")
+            probe._cached_at = time.monotonic()
         mon = services["health_monitor"]
         results = mon.check_all()
         assert set(results) == {
             "docker", "lab", "instances", "llm", "git", "db", "collector",
             "config_api",
-        }
+        } | {f"platform:{k}" for k in services["platform_probes"]}
         # offline assembly: stub pool is up, llm detected as the offline mock
         assert results["docker"].ok is True
         assert results["llm"].status in ("unknown", "up")
+        assert all(
+            results[f"platform:{k}"].ok is True for k in services["platform_probes"]
+        )
 
 
 class TestDependenciesEndpoint:

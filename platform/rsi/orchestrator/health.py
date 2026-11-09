@@ -369,9 +369,44 @@ def _mk_config_api(services: dict) -> Checker:
     return check
 
 
+def _mk_platform_checkers(services: dict) -> dict[str, Checker]:
+    """T4: one checker per platform backend probe (``platform:<key>``).
+
+    The probes dict comes from bootstrap (``services["platform_probes"]``);
+    when no platform backends are configured a single ``platform`` checker
+    reports not_configured. Probe results are TTL-cached, so sweeps are
+    cheap. Offline-safe: probe failures land in the result, never raise.
+    """
+    probes = services.get("platform_probes") or {}
+    if not probes:
+        def check_missing() -> HealthResult:
+            return _not_configured("platform")
+
+        return {"platform": check_missing}
+
+    checkers: dict[str, Checker] = {}
+    for key, probe in probes.items():
+        def check(probe=probe, key=key) -> HealthResult:
+            name = f"platform:{key}"
+            try:
+                result = probe.probe_cached()
+                return HealthResult(
+                    name,
+                    ok=result.ok,
+                    detail=result.detail,
+                    latency_ms=result.latency_ms,
+                )
+            except Exception as exc:  # noqa: BLE001 - offline safety
+                return HealthResult(name, ok=False, detail=type(exc).__name__)
+
+        checkers[f"platform:{key}"] = check
+    return checkers
+
+
 def build_checkers(services: dict[str, Any]) -> dict[str, Checker]:
-    """Build the 8 DD-12 §4.7 checker families from a bootstrap services dict."""
-    return {
+    """Build the DD-12 §4.7 checker families (+T4 ``platform:<key>``) from a
+    bootstrap services dict."""
+    checkers = {
         "docker": _mk_docker(services),
         "lab": _mk_lab(services),
         "instances": _mk_instances(services),
@@ -381,3 +416,5 @@ def build_checkers(services: dict[str, Any]) -> dict[str, Checker]:
         "collector": _mk_collector(services),
         "config_api": _mk_config_api(services),
     }
+    checkers.update(_mk_platform_checkers(services))
+    return checkers

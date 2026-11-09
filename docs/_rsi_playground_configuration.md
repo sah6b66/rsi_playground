@@ -3,8 +3,8 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DES-002 |
-| 版本 | v1.5（v2.18 远端 Docker 主机支持） |
-| 日期 | 2026-11-02 |
+| 版本 | v1.6（ADR-25 沙箱连通性模型：平台 URL + 设备级 SSH） |
+| 日期 | 2026-11-09 |
 | 状态 | 待评审 |
 | 上游文档 | 需求 RSI-PG-REQ-001 v0.25；设计 RSI-PG-DES-001 v2.12 |
 | 关联文档 | 接口定义 RSI-PG-DES-003（docs/_rsi_playground_interfaces.md）；测试设计 RSI-PG-DES-004（docs/_rsi_playground_test.md） |
@@ -15,7 +15,7 @@
 
 ## 1. 概述
 
-**模块资源自管理约定（FR5.8，设计 ADR-12）**：不设全局节点注册表。各模块所需的资源（主机/SSH 接入/网段池/行为参数）在**自身配置段内自包含定义**——sandbox 在 `sandbox.backends.*` 定义每个仿真后端，carrier 在 `carrier.hosts.*` 定义 Docker 执行主机。同一物理主机被多个模块重复定义是**允许且有意的**（模块解耦优先）；跨模块的网段全局唯一性不靠运行时机制，由部署规划 + `deploy/check-subnets.ps1` 部署时校验保证（Q10）。
+**模块资源自管理约定（FR5.8，设计 ADR-12）**：不设全局节点注册表。各模块所需的资源（平台 URL/后端参数/设备网段池/行为参数——ADR-25）在**自身配置段内自包含定义**——sandbox 在 `sandbox.backends.*` 定义每个仿真后端，carrier 在 `carrier.hosts.*` 定义 Docker 执行主机。同一物理主机被多个模块重复定义是**允许且有意的**（模块解耦优先）；跨模块的网段全局唯一性不靠运行时机制，由部署规划 + `deploy/check-subnets.ps1` 部署时校验保证（Q10）。
 
 **配置段 ↔ 模块映射**（分组顺序即下文顺序）：
 
@@ -71,19 +71,26 @@ sandbox:
   backends:                     # 后端资源自包含定义（FR5.8 模块自管；键=backend 类型名或
                                 # 多实例键 <type>-<n>（**P0 即用**，ADR-24——每实例=独立 VM/服务器，
                                 # 网络名字空间独立，按 (网络名,设备名)→(IP+端口) 映射寻址）
-    ensp-pro-1:                 # ENSP Pro 实例 1（P0；Q1 PoC 决定编排深度）
-      host: 192.168.x.x         # str，Windows 主机管理网地址（SSH 目标）
-      ssh_port: 22              # int，默认 22
-      ssh_user: administrator   # str；凭证亦可改经 CredentialStore 引用注入（FR1.5）
-      agent_cmd: pg-enspctl     # str，host-agent CLI 命令（设计 3.4.3）
-      templates_dir: deploy/ensp-templates   # str，预置拓扑模板目录（ADR-6）
+    fake:                       # 离线测试后端（内存虚拟设备）
+      kind: fake
+    ensp-pro-1:                 # ENSP Pro 实例 1（预建模式，ADR-25）
+      kind: ensp-pro            # ensp-pro | pnetlab | fake（决定 bootstrap 组装哪种后端实现）
+      url: "https://192.168.56.101:8443"   # str，平台 Web 入口（URL 探活监控目标；doctor 校验）
+      verify_tls: false         # bool，平台自签证书默认关闭 TLS 校验
+      # api: null               # str|None，平台 Web API 编排通道预留（P1/S11）
       subnets: [10.101.0.0/16]  # list，本后端设备管理网段池（全网唯一，check-subnets 校验）
-    pnetlab:                    # PNETLab 后端（P0；Q2）
-      host: 192.168.x.y         # str，Linux 主机地址
-      ssh_port: 22
-      ssh_user: root
-      api: optional             # EVE-NG 兼容 REST 可选增强通道（设计 3.4.4；缺省走宿主 SSH）
+    pnetlab:                    # PNETLab 后端（预建模式，ADR-25）
+      kind: pnetlab
+      url: "https://192.168.56.102"        # str，平台 Web 入口（URL 探活监控目标）
+      verify_tls: false
       subnets: [10.102.0.0/16]
+                                # 旧键 host/ssh_port/ssh_user/agent_cmd/templates_dir 已废除（平台
+                                # 不可 SSH，见下注）；doctor 检出旧键时输出迁移提示（warn）
+
+  # 注记（ADR-25 沙箱预建模式与平台/设备双层寻址）：
+  # **平台不可 SSH**——eNSP Pro/PNETLab 是网页平台（平台监控走 URL 探活，任何 HTTP 响应=在线）；
+  # **设备 SSH 凭证在评估集 env.yaml 的 ssh_access 段定义**（每设备独立 ip/port/username/password——
+  # 同一沙箱内多设备常复用同一 IP、以不同端口区分；**设备登录 IP 可与平台 URL IP 不同，分别定义**）。
   build_retry: 2                # int，环境构建失败重建上限（FR5.5，默认 2）
   ready_timeout_s: 600          # int，就绪探测超时秒（FR4.6，默认 600）
 
@@ -201,4 +208,4 @@ llm_compare: {candidates: [claude-sonnet-4-6, glm-5]}   # switch_model 假设的
 
 ---
 
-> 修订记录：v1.5 — v2.18 远端 Docker 主机支持（R1-R6）：carrier.hosts 多主机完整示例（本地 main + 远端 gpu-01/gpu-02 SSH 隧道）；新增 max_instances_per_host（全局默认 + host 级覆盖）；InstanceScheduler least-loaded 选主机。v1.4 — P0 多实例并行联动（ADR-24）：backends 示例键改 ensp-pro-1（多实例键 `<type>-<n>` P0 即用，每实例独立 VM/网络名字空间）；batch_concurrency 默认 1→2（并行可配）+ 新增 max_parallel_labs（含同 lab 任务互斥注记——lab 内共享设备状态）。v1.3 — 二轮交叉审查修复：smoke_verify 冒烟任务来源对齐 FR3.7 P0（P0 即绑定冒烟集，未含时降级首个任务）。v1.2 — 二次交叉审查修复：后端配置键与 env.yaml backend 枚举同名（ensp_pro→ensp-pro）并注明多实例键规则；carrier.hosts.main 补 subnets 字段（FR5.8/Q10）；新增 logging 配置段与 labs_dir/recordings_dir（对齐设计 5.2/2.3）；guards 补 high_risk_worsen（对齐 FR9.3/Selector 规则 2）；smoke_verify 注明 P0 冒烟任务来源；goals 注明加权综合分定义位置。v1.0 — 自主设计文档 v1.5 拆分建档（原设计文档 5.1/5.2 内容整体迁入，内容未变）。
+> 修订记录：v1.6 — **沙箱连通性模型重构（ADR-25 预建模式，2026-11-09）**：sandbox.backends.* 键形态重写——删 host/ssh_port/ssh_user/agent_cmd/templates_dir，新 kind（ensp-pro|pnetlab|fake）/url（平台 Web 入口，URL 探活）/verify_tls（自签默认关）/api（P1/S11 预留）/subnets（保留）；新增 fake 默认后端；增注记「平台不可 SSH；设备 SSH 凭证在 env.yaml ssh_access 段定义（同 IP 不同端口复用，设备 IP 可与平台 IP 不同）」。v1.5 — v2.18 远端 Docker 主机支持（R1-R6）：carrier.hosts 多主机完整示例（本地 main + 远端 gpu-01/gpu-02 SSH 隧道）；新增 max_instances_per_host（全局默认 + host 级覆盖）；InstanceScheduler least-loaded 选主机。v1.4 — P0 多实例并行联动（ADR-24）：backends 示例键改 ensp-pro-1（多实例键 `<type>-<n>` P0 即用，每实例独立 VM/网络名字空间）；batch_concurrency 默认 1→2（并行可配）+ 新增 max_parallel_labs（含同 lab 任务互斥注记——lab 内共享设备状态）。v1.3 — 二轮交叉审查修复：smoke_verify 冒烟任务来源对齐 FR3.7 P0（P0 即绑定冒烟集，未含时降级首个任务）。v1.2 — 二次交叉审查修复：后端配置键与 env.yaml backend 枚举同名（ensp_pro→ensp-pro）并注明多实例键规则；carrier.hosts.main 补 subnets 字段（FR5.8/Q10）；新增 logging 配置段与 labs_dir/recordings_dir（对齐设计 5.2/2.3）；guards 补 high_risk_worsen（对齐 FR9.3/Selector 规则 2）；smoke_verify 注明 P0 冒烟任务来源；goals 注明加权综合分定义位置。v1.0 — 自主设计文档 v1.5 拆分建档（原设计文档 5.1/5.2 内容整体迁入，内容未变）。

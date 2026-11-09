@@ -3,13 +3,13 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DD-04 |
-| 版本 | v1.1（ADR-24 多实例并行修订：端点解析三级/SessionKey=(ip,port)/LabScheduler） |
-| 上游 | 设计 3.4、接口 §4；FR3/FR4、ADR-20；ADR-6/12/13 |
+| 版本 | v1.2（ADR-25 预建模式：平台 URL 探活 + PrebuiltBackend + 设备级 SSH 寻址；ADR-24 多实例并行保留） |
+| 上游 | 设计 3.4、接口 §4；FR3/FR4、ADR-20/24/25；ADR-12/13 |
 | 交付切片 | S3（Backend 抽象+Fake+readiness）；S11（真实后端） |
 
 ## 1. 追溯与范围
 
-**职责**：SandboxService 七操作门面（构建/快照/恢复/重置/销毁/评测准备 prepare/任务后恢复 restore_task）+ 设备/宿主双 SSH 池 + 就绪探测 + 三后端适配器（ENSPPro/PNETLab/Fake）。**恢复 ≠ 重建**（L1 任务级按手段恢复 / L2 环境级兜底，ADR-20）。
+**职责**：SandboxService 七操作门面（构建/快照/恢复/重置/销毁/评测准备 prepare/任务后恢复 restore_task）+ 设备级 SSH 会话池（netmiko，键=(ip,port)）+ 平台 URL 探活（ADR-25）+ 就绪探测 + 后端适配器（Prebuilt（ensp-pro/pnetlab 共用）/Fake）。**恢复 ≠ 重建**（L1 任务级按手段恢复 / L2 环境级兜底，ADR-20）。
 
 **不做什么**：不含故障编译层（v2.8 已删——任务直接 exec_cli）；不管理 docker（carrier 职责）；OTLP/LLM 无关。
 
@@ -21,10 +21,10 @@ rsi/sandbox/service.py        # SandboxService + ConfigApiCaller + OpsJournal
 rsi/sandbox/sshpool.py        # SshPool / DeviceSession / HostSession
 rsi/sandbox/vendor.py         # VENDOR_MAP（device_type/错误模式/恢复模板 SSOT）
 rsi/sandbox/readiness.py      # ReadinessChecker
+rsi/sandbox/platform_probe.py    # PlatformProbe（平台 URL 探活，TTL 缓存，ADR-25）
 rsi/sandbox/backends/__init__.py
-rsi/sandbox/backends/base.py      # SandboxBackend ABC
-rsi/sandbox/backends/ensp_pro.py  # ENSPProAdapter（paramiko 宿主 SSH + pg-enspctl）
-rsi/sandbox/backends/pnetlab.py   # PNETLabAdapter（宿主 SSH）
+rsi/sandbox/backends/base.py      # SandboxBackend ABC（含非抽象 status()）
+rsi/sandbox/backends/prebuilt.py  # PrebuiltBackend（ensp-pro/pnetlab 共用，预建模式 ADR-25）
 rsi/sandbox/backends/fake.py      # FakeSandboxBackend（内存虚拟设备）
 ```
 
@@ -65,16 +65,18 @@ class SandboxService:
     def __init__(self, backends: dict[str, SandboxBackend], settings: SandboxSettings,
                  trace_log=…): ...
     async def build_lab(self, spec: EnvSpec, backend_key: str | None = None) -> LabHandle
-        # backend_key 缺省=LabScheduler 选实例（ADR-24：同类型多实例中最少活跃 lab；显式指定优先）
-        # backend.build(spec) → **端点解析三级**：① 适配器返回 (网络名,设备名)→(IP+端口) 映射（权威）
-        #   ——ENSP host-agent 节点映射 / PNETLab 拓扑读取，写 labs.device_endpoints_json + LabHandle.endpoints
-        # ② env.ssh_access 基准校验（单实例部署=一致；多实例=实例专属端点，用户名/密码取自基准）+ 凭证载体
-        # ③ 站点覆盖先行套用 → wait_ready（验证映射端点可达）→ 写 labs 行 + ops.jsonl 头
+        # backend_key 缺省=LabScheduler 选实例（ADR-24：同类型多实例中最少活跃 lab；显式指定优先；
+        #   ADR-25：过滤 BackendStatus.available=False 候选，全不可用→EnvError）
+        # backend.build(spec)（预建语义，ADR-25）→ **端点解析**：env.ssh_access 基准（权威，ADR-24 ②升为基准）
+        #   + 站点覆盖先行套用 → PrebuiltBackend 透传 endpoints=dict(env.ssh_access)
+        #   → 写 labs.device_endpoints_json + LabHandle.endpoints → wait_ready → 写 labs 行 + ops.jsonl 头
     async def wait_ready(self, lab: LabHandle, timeout_s: int | None = None) -> ReadyReport
+        # 预建语义（ADR-25）：ReadinessChecker.check，缺省每设备 ssh_reachable（SSH 端口可达=就绪）
     async def snapshot(self, lab, name: str) -> SnapRef           # native→backend；否则 degraded 标记
     async def restore(self, lab, snap: SnapRef) -> None           # L2：native 回滚 / degraded=reset+重放 ops.jsonl 前缀
     async def reset(self, lab) -> None
     async def destroy(self, lab) -> None
+        # 预建语义（ADR-25）：不销毁平台侧任何对象——仅 pop 内部登记 + ssh_pool.close_lab(lab_id) 回收设备会话
     async def prepare(self, lab, task_id: str, actions: list[PrepareAction]) -> list[AppliedAction]
         # 逐动作：exec_cli→先备份再下发（§5.3）；call_api→ConfigApiCaller；写 ops.jsonl；失败抛 EnvError（调用方重试）
     async def restore_task(self, lab, applied: list[AppliedAction]) -> None
@@ -106,7 +108,7 @@ class DeviceSession:
     async def exec_config(self, lines: list[str]) -> ExecResult              # 进配置视图→逐条→回退+归位
     async def capture_config(self) -> str                                    # display current-configuration 全文
     async def close(self) -> None
-class HostSession:                                                          # 宿主 SSH（paramiko exec_command）
+class HostSession:                                # 宿主 SSH（paramiko exec_command；ADR-25 后仿真平台不用——保留供 carrier 远端主机等复用）
     async def run(self, cmd: list[str], timeout_s=60) -> ExecResult
 ```
 
@@ -166,15 +168,23 @@ exec(cli)→按注入 cli_lines 推导 display 输出（规则表：display curr
 build/wait_ready/snapshot(degraded 标记)/restore=重放（与真实现同语义）→BatchRunner/判定 DSL 全离线可测
 ```
 
+### 5.7 PrebuiltBackend（预建模式，ADR-25）
+
+- **构造**：`PrebuiltBackend(key, kind, probe, ssh_pool, readiness)`（bootstrap 按 settings kind 组装：ensp-pro/pnetlab→Prebuilt，共享全局 SshPool + ReadinessChecker + PlatformProbe；fake→FakeSandboxBackend）；内部 `_envs[lab_id]` 登记；
+- **共享 pool 的 (ip,port) 键**：exec 与健康检查与 SandboxService 走**同一共享 SshPool**（SessionKey=(ip,port) 全局唯一，ADR-24）——无双层会话；lab 销毁按 lab_id 批量回收；
+- **生命周期**：build=probe 在线校验（离线→EnvError 含平台 url）→ `LabHandle(endpoints=dict(env.ssh_access))`（端点透传，不创建任何对象）；wait_ready=ReadinessChecker（缺省每设备 ssh_reachable TCP 轮询）；snapshot=no-op（SnapRef.impl_kind="noop"）；restore=no-op+warning（L1 配置备份恢复已覆盖任务恢复，L2 退化由 reset 承担）；**reset≠no-op**——逐设备经共享 pool 执行厂商 reset_cmd（vendor.py SSOT）；destroy=pop _envs + `ssh_pool.close_lab(lab_id)`；
+- **status()**：覆盖为探活结果——`BackendStatus.available = probe.probe_cached().ok`（TTL 缓存，默认 15s）；`backend_status()` 聚合各后端，LabScheduler select 过滤 available=False（全不可用→EnvError）；
+- **两层错误语义**：平台离线（URL 探活失败）→ build 立即 EnvError（含 url 与异常 detail）、BackendStatus.available=False、HealthMonitor `platform:<key>` checker down+system.alert 告警、调度器跳过——**已建 lab 不受影响**（设备 SSH 与平台 Web 无关）；设备 SSH 不可达→wait_ready 轮询超时→EnvError→env_failed、health_check（display clock 登录探测）False，错误定位到设备 (ip,port)。
+
 ## 6. 依赖矩阵
 
-- imports：netmiko、paramiko、httpx、rsi/core、rsi/settings；（host-agent 协议细节在 ensp_pro）。
+- imports：netmiko、httpx（平台 URL 探活 + call_api）、rsi/core、rsi/settings；（预建模式无平台侧编排协议——Web API 编排 P1/S11）。
 - 注入：SandboxService←backends+SshPool+settings；无对 carrier/tracing 依赖。
 - DB：**写** labs、lab_snapshots；ops.jsonl/备份=文件（labs_dir 下）。
 - 被依赖：orchestrator（DD-12 prepare/restore_task/build）、judge（DD-08 exec_readonly）、api（DD-13 labs 路由透传）。
 
 ## 7. 测试映射与实施注记
 
-**测试**：TU-023（PrepareAction 编译展开/call_api 请求组装）、TU-030（L1 备份恢复模板+L2 切换）、TU-035（白名单）、IN-012（build_lab 仅 1 次/判决后恢复/prepare 失败重试）、IN-015（超时销毁）、SIM-001/002（真实后端）、EE-002/EE-009 走 Fake。
+**测试**：TU-023（PrepareAction 编译展开/call_api 请求组装）、TU-030（L1 备份恢复模板+L2 切换）、TU-035（白名单）、IN-012（build_lab 仅 1 次/判决后恢复/prepare 失败重试）、IN-015（超时销毁）、SIM-001/002（真实后端）、EE-002/EE-009 走 Fake；预建模式单测（Mock 探活/MockDeviceSession/假 tcp_probe）：build 端点透传、平台离线 raise、no-op snapshot/restore、reset 命令、destroy 清 pool、scheduler 过滤（§5.7）。
 
-**实施注记**：① ensp_pro 适配器=HostSession.run(["pg-enspctl", …]) 子命令映射（lab new-from-template/start/stop/del/device export-config/lab snapshot-file/probe——设计 3.4.3），Q1 PoC 前模板路径 `deploy/ensp-templates/<evalset_id>.topo`；② PNETLab 同构（/opt/unetlab/ CLI）；③ 自动确认交互 `[Y/N]` 提示仅限 reset/恢复模板内白名单动作（prepare 命令不自动确认，防误操作）；④ httpx 客户端复用（连接池）；⑤ ops.jsonl 行=AppliedAction 序列化（含 applied_at）。
+**实施注记**：① 预建模式（ADR-25）——ensp-pro/pnetlab 统一由 PrebuiltBackend 承载（§5.7），无宿主编排 CLI；② PNETLab=同实现 kind=pnetlab（EVE-NG 兼容 REST 编排 P1/S11 评估）；③ 自动确认交互 `[Y/N]` 提示仅限 reset/恢复模板内白名单动作（prepare 命令不自动确认，防误操作）；④ httpx 客户端复用（连接池——探活与 call_api 共用依赖）；⑤ ops.jsonl 行=AppliedAction 序列化（含 applied_at）；⑥ netmiko 同步调用一律 asyncio.to_thread 包裹（§5.1）。

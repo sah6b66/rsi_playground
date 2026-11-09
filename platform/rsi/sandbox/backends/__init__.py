@@ -2,5 +2,12 @@
 
 from rsi.sandbox.backends.base import BackendStatus, SandboxBackend
 from rsi.sandbox.backends.fake import FakeDevice, FakeSandboxBackend
+from rsi.sandbox.backends.prebuilt import PrebuiltBackend
 
-__all__ = ["BackendStatus", "FakeDevice", "FakeSandboxBackend", "SandboxBackend"]
+__all__ = [
+    "BackendStatus",
+    "FakeDevice",
+    "FakeSandboxBackend",
+    "PrebuiltBackend",
+    "SandboxBackend",
+]

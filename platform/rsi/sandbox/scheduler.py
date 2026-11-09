@@ -2,7 +2,9 @@
 
 Explicit ``backend_key`` always wins; otherwise the least-active backend of
 the same kind as ``env.backend`` is selected so parallel batches spread
-across sandbox instances.
+across sandbox instances. Candidates whose ``status().available`` is False
+(e.g. prebuilt platform offline, T3) are skipped; if every candidate of the
+requested kind is unavailable the selection fails with EnvError.
 """
 
 from __future__ import annotations
@@ -37,15 +39,41 @@ class LabScheduler:
                     f"explicit backend {explicit_key!r} not configured",
                     context={"backend_key": explicit_key, "env": env.name},
                 )
+            backend = self._backends[explicit_key]
+            if not self._is_available(backend):
+                logger.debug(
+                    "select.error", exc_type="EnvError", backend_key=explicit_key,
+                    reason="unavailable",
+                )
+                raise EnvError(
+                    f"explicit backend {explicit_key!r} is unavailable",
+                    context={"backend_key": explicit_key, "env": env.name},
+                )
             logger.debug("select.exit", backend_key=explicit_key, reason="explicit")
             return LabSelection(
                 backend_key=explicit_key,
                 reason=f"explicit backend key {explicit_key!r}",
             )
         candidates = {
-            k: b for k, b in self._backends.items() if b.kind == env.backend
+            k: b
+            for k, b in self._backends.items()
+            if b.kind == env.backend and self._is_available(b)
         }
         if not candidates:
+            all_kind = [k for k, b in self._backends.items() if b.kind == env.backend]
+            if all_kind:
+                logger.debug(
+                    "select.error", exc_type="EnvError", env_backend=env.backend,
+                    reason="all_unavailable", backend_keys=sorted(all_kind),
+                )
+                raise EnvError(
+                    f"all backends of kind {env.backend!r} unavailable",
+                    context={
+                        "env_backend": env.backend,
+                        "env": env.name,
+                        "backend_keys": sorted(all_kind),
+                    },
+                )
             logger.debug("select.error", exc_type="EnvError", env_backend=env.backend)
             raise EnvError(
                 f"no backend of kind {env.backend!r} configured",
@@ -65,3 +93,14 @@ class LabScheduler:
                 f"(active_labs={candidates[key].active_lab_count})"
             ),
         )
+
+    # -- internals -----------------------------------------------------------
+
+    @staticmethod
+    def _is_available(backend: SandboxBackend) -> bool:
+        """Status probe must never break scheduling — an exception counts
+        as unavailable rather than propagating into select()."""
+        try:
+            return backend.status().available
+        except Exception:  # noqa: BLE001 - probe failure == offline
+            return False

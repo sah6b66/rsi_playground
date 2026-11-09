@@ -340,9 +340,8 @@ class SandboxService:            # I-3 服务端实现，转发到后端适配�
     def __init__(self, backends: dict[str, SandboxBackend]): ...
     async def build_lab(self, spec: EnvSpec, backend: str | None = None) -> LabHandle
         # backend 缺省 = 按 spec.backend 同名解析 sandbox.backends 配置键；多实例键 <type>-<n> P0 即用（ADR-24）
-        # 端点解析三级（ADR-24）：① 适配器返回 (网络名,设备名)→(IP+端口) 映射（权威——
-        #   ENSP host-agent 节点映射 / PNETLab 拓扑读取），写 labs.device_endpoints_json；
-        # ② env.ssh_access 基准校验（单实例=一致；多实例=实例专属端点）+ 凭证载体；③ 站点覆盖先行套用
+        # 端点解析（ADR-24/ADR-25 预建模式）：env.ssh_access 为权威基准（每设备 (ip,port)——
+        #   同 IP 不同端口复用，设备 IP 可与平台 URL IP 不同）+ 站点覆盖先行套用，写 labs.device_endpoints_json；
         # （配置键与 env.yaml backend 枚举同名：ensp-pro/pnetlab/containerlab，FR5.8）；
         # 显式传入仅用于 P2 多实例选择（模块内自动资源选择）
         # 设备端点 = spec.ssh_access 声明；构建后验证可达（不一致→环境错误，FR4.3）

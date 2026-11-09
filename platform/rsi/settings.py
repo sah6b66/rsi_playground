@@ -95,15 +95,19 @@ class LoggingSettings(BaseModel):
 
 
 class SandboxBackend(BaseModel):
-    """§2 sandbox.backends.* — self-contained backend resource def."""
+    """§2 sandbox.backends.* — simulation-platform (Web) backend def.
+
+    eNSP Pro / PNETLab are web platforms (no platform-level SSH); platform
+    health is monitored via URL probing. Device-level SSH addresses live in
+    each evalset's ``env.yaml`` ``ssh_access`` (same IP reused across devices
+    with different ports; device IPs may differ from the platform URL IP).
+    """
 
     model_config = _C
-    host: str = ""
-    ssh_port: int = 22
-    ssh_user: str = "root"
-    agent_cmd: Optional[str] = None
-    templates_dir: Optional[str] = None
-    api: Optional[str] = None
+    kind: Literal["ensp-pro", "pnetlab", "fake"] = "fake"
+    url: str = ""  # platform Web entry, e.g. https://192.168.56.101:8443
+    verify_tls: bool = False  # self-signed certs off by default
+    api: Optional[str] = None  # reserved for S11 Web-API orchestration
     subnets: list[str] = Field(default_factory=list)
 
 
@@ -112,16 +116,15 @@ class SandboxSettings(BaseModel):
 
     model_config = _C
     backends: dict[str, SandboxBackend] = Field(default_factory=lambda: {
+        "fake": SandboxBackend(kind="fake"),
         "ensp-pro-1": SandboxBackend(
-            host="192.168.x.x",
-            ssh_user="administrator",
-            agent_cmd="pg-enspctl",
-            templates_dir="deploy/ensp-templates",
+            kind="ensp-pro",
+            url="https://192.168.56.101:8443",
             subnets=["10.101.0.0/16"],
         ),
         "pnetlab": SandboxBackend(
-            host="192.168.x.y",
-            ssh_user="root",
+            kind="pnetlab",
+            url="http://192.168.56.102",
             subnets=["10.102.0.0/16"],
         ),
     })

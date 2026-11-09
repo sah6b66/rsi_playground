@@ -154,8 +154,28 @@ async def reset_lab(
 
 @router.get("/sandbox/backends")
 async def list_backends(
+    request: Request,
     user: Claims = Depends(get_current_user),
 ) -> dict:
+    """Aggregated real backend availability (T4); placeholder fallback when
+    no sandbox service is wired (e.g. minimal app assemblies)."""
+    services = getattr(request.app.state, "services", None) or {}
+    svc = services.get("sandbox_service")
+    if svc is not None:
+        statuses = await svc.backend_status()
+        return {
+            "items": [
+                {
+                    "name": s.key,
+                    "kind": s.kind,
+                    "status": "ready" if s.available else "offline",
+                    "available": s.available,
+                    "active_labs": s.active_labs,
+                    "detail": s.detail,
+                }
+                for s in statuses
+            ]
+        }
     return {
         "items": [
             {"name": "docker", "status": "ready"},

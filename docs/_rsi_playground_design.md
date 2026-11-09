@@ -3,14 +3,14 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DES-001 |
-| 版本 | v2.19（第四轮审计对齐） |
-| 日期 | 2026-11-03 |
+| 版本 | v2.20（ADR-25 沙箱预建模式：平台 URL + 设备级 SSH） |
+| 日期 | 2026-11-09 |
 | 状态 | 待评审 |
 | 上游文档 | 需求分析文档 RSI-PG-REQ-001 v0.16（docs/_rsi_playground_requirements.md，下称"需求文档"） |
 | 关联文档 | 配置设计 RSI-PG-DES-002（docs/_rsi_playground_configuration.md，下称"配置文档"）；接口定义 RSI-PG-DES-003（docs/_rsi_playground_interfaces.md，下称"接口文档"）；测试设计 RSI-PG-DES-004（docs/_rsi_playground_test.md，下称"测试文档"） |
 | 设计范围 | P0/P1/P2 全范围详细设计（含数据模型、接口规范、类/函数签名、时序、测试策略与实施切片） |
 
-> 变更：v2.19 — 第四轮审计文档-代码对齐（2026-11-09）：ADR-5 补约束注记（D-6）——P0 直传 config 目录场景缓存命中仅比对版本标识字符串，版本导出目录一经用于评测不可原地变更（GitStore 导出路径含版本号时天然满足）；实现层同步加固（内容哈希校验）。v2.18 — **远端 Docker 主机支持（R1-R6，用户决策）**：SUT Agent 容器支持运行在远端 Linux 服务器（SSH 隧道 Docker）——①HostPool SSH 真实化（`docker.DockerClient(base_url="ssh://user@host")` 实例缓存+保活）；②InstanceScheduler（最少活跃实例+`max_instances_per_host` 上限）；③跨主机 NetPolicy（每 host 独立 Docker daemon/网络命名空间，按 (host, network) 跟踪）；④HostService 跨主机生命周期（create/start/stop/destroy 路由到正确 host 的 DockerClient）；⑤配置 `carrier.hosts` 多主机完整示例+每主机实例上限；⑥多主机并行管理（本地 Windows Docker Desktop + 多台远端 Linux 同时运行）。联动：DD-05 v1.2、配置 v1.5。v2.17 — **全外部依赖状态可视（H1-H8，用户决策）**：HealthMonitor 后台任务（30s 轮询）监控 8 类外部依赖——Docker 守护进程（各主机）、仿真沙箱（lab 设备 SSH TCP 探测，任一可达=在线）、SUT 实例（Docker 容器实时状态）、LLM Provider（API 可达+延迟+错误率）、Git 裸仓（可访问+磁盘）、数据库（连接+磁盘）、Trace Collector（进程+队列深度）、Config API/NMS（HTTP HEAD）。`GET /system/dependencies` 统一返回全部依赖状态；SSE system.alert 推送状态变更（up↔down）；labs 表增 online/devices_online 列；WEB 依赖状态面板（dashboard 页+全局 header 徽章）。联动：需求 v0.28（FR10.9 增外部依赖状态）、接口 v2.7（DDL+§9.19 扩展）、DD-12 v1.2/13 v1.1/14 v1.2。v2.16 — **WEB 缺口修正（G1-G5，用户清单）**：①ProfileForm 权重编辑器（方向 Switch+权重 Slider+实时公式预览）；②安全边界只读页（/settings SecurityTab——白名单 8 项+冻结域+ADR 依据，只读不可修改，数据源 GET /system/freeze 扩展）；③评测集导入 UI（Upload.Dragger 拖拽 .zip→解析预览→确认入库）；④**SUT 镜像接入方案**（P0=本地镜像 docker load+WEB 填 image_ref+"验证镜像"按钮检查规范；P1=私有 registry 对接）；⑤DD-14 v1.1 更新。联动：需求 v0.27（FR1.1 镜像接入注记+FR10.1 增安全边界页）、DD-13（GET /system/freeze 扩展+POST /suts/{id}/verify-image）。v2.15 — **归因增加历史输入（P0，用户决策）**：AttributionAnalyzer 输入增加 `opt_history`（该 SUT 近期实验摘要：轮次/提案类型/决策/失败模式/原因）——归因时标注"此失败簇已尝试 X 未果，建议换方向"，Top-N 排序排除已证明无效方向、优先有效方向；联动 3.7.2/接口 §12/DD-11。v2.14 — **多实例并行修正（P1–P5）**：① 配置合并 `batch_concurrency`+`max_parallel_labs`→`max_parallel_batches`（同 lab 内固定串行，并行=跨批次）；② SQLite 启用 **WAL+busy_timeout**（2.1/DD-01）；③ **同一 SUT 同时只允许一个活跃迭代**（API 409+引擎检查）；④ LLM 全局并发信号量 `llm.max_concurrent_calls`（防 rate limit）+ ⑤ BudgetController **全局预算**（跨批次聚合，超限全局 STOP）。v2.13 — **P0 多实例并行（ADR-24，用户决策）**：多沙箱实例模型（各 VM/服务器独立网络名字空间，适配层按（网络名,设备名）→唯一 (IP+端口) 映射寻址）；端点解析三级（适配器映射权威→env.ssh_access 基准→站点覆盖）；backends 多实例键 `<type>-<n>` P0 即用；SshPool 会话键改 (ip,port)；3.1.1 任务级 Semaphore + 批次级多 RUNNING 并发；LabScheduler（P0 指定/最少活跃实例选择）。联动：需求 v0.26、接口 v2.5（labs.device_endpoints_json 语义）、配置 v1.4（batch_concurrency=2/max_parallel_labs/多实例键）、测试 v2.3（新增 IN-022，59→60 条）、DD-04 v1.1。v2.12 — **二轮交叉审查修复**：①冒烟任务来源对齐 FR3.7 P0（3.3 Verifier 与配置注记改"P0 绑定冒烟集，未含时降级首个任务"）；②3.4.2 历史注记改写（去 TU-019 引用）；③3.10.2 目录树补 labs/ 页；④§9 矩阵 FR4 行补 TU-035；§7 用例数 58→59。联动：需求 v0.25（可复现性双口径/风险表/三级验证/§8 范围）、接口 v2.4（DDL iterations 前移消除前向外键、budget_used.wall_time_s、Verdict.efficiency.estimated）、配置 v1.3（冒烟任务注记）、测试 v2.2（EE-003/SIM-003 双口径改写、TU-032 增稳定性、新增 TU-035）。v2.11 — **平台 API 与 WEB 全量补齐（A–N，用户主导清单+全面扫描）**：日常全部操作经 WEB/API 完成——Router 17→19 组（+instances/audit-logs）；**平台参数管理**（settings 动态项热更/静态项只读）；**SUT 配置树文件 CRUD**（P0 人工模式核心入口，commit 走 TargetRegistry 校验）；**人工门四端点**（confirm-direction/hypothesis/review/decision，P1 模式闭环 API 化）；迭代 :resume/DELETE（软删）/budget_used；labs 管理操作（建/销毁/重置/快照/只读 exec）；instances 运行实例管理；traces :query/:stats（P1）；SFT 报告查看；噪声带状态；STOP 熔断恢复；冻结校验状态；平台日志检索（NFR5）；审计查询（NFR1④）；健康检查组件级增强；evalsets site_overrides 与冻结版本列表；3.10.3 页面表同步（+labs 页、人工门工作台、文件编辑器、参数/日志/审计标签）。联动：需求 v0.24（FR10.1/10.2/10.5 细化+新增 FR10.9）、接口 v2.3（§9 重构 19 组+hypotheses.iteration_id）、测试 v2.1（TU-034/IN-020/IN-021，55→58 条）。v2.10 — **归因输入契约补全（用户决策）：SUT 配置原文进入归因与 A/B 分类**——AttributionAnalyzer 输入增加 sut_config（ConfigSnapshot，按 run 的 config_version 经 GitStore.export 导出；token 控制：轨迹定现象后仅取 suspected_elements 相关文件原文）；归因对照原文区分"指引已有未执行（执行缺陷）vs 指引缺失（提示词/知识缺失，优化方向明确）"；**A/B 标注必须附原文证据引用**（文件+位置——FR6.9"已提供仍出错"的唯一可判定依据）；HypothesisGenerator stage2 输入"内容摘要"升级为"相关要素**原文**"；P0 人工门 WEB 表单内嵌原文编辑视图。联动：需求 v0.23（FR6.2/6.9）、接口 v2.2（§12 签名与 AttributionReport 结构）、测试 v2.0（新增 TU-033，54→55 条）。v2.9 — **判定模型重构（ADR-23，用户决策）：LLM 为主判决层，P0 直接实现**——root_cause 语义比对（期望=自然语言根因描述，不再要求关键词集）、诊断路径质量、checklist/risk 语义命中、结论-过程一致性全部由 LLMJudge 判定并提前至 P0（pairwise 仍 P1）；**保留两个确定性组件**（final_state 终态断言=设备客观状态锚点、SafetyScanner=安全红线规则冻结；缺试计分保留）；NFR2② 修订（语义维度 LLM 为主+客观维度脚本，护栏=温度 0/冻结/噪声带吸收判决方差）；FR7.1 职责缩减（终态断言+缺试）；3.6 重排、附 A root_cause 改自然语言期望+可选 match_hints。联动：需求 v0.22、接口 v2.1（ExpectedAnswer.root_cause 契约）、测试 v1.9（TU-010/026 改写、IN-018 提前 P0、新增 TU-032，53→54 条）。v2.8 — **删除故障编译层（ADR-20 收尾，用户决策）**：FaultSpec→CLI 编译层（faults/registry）移除——评估集本为厂商绑定（configs 即厂商 CLI、站点覆盖不改设备类型）、任务由网络专家直接编写 exec_cli（与断言/配置修改对称且所见即所执行）；常用故障改为**手册级命令模板**（3.4.2，docs/manual/user-guide）；I-3 注入故障/清除故障独立操作移除（prepare/restore_task 已覆盖任务前后，during_task P1 再定义）；DDL 删 fault_injections 表（23→22 张）；TU-019 删除（54→53 条）；**v2.8 内追加：token 用量维度注记（3.5）**——OpenCode prompt-logger 仅请求侧无响应 token，来源 PoC（附 C.5⑥：run 末帧 usage/telemetry 插件/session API），不可用则 P0 字符估算降级（usage.estimated=true + 覆盖报告标注）。联动：需求 v0.21（FR4.5 重写/I-3 表/§8 范围）、接口 v2.0、测试 v1.8。v2.7 — **载体轨迹通道调研核实（网络调研，全事实落附 C）+ 载体分期调整（ADR-22：OpenCode 优先 P0 单载体，Claude Code P2）**：勘误——Claude Code OTel 实为 metrics+logs（**无 span、无消息正文**，#42281），原"span claude_code.llm_request"表述废除；Claude Code 通道改三通道组合（stream-json 全流 wiretap 主通道 + OTel events 补充 + --debug-file 兜底），wire 级=配置版本(system+tools)+wiretap(messages) 重建；OpenCode 通道核实成立并细化（opencode-prompt-logger 已核实，`@opencode/plugin` V2，`file` 选项 per-run 归属）；3.2.2/3.5 重写，附 C 新增（两载体事实矩阵/OTel 环境变量与事件表/prompt-logger NDJSON 帧格式/已知问题/PoC 项/来源）；§8 切片 S4/S10 载体调整。联动：需求 v0.20、接口 v1.9、测试 v1.7（TU-031 新增，53→54 条）。v2.6 — **交付分期重构（ADR-21）：自优化模式三级选择，P0 即交付 P0 人工模式 + P1 半自动模式**——IterationEngine 状态机、人工门（Webform/ManualReviewGate）、VERIFYING 三级编排、Selector 辅助人工裁决、冒烟集（FR3.7）、iterations API 均提前至 P0；归因 P0 用规则层（LLM 精分类/起草为 P1 增强）；P2 模式 P2 阶段开放（此前 409）；WEB 优化页模式选择与人工门工作流（3.1.2/3.7/3.10.3）；§8 切片增 S6b；DDL 增 iterations 表 + batches.iteration_id（22→23 张）。联动：需求 v0.19（FR3.7/6.2/6.3/6.4/6.10/9.1/9.3 优先级迁移 + §8 分期与验收重写）、接口 v1.8（iterations 表、§9 iterations/promote 契约）、测试 v1.6（新增 IN-019，52→53 条）。v2.5 — 表述消歧：3.1.1 明确"**恢复 ≠ 重建**"——环境（lab：拓扑与设备实例）数据集级仅构建一次、任务间持续存活；restore_task 仅恢复**被改设备的配置状态**（轻量），重建（推倒 lab 重搭）仅 L2 兜底 degraded 路径触发；3.4.1 L2 行与不变量表述同步（"环境回干净态"→"涉及设备配置状态回干净基线"）。v2.4 — **命名规范修订（2.5）**：① 2.5.B task_id"类别"澄清——类别=任务类型（FR3.2 三类任务），非评测准备动作（ADR-20），保留不变；② **运行态对象 ID 统一增加 14 位时间戳段**：`<前缀>-<YYYYMMDDHHmmss>-<8位随机>`（UTC，字符串序即时间序，文件名/日志/表主键可按时间前缀筛选），取代原纯 ULID 方案；覆盖 batch/run/lab/snapshot/iteration/judgment/hypothesis/experiment/instance 全部运行态 ID；生成器 core/naming.py（TU-022 校验扩展）。联动：需求 v0.18（3.5/3.6 示例值同步）、测试 v1.5（TU-022 描述扩展）。v2.3 — **评测准备模型重构（ADR-20）**：目的（故障注入/配置修改等语义）与手段（exec_cli 直接命令行 / call_api 脚本调用外部 API）两维分离；两种手段均支持多设备多命令；env.yaml 新增 config_apis 段（外部配置 API 端点声明）；任务后恢复按手段匹配（exec_cli=任务前备份+判决后 CLI 配置恢复；call_api=API 撤销标记重调），恢复分层 L1 任务级/L2 环境级快照兜底；故障类型库降为编写便利层（编译为 exec_cli 命令序列）；run_task 步骤增至 9 步。联动：需求 v0.17、接口 v1.7（TaskRecord/EnvSpec/prepare/restore_task/§11）、测试 v1.4（TU-023 改写、新增 TU-030、51→52 条）。v2.2 — **其余七模块组件交互级细化**（与 v2.1 同参数）：3.1 编排（EventBus 有界队列丢旧保新、预算双机制、Checkpoint 格式与 lab 复用恢复、P0 人工逐批驱动/P1 IterationEngine 分界、VERIFYING 三级短路）；3.2 承载（P0 每 run 一实例、网络成员资格隔离 P0/iptables P1、TaskResult 双载体提取规则、网络与主机池 3.2.4）；3.3 插桩（注入方式载体差异与 P0 分界、覆盖报告 Schema 固定、冒烟两跑比较）；3.4 仿真（SSH 双池串行会话、degraded 快照 ops.jsonl 重放、exec_readonly 前缀白名单）；3.5 轨迹（多源 run 归属 OTEL_RESOURCE_ATTRIBUTES 注入、collector 唯一 seq 权威、finalize EOF+宽限语义）；3.6 裁判（判定 DSL 求值语义表、缺试/一票否决聚合规则表、裁判摘要预算与 FR2.6 域界）；新增 3.12 llm 模块（统一客户端契约、cassette 键与种子派生、judge 冻结联动）。联动：接口文档 v1.6（§5 增 TraceCollector 契约、新增 §13 llm 契约、§9 iterations 标注 P1）。v2.1 — **子系统详细设计扩充（五模块，组件交互级，P0+P1 详细/P2 接口预留）**：3.7 优化引擎（单管线+执行器协议 ADR-16、归因三层流水线、Critic 双层、applier 汇合点、hypotheses 状态机）；3.8 版本管理（裸仓+临时 worktree+常驻 staging ADR-15、单写者锁、snapshot/promote/rollback 流程、freeze 双保险）；3.9 迭代决策（显式标定批次 ADR-17、StatsAggregator、配对检验、DecisionCtx、规则 0、stale 决策标记）；3.10 API 与前端（契约源=后端代码 ADR-18、错误码表、SSE 事件信封、页面/组件数据契约）；3.11 安全（无状态 JWT+disabled 校验 ADR-19、网络隔离信任边界、凭证解析注入约定、审计 action 分类）；新增 ADR-15~19；2.1 表数 21→22（noise_bands）。联动：接口文档 v1.5（§9 端点契约分表与错误码表、§12 执行器协议/DecisionCtx/规则 0、DDL 增 noise_bands 表与 noise_calibration 批次用途）。v2.0 — 二次交叉审查修复：尾注上游版本勘误（v0.9→v0.16）；3.1.2/4.2"FR2.3 闭环"引用更正为"需求 §2.3 RSI 闭环"；ADR-5 缓存键哈希剥离 ssh_access（站点覆盖不失效缓存）；新增 ADR-14（read-only 双层执行机制）；2.1 元数据库表数勘误（21 张）；2.2 冻结 hook 路径修正（旧 answers 路径→冻结后 evalsets/** 整目录）；2.3 报告文件名与 2.5.C 对齐（sft-<exp_id>.md）；3.1.1 run_case→run_task；3.2.2 Claude Code skills 挂载路径修正；3.3 冒烟验证 P0 任务来源明确；3.4.3 配置键 ensp-pro（与 env.yaml 枚举同名）；3.6 判定组件参数 case→task + SafetyScanner 权限来源（batches.permission）；3.10.1 路由 15→17 组（增 labs/iterations）；1.2 optimizer 需求列勘误（I-8→I-6）；1.3 PG 升级时点明确；S6 阶段注记、S10/§7 用例范围与计数更新（51 条）；§9 追踪矩阵同步；附 B 路径勘误（suts/ipops-agent/）。v1.9 — 系统性交叉审查修复（五文档联动）：2.5 修正 node_id 残留引用（→carrier 主机键）、3.4.2 故障时机对齐 prepare、6.3 凭证双形式与 FR1.5 统一、3.10 小节重编号（3.10.3→3.10.2）、3.3 补 Instrumentor 门面、矩阵/user-guide 同步。v1.8 — **评估集三件套重构**（环境/任务分离，需求 v0.14）：evalsets 布局改为 env.yaml + tasks.jsonl + configs/（2.2/2.5）；任务以设备名引用；SSH 接入集中于 env.ssh_access 并支持站点覆盖；**执行侧环境一次构建 + 任务间快照恢复**（3.1.1/4.1 时序）；ADR-5 缓存键改双哈希；3.4.3 模板改数据集级；附 A 示例重写；勘误：附 B 与 Hypothesis 字段名 case→task 对齐。v1.7 — 测试章节拆分。v1.6 — 元数据库 DDL 迁至接口文档。v1.5 — **文档拆分**：① 第 5 章 5.1/5.2（平台配置与 OptimizationProfile）拆分至《配置设计文档》（RSI-PG-DES-002）；② 数据契约（原 2.4）与各子系统接口签名/REST 路由（原 3.1/3.2/3.4–3.10）集中至《接口定义文档》（RSI-PG-DES-003），本文档相应位置改为引用；日志规范重编号为 5.2。v1.4 — 取消全局 nodes 注册表（模块自管资源）+ 第 5 章按模块分组。v1.3 — 设备 CLI 库定为 netmiko；4.2 重写为自演进闭环。v1.2 — 命名规范、轨迹完整记录、版本对比、日志规范、交付物。v1.1 — 部署架构调整。v1.0 — 初稿。
+> 变更：v2.20 — **沙箱连通性模型重构（ADR-25 预建模式，用户澄清 2026-11-09）**：勘误——eNSP Pro/PNETLab 平台本身不可 SSH（原"host SSH + pg-enspctl host-agent"方案废除，ADR-6 模板策略同步废止）；① 配置 sandbox.backends.* 改 {kind,url,verify_tls,api,subnets}（平台=URL 探活监控，TTL 缓存）；② 设备 SSH 凭证=env.yaml ssh_access（同 IP 不同端口复用，设备 IP 可与平台 IP 不同分别定义——ADR-24 设备级映射的直接落地）；③ 拓扑生命周期=预建（build=平台在线校验+端点透传，snapshot/restore=no-op，reset 经设备 SSH；Web API 编排留 P1/S11）；④ 设备在线=SSH 可达（ready=端口可达轮询，健康=登录探测 display clock）；新增 PrebuiltBackend/platform_probe（1.4 目录树、3.4.3/3.4.4 重写）；HealthMonitor 增 platform:<key> checker；调度器过滤不可用后端。联动：配置 v1.6、DD-04 v1.2、需求 v0.27。v2.19 — 第四轮审计文档-代码对齐（2026-11-09）：ADR-5 补约束注记（D-6）——P0 直传 config 目录场景缓存命中仅比对版本标识字符串，版本导出目录一经用于评测不可原地变更（GitStore 导出路径含版本号时天然满足）；实现层同步加固（内容哈希校验）。v2.18 — **远端 Docker 主机支持（R1-R6，用户决策）**：SUT Agent 容器支持运行在远端 Linux 服务器（SSH 隧道 Docker）——①HostPool SSH 真实化（`docker.DockerClient(base_url="ssh://user@host")` 实例缓存+保活）；②InstanceScheduler（最少活跃实例+`max_instances_per_host` 上限）；③跨主机 NetPolicy（每 host 独立 Docker daemon/网络命名空间，按 (host, network) 跟踪）；④HostService 跨主机生命周期（create/start/stop/destroy 路由到正确 host 的 DockerClient）；⑤配置 `carrier.hosts` 多主机完整示例+每主机实例上限；⑥多主机并行管理（本地 Windows Docker Desktop + 多台远端 Linux 同时运行）。联动：DD-05 v1.2、配置 v1.5。v2.17 — **全外部依赖状态可视（H1-H8，用户决策）**：HealthMonitor 后台任务（30s 轮询）监控 8 类外部依赖——Docker 守护进程（各主机）、仿真沙箱（lab 设备 SSH TCP 探测，任一可达=在线）、SUT 实例（Docker 容器实时状态）、LLM Provider（API 可达+延迟+错误率）、Git 裸仓（可访问+磁盘）、数据库（连接+磁盘）、Trace Collector（进程+队列深度）、Config API/NMS（HTTP HEAD）。`GET /system/dependencies` 统一返回全部依赖状态；SSE system.alert 推送状态变更（up↔down）；labs 表增 online/devices_online 列；WEB 依赖状态面板（dashboard 页+全局 header 徽章）。联动：需求 v0.28（FR10.9 增外部依赖状态）、接口 v2.7（DDL+§9.19 扩展）、DD-12 v1.2/13 v1.1/14 v1.2。v2.16 — **WEB 缺口修正（G1-G5，用户清单）**：①ProfileForm 权重编辑器（方向 Switch+权重 Slider+实时公式预览）；②安全边界只读页（/settings SecurityTab——白名单 8 项+冻结域+ADR 依据，只读不可修改，数据源 GET /system/freeze 扩展）；③评测集导入 UI（Upload.Dragger 拖拽 .zip→解析预览→确认入库）；④**SUT 镜像接入方案**（P0=本地镜像 docker load+WEB 填 image_ref+"验证镜像"按钮检查规范；P1=私有 registry 对接）；⑤DD-14 v1.1 更新。联动：需求 v0.27（FR1.1 镜像接入注记+FR10.1 增安全边界页）、DD-13（GET /system/freeze 扩展+POST /suts/{id}/verify-image）。v2.15 — **归因增加历史输入（P0，用户决策）**：AttributionAnalyzer 输入增加 `opt_history`（该 SUT 近期实验摘要：轮次/提案类型/决策/失败模式/原因）——归因时标注"此失败簇已尝试 X 未果，建议换方向"，Top-N 排序排除已证明无效方向、优先有效方向；联动 3.7.2/接口 §12/DD-11。v2.14 — **多实例并行修正（P1–P5）**：① 配置合并 `batch_concurrency`+`max_parallel_labs`→`max_parallel_batches`（同 lab 内固定串行，并行=跨批次）；② SQLite 启用 **WAL+busy_timeout**（2.1/DD-01）；③ **同一 SUT 同时只允许一个活跃迭代**（API 409+引擎检查）；④ LLM 全局并发信号量 `llm.max_concurrent_calls`（防 rate limit）+ ⑤ BudgetController **全局预算**（跨批次聚合，超限全局 STOP）。v2.13 — **P0 多实例并行（ADR-24，用户决策）**：多沙箱实例模型（各 VM/服务器独立网络名字空间，适配层按（网络名,设备名）→唯一 (IP+端口) 映射寻址）；端点解析三级（适配器映射权威→env.ssh_access 基准→站点覆盖）；backends 多实例键 `<type>-<n>` P0 即用；SshPool 会话键改 (ip,port)；3.1.1 任务级 Semaphore + 批次级多 RUNNING 并发；LabScheduler（P0 指定/最少活跃实例选择）。联动：需求 v0.26、接口 v2.5（labs.device_endpoints_json 语义）、配置 v1.4（batch_concurrency=2/max_parallel_labs/多实例键）、测试 v2.3（新增 IN-022，59→60 条）、DD-04 v1.1。v2.12 — **二轮交叉审查修复**：①冒烟任务来源对齐 FR3.7 P0（3.3 Verifier 与配置注记改"P0 绑定冒烟集，未含时降级首个任务"）；②3.4.2 历史注记改写（去 TU-019 引用）；③3.10.2 目录树补 labs/ 页；④§9 矩阵 FR4 行补 TU-035；§7 用例数 58→59。联动：需求 v0.25（可复现性双口径/风险表/三级验证/§8 范围）、接口 v2.4（DDL iterations 前移消除前向外键、budget_used.wall_time_s、Verdict.efficiency.estimated）、配置 v1.3（冒烟任务注记）、测试 v2.2（EE-003/SIM-003 双口径改写、TU-032 增稳定性、新增 TU-035）。v2.11 — **平台 API 与 WEB 全量补齐（A–N，用户主导清单+全面扫描）**：日常全部操作经 WEB/API 完成——Router 17→19 组（+instances/audit-logs）；**平台参数管理**（settings 动态项热更/静态项只读）；**SUT 配置树文件 CRUD**（P0 人工模式核心入口，commit 走 TargetRegistry 校验）；**人工门四端点**（confirm-direction/hypothesis/review/decision，P1 模式闭环 API 化）；迭代 :resume/DELETE（软删）/budget_used；labs 管理操作（建/销毁/重置/快照/只读 exec）；instances 运行实例管理；traces :query/:stats（P1）；SFT 报告查看；噪声带状态；STOP 熔断恢复；冻结校验状态；平台日志检索（NFR5）；审计查询（NFR1④）；健康检查组件级增强；evalsets site_overrides 与冻结版本列表；3.10.3 页面表同步（+labs 页、人工门工作台、文件编辑器、参数/日志/审计标签）。联动：需求 v0.24（FR10.1/10.2/10.5 细化+新增 FR10.9）、接口 v2.3（§9 重构 19 组+hypotheses.iteration_id）、测试 v2.1（TU-034/IN-020/IN-021，55→58 条）。v2.10 — **归因输入契约补全（用户决策）：SUT 配置原文进入归因与 A/B 分类**——AttributionAnalyzer 输入增加 sut_config（ConfigSnapshot，按 run 的 config_version 经 GitStore.export 导出；token 控制：轨迹定现象后仅取 suspected_elements 相关文件原文）；归因对照原文区分"指引已有未执行（执行缺陷）vs 指引缺失（提示词/知识缺失，优化方向明确）"；**A/B 标注必须附原文证据引用**（文件+位置——FR6.9"已提供仍出错"的唯一可判定依据）；HypothesisGenerator stage2 输入"内容摘要"升级为"相关要素**原文**"；P0 人工门 WEB 表单内嵌原文编辑视图。联动：需求 v0.23（FR6.2/6.9）、接口 v2.2（§12 签名与 AttributionReport 结构）、测试 v2.0（新增 TU-033，54→55 条）。v2.9 — **判定模型重构（ADR-23，用户决策）：LLM 为主判决层，P0 直接实现**——root_cause 语义比对（期望=自然语言根因描述，不再要求关键词集）、诊断路径质量、checklist/risk 语义命中、结论-过程一致性全部由 LLMJudge 判定并提前至 P0（pairwise 仍 P1）；**保留两个确定性组件**（final_state 终态断言=设备客观状态锚点、SafetyScanner=安全红线规则冻结；缺试计分保留）；NFR2② 修订（语义维度 LLM 为主+客观维度脚本，护栏=温度 0/冻结/噪声带吸收判决方差）；FR7.1 职责缩减（终态断言+缺试）；3.6 重排、附 A root_cause 改自然语言期望+可选 match_hints。联动：需求 v0.22、接口 v2.1（ExpectedAnswer.root_cause 契约）、测试 v1.9（TU-010/026 改写、IN-018 提前 P0、新增 TU-032，53→54 条）。v2.8 — **删除故障编译层（ADR-20 收尾，用户决策）**：FaultSpec→CLI 编译层（faults/registry）移除——评估集本为厂商绑定（configs 即厂商 CLI、站点覆盖不改设备类型）、任务由网络专家直接编写 exec_cli（与断言/配置修改对称且所见即所执行）；常用故障改为**手册级命令模板**（3.4.2，docs/manual/user-guide）；I-3 注入故障/清除故障独立操作移除（prepare/restore_task 已覆盖任务前后，during_task P1 再定义）；DDL 删 fault_injections 表（23→22 张）；TU-019 删除（54→53 条）；**v2.8 内追加：token 用量维度注记（3.5）**——OpenCode prompt-logger 仅请求侧无响应 token，来源 PoC（附 C.5⑥：run 末帧 usage/telemetry 插件/session API），不可用则 P0 字符估算降级（usage.estimated=true + 覆盖报告标注）。联动：需求 v0.21（FR4.5 重写/I-3 表/§8 范围）、接口 v2.0、测试 v1.8。v2.7 — **载体轨迹通道调研核实（网络调研，全事实落附 C）+ 载体分期调整（ADR-22：OpenCode 优先 P0 单载体，Claude Code P2）**：勘误——Claude Code OTel 实为 metrics+logs（**无 span、无消息正文**，#42281），原"span claude_code.llm_request"表述废除；Claude Code 通道改三通道组合（stream-json 全流 wiretap 主通道 + OTel events 补充 + --debug-file 兜底），wire 级=配置版本(system+tools)+wiretap(messages) 重建；OpenCode 通道核实成立并细化（opencode-prompt-logger 已核实，`@opencode/plugin` V2，`file` 选项 per-run 归属）；3.2.2/3.5 重写，附 C 新增（两载体事实矩阵/OTel 环境变量与事件表/prompt-logger NDJSON 帧格式/已知问题/PoC 项/来源）；§8 切片 S4/S10 载体调整。联动：需求 v0.20、接口 v1.9、测试 v1.7（TU-031 新增，53→54 条）。v2.6 — **交付分期重构（ADR-21）：自优化模式三级选择，P0 即交付 P0 人工模式 + P1 半自动模式**——IterationEngine 状态机、人工门（Webform/ManualReviewGate）、VERIFYING 三级编排、Selector 辅助人工裁决、冒烟集（FR3.7）、iterations API 均提前至 P0；归因 P0 用规则层（LLM 精分类/起草为 P1 增强）；P2 模式 P2 阶段开放（此前 409）；WEB 优化页模式选择与人工门工作流（3.1.2/3.7/3.10.3）；§8 切片增 S6b；DDL 增 iterations 表 + batches.iteration_id（22→23 张）。联动：需求 v0.19（FR3.7/6.2/6.3/6.4/6.10/9.1/9.3 优先级迁移 + §8 分期与验收重写）、接口 v1.8（iterations 表、§9 iterations/promote 契约）、测试 v1.6（新增 IN-019，52→53 条）。v2.5 — 表述消歧：3.1.1 明确"**恢复 ≠ 重建**"——环境（lab：拓扑与设备实例）数据集级仅构建一次、任务间持续存活；restore_task 仅恢复**被改设备的配置状态**（轻量），重建（推倒 lab 重搭）仅 L2 兜底 degraded 路径触发；3.4.1 L2 行与不变量表述同步（"环境回干净态"→"涉及设备配置状态回干净基线"）。v2.4 — **命名规范修订（2.5）**：① 2.5.B task_id"类别"澄清——类别=任务类型（FR3.2 三类任务），非评测准备动作（ADR-20），保留不变；② **运行态对象 ID 统一增加 14 位时间戳段**：`<前缀>-<YYYYMMDDHHmmss>-<8位随机>`（UTC，字符串序即时间序，文件名/日志/表主键可按时间前缀筛选），取代原纯 ULID 方案；覆盖 batch/run/lab/snapshot/iteration/judgment/hypothesis/experiment/instance 全部运行态 ID；生成器 core/naming.py（TU-022 校验扩展）。联动：需求 v0.18（3.5/3.6 示例值同步）、测试 v1.5（TU-022 描述扩展）。v2.3 — **评测准备模型重构（ADR-20）**：目的（故障注入/配置修改等语义）与手段（exec_cli 直接命令行 / call_api 脚本调用外部 API）两维分离；两种手段均支持多设备多命令；env.yaml 新增 config_apis 段（外部配置 API 端点声明）；任务后恢复按手段匹配（exec_cli=任务前备份+判决后 CLI 配置恢复；call_api=API 撤销标记重调），恢复分层 L1 任务级/L2 环境级快照兜底；故障类型库降为编写便利层（编译为 exec_cli 命令序列）；run_task 步骤增至 9 步。联动：需求 v0.17、接口 v1.7（TaskRecord/EnvSpec/prepare/restore_task/§11）、测试 v1.4（TU-023 改写、新增 TU-030、51→52 条）。v2.2 — **其余七模块组件交互级细化**（与 v2.1 同参数）：3.1 编排（EventBus 有界队列丢旧保新、预算双机制、Checkpoint 格式与 lab 复用恢复、P0 人工逐批驱动/P1 IterationEngine 分界、VERIFYING 三级短路）；3.2 承载（P0 每 run 一实例、网络成员资格隔离 P0/iptables P1、TaskResult 双载体提取规则、网络与主机池 3.2.4）；3.3 插桩（注入方式载体差异与 P0 分界、覆盖报告 Schema 固定、冒烟两跑比较）；3.4 仿真（SSH 双池串行会话、degraded 快照 ops.jsonl 重放、exec_readonly 前缀白名单）；3.5 轨迹（多源 run 归属 OTEL_RESOURCE_ATTRIBUTES 注入、collector 唯一 seq 权威、finalize EOF+宽限语义）；3.6 裁判（判定 DSL 求值语义表、缺试/一票否决聚合规则表、裁判摘要预算与 FR2.6 域界）；新增 3.12 llm 模块（统一客户端契约、cassette 键与种子派生、judge 冻结联动）。联动：接口文档 v1.6（§5 增 TraceCollector 契约、新增 §13 llm 契约、§9 iterations 标注 P1）。v2.1 — **子系统详细设计扩充（五模块，组件交互级，P0+P1 详细/P2 接口预留）**：3.7 优化引擎（单管线+执行器协议 ADR-16、归因三层流水线、Critic 双层、applier 汇合点、hypotheses 状态机）；3.8 版本管理（裸仓+临时 worktree+常驻 staging ADR-15、单写者锁、snapshot/promote/rollback 流程、freeze 双保险）；3.9 迭代决策（显式标定批次 ADR-17、StatsAggregator、配对检验、DecisionCtx、规则 0、stale 决策标记）；3.10 API 与前端（契约源=后端代码 ADR-18、错误码表、SSE 事件信封、页面/组件数据契约）；3.11 安全（无状态 JWT+disabled 校验 ADR-19、网络隔离信任边界、凭证解析注入约定、审计 action 分类）；新增 ADR-15~19；2.1 表数 21→22（noise_bands）。联动：接口文档 v1.5（§9 端点契约分表与错误码表、§12 执行器协议/DecisionCtx/规则 0、DDL 增 noise_bands 表与 noise_calibration 批次用途）。v2.0 — 二次交叉审查修复：尾注上游版本勘误（v0.9→v0.16）；3.1.2/4.2"FR2.3 闭环"引用更正为"需求 §2.3 RSI 闭环"；ADR-5 缓存键哈希剥离 ssh_access（站点覆盖不失效缓存）；新增 ADR-14（read-only 双层执行机制）；2.1 元数据库表数勘误（21 张）；2.2 冻结 hook 路径修正（旧 answers 路径→冻结后 evalsets/** 整目录）；2.3 报告文件名与 2.5.C 对齐（sft-<exp_id>.md）；3.1.1 run_case→run_task；3.2.2 Claude Code skills 挂载路径修正；3.3 冒烟验证 P0 任务来源明确；3.4.3 配置键 ensp-pro（与 env.yaml 枚举同名）；3.6 判定组件参数 case→task + SafetyScanner 权限来源（batches.permission）；3.10.1 路由 15→17 组（增 labs/iterations）；1.2 optimizer 需求列勘误（I-8→I-6）；1.3 PG 升级时点明确；S6 阶段注记、S10/§7 用例范围与计数更新（51 条）；§9 追踪矩阵同步；附 B 路径勘误（suts/ipops-agent/）。v1.9 — 系统性交叉审查修复（五文档联动）：2.5 修正 node_id 残留引用（→carrier 主机键）、3.4.2 故障时机对齐 prepare、6.3 凭证双形式与 FR1.5 统一、3.10 小节重编号（3.10.3→3.10.2）、3.3 补 Instrumentor 门面、矩阵/user-guide 同步。v1.8 — **评估集三件套重构**（环境/任务分离，需求 v0.14）：evalsets 布局改为 env.yaml + tasks.jsonl + configs/（2.2/2.5）；任务以设备名引用；SSH 接入集中于 env.ssh_access 并支持站点覆盖；**执行侧环境一次构建 + 任务间快照恢复**（3.1.1/4.1 时序）；ADR-5 缓存键改双哈希；3.4.3 模板改数据集级；附 A 示例重写；勘误：附 B 与 Hypothesis 字段名 case→task 对齐。v1.7 — 测试章节拆分。v1.6 — 元数据库 DDL 迁至接口文档。v1.5 — **文档拆分**：① 第 5 章 5.1/5.2（平台配置与 OptimizationProfile）拆分至《配置设计文档》（RSI-PG-DES-002）；② 数据契约（原 2.4）与各子系统接口签名/REST 路由（原 3.1/3.2/3.4–3.10）集中至《接口定义文档》（RSI-PG-DES-003），本文档相应位置改为引用；日志规范重编号为 5.2。v1.4 — 取消全局 nodes 注册表（模块自管资源）+ 第 5 章按模块分组。v1.3 — 设备 CLI 库定为 netmiko；4.2 重写为自演进闭环。v1.2 — 命名规范、轨迹完整记录、版本对比、日志规范、交付物。v1.1 — 部署架构调整。v1.0 — 初稿。
 
 > 追溯约定：每个设计单元标注对应需求编号（FRx.y / NFRx / I-x / Q-x）。第 9 章给出完整追踪矩阵。
 
@@ -61,7 +61,7 @@ flowchart LR
     end
 
     subgraph nodes[外部节点]
-        ENSPN[Windows 节点<br/>ENSP Pro + host-agent]
+        ENSPN[Windows 节点<br/>ENSP Pro 网页平台（URL 探活，不可 SSH）]
         PNETN[Linux 节点<br/>PNETLab]
         NMS[网管系统 P2]
     end
@@ -87,7 +87,7 @@ flowchart LR
 | orchestrator | 评测批次状态机、优化迭代状态机、预算控制、断点续跑 | FR5 全部 |
 | carrier | SUT 实例生命周期、载体适配器、插桩副本（overlay）生成、网络隔离 | FR1、I-1、I-10 |
 | instrumentor | 五阶段插桩流水线、pg-mcp-proxy、pg_trace SDK、覆盖报告 | FR2.3、FR5.3、I-8 |
-| sandbox | 后端适配器、lab 构建编排、评测准备/任务后恢复、就绪探测、快照/降级 | FR4、I-3 |
+| sandbox | 后端适配器（预建模式 ADR-25：平台 URL 探活 + 设备级 SSH 会话池）、lab 生命周期编排、评测准备/任务后恢复、就绪探测、快照/降级 | FR4、I-3 |
 | tracing | 轨迹采集（sidecar 采集器）、入库、脱敏、查询/聚类、时钟对齐 | FR2、I-4 |
 | judge | 确定性判定、安全扫描、裁判 LLM、pairwise、Verdict 聚合 | FR7、I-5 |
 | optimizer | 归因分析、假设生成、Critic 预审、修改实施（白名单校验）、SFT 评估 | FR6、I-6 |
@@ -163,12 +163,12 @@ rsi_playground/
 │   │   │   └── sdk/                 # pg_trace SDK（SUT 内使用）
 │   │   ├── sandbox/
 │   │   │   ├── service.py           # SandboxService（I-3 实现）
-│   │   │   ├── sshpool.py           # SSH 会话池（宿主+设备）
+│   │   │   ├── sshpool.py           # SSH 会话池（设备级 netmiko，键=(ip,port)）
 │   │   │   ├── readiness.py         # ready_checks 解释器
+│   │   │   ├── platform_probe.py    # 平台 URL 探活（TTL 缓存，ADR-25）
 │   │   │   └── backends/
 │   │   │       ├── base.py          # SandboxBackend 抽象
-│   │   │       ├── ensp_pro.py      # 经 Windows host-agent SSH
-│   │   │       ├── pnetlab.py       # 宿主 SSH / API
+│   │   │       ├── prebuilt.py      # PrebuiltBackend（ensp-pro/pnetlab 共用，ADR-25）
 │   │   │       └── fake.py          # 测试用（内存虚拟设备）
 │   │   ├── tracing/
 │   │   │   ├── collector.py         # sidecar 采集器（NDJSON tail + OTel receiver）
@@ -223,7 +223,7 @@ rsi_playground/
 │   ├── windows/install-main.ps1     # 主节点安装脚本（Python/uv/依赖锁定/服务注册/初始化，10.1）
 │   ├── join-node.ps1|.sh            # 执行节点接入脚本（Windows/Linux 双版本）
 │   ├── check-subnets.ps1            # 部署时网段冲突校验（读各模块配置段，Q10/FR5.8）
-│   └── host-agent-windows/          # Windows 执行节点代理（ENSP Pro 编排，见 3.4.3）
+│   └── ensp-pro-node/              # Windows 执行节点（ENSP Pro 网页平台；原 host-agent 方案随 ADR-25 废除）
 ├── docs/
 │   ├── _rsi_playground_requirements.md
 │   ├── _rsi_playground_design.md    # 主设计文档（本文档）
@@ -246,15 +246,17 @@ flowchart TB
     end
 
     subgraph WN["Windows 执行节点"]
-        ENSP[ENSP Pro + host-agent（pg-enspctl）]
+        ENSP[ENSP Pro 网页平台（预建拓扑）<br/>+ 仿真网络设备]
     end
 
     subgraph LN["Linux 执行节点"]
-        PNET[PNETLab（宿主 SSH 编排）]
+        PNET[PNETLab 网页平台（预建拓扑）<br/>+ 仿真网络设备]
     end
 
-    API -- "SSH 编排（I-3 适配器通道）" --> ENSP
-    API -- "SSH 编排（I-3 适配器通道）" --> PNET
+    API -- "平台 URL 探活（I-3，ADR-25——平台不可 SSH）" --> ENSP
+    API -- "平台 URL 探活（I-3，ADR-25）" --> PNET
+    API -- "设备级 SSH（netmiko，(ip,port) 键）" --> ENSP
+    API -- "设备级 SSH（netmiko）" --> PNET
     SUTM -- "SSH/NETCONF（I-2，跨节点可路由）" --> ENSP
     SUTM -- "SSH/NETCONF（I-2，跨节点可路由）" --> PNET
     SUTM -- "OTel/NDJSON" --> TC
@@ -262,8 +264,8 @@ flowchart TB
 ```
 
 要点：
-- **主节点（Windows，优先形态，ADR-11）**：平台服务原生 Python 运行（服务化：NSSM 或任务计划程序）；SUT 容器经 Docker Desktop（WSL2 后端）运行；Git 版本库/存储/数据库在本机。主节点可兼作执行节点（本地部署 ENSP Pro + host-agent，SUT 与设备同节点，网络最简）。
-- **执行节点（异构、可多台，FR5.8 模块自管）**：Windows 节点（ENSP Pro + host-agent——OpenSSH Server + `pg-enspctl` 单文件 CLI，含 Q1 探针命令）、Linux 节点（PNETLab；P1 可加 containerlab）。执行节点亦可承载 SUT 容器（远端 Docker：SSH 隧道 DOCKER_HOST，P1 能力）。各节点资源由使用它的模块在自身配置段定义（ADR-12）。
+- **主节点（Windows，优先形态，ADR-11）**：平台服务原生 Python 运行（服务化：NSSM 或任务计划程序）；SUT 容器经 Docker Desktop（WSL2 后端）运行；Git 版本库/存储/数据库在本机。主节点可兼作执行节点（本地部署 ENSP Pro 平台，SUT 与设备同节点，网络最简）。
+- **执行节点（异构、可多台，FR5.8 模块自管）**：Windows 节点（ENSP Pro 网页平台——预建模式 ADR-25，拓扑人工在网页预建，平台经 URL 探活监控、设备经设备级 SSH 会话池（netmiko）访问）、Linux 节点（PNETLab，同预建模式；P1 可加 containerlab）。执行节点亦可承载 SUT 容器（远端 Docker：SSH 隧道 DOCKER_HOST，P1 能力）。各节点资源由使用它的模块在自身配置段定义（ADR-12）。
 - **网络平面（跨节点可路由，ADR-13）**：① 管理网——节点间 SSH 编排互通；② 设备管理网段——各节点 lab 设备网段统一规划、全网不重叠，节点间路由互通（静态路由/叠加网/同二层 VLAN，Q10 选型），保证任意节点上的 SUT 容器可 SSH 直达设备管理 IP；③ 本机平面——`docker network` 三类（`mgmt` 平台组件 / `lab-<id>` 每实验独立 / `trace`），SUT 容器接入 `lab-<id>`+`trace` 不接 `mgmt`（FR1.6）。
 - **模块自管资源与部署校验（FR5.8，ADR-12）**：无全局节点注册表——sandbox 各后端与 carrier 各主机在自身配置段自包含定义（见配置文档 §2）；网段全局唯一性由部署时 `deploy/check-subnets.ps1` 校验（读各模块配置段查冲突），随部署手册规范（Q10）。
 - **P2 增量**：各模块内自动资源选择（多后端实例/多主机）；NMS 端点加入 SUT 网络白名单（I-11）；Redis/RQ 替换 APScheduler。
@@ -277,7 +279,7 @@ flowchart TB
 | ADR-3 | 轨迹存储=NDJSON 明文文件（按 run 分目录）+ SQLite 索引 | 备选：直接全部入库/对象存储。理由：wire 级事件大（单 run 数 MB），文件天然适配追加写与归档；索引表只存过滤维度（需求 FR2.4） |
 | ADR-4 | 插桩在 overlay 副本实施，绝不触碰原始配置版本 | 需求 v0.7 引入；保证 FR8 版本谱系干净、插桩可随 run 销毁 |
 | ADR-5 | 评测缓存键 = (sut_config_git_sha, task_content_hash, env_content_hash, model_config_hash, backend) | 依赖 NFR2 可复现性：键相同则结果确定性相同；任务/环境分离后双哈希；**env_content_hash 计算 env.yaml 时剥离 ssh_access 段**——站点覆盖（换接入信息）不使缓存失效，backend 保留在键中（仿真语义差异）；环境按数据集一次构建、任务间快照恢复（4.1）；"重判/重测"分离在此基础上实现（FR9.1）。**约束注记（审计 D-6）**：P0 直传 config 目录场景下缓存命中仅比对版本标识字符串（path-as-id），不做内容校验——**版本导出目录一经用于评测不可原地变更**（GitStore 导出路径含版本号时天然满足）；实现层同步加固（缓存键/校验补 config 内容哈希，防目录原地变更不失效） |
-| ADR-6 | ENSP Pro 拓扑构建 P0 采用"预置模板 lab + SSH 参数化"策略 | Q1 未证实 API 前，每个评估集场景在 Windows 节点预置 .topo 模板，host-agent 负责"复制模板→启动→SSH 加载配置→故障注入"；Q1 PoC 通过后再升级为程序化建拓扑 |
+| ADR-6 | ENSP Pro 拓扑构建 P0 采用"预置模板 lab + SSH 参数化"策略（**已被 ADR-25 预建模式取代**） | 原设想经 host-agent 复制 .topo 模板编排；用户澄清（2026-11-09）eNSP Pro 官方不开放 SSH/编排 API——P0 拓扑人工在平台网页预建（ADR-25），Web API 编排留 P1/S11 |
 | ADR-7 | LLM 智能点输出强制 JSON Schema 校验 + cassette 录制回放 | 可测试性核心手段：单测/CI 不调真实 LLM；提示词模板带版本号，变更即新版本（FR5.7） |
 | ADR-8 | P0 单进程 asyncio；队列化推迟到 P2 | NFR4 一期 1 并发环境；状态机代码不感知调度器，P2 换 RQ worker 只改驱动入口 |
 | ADR-9 | 前端 P0 即用 React 主栈 | 2026-11 选型会结论（需求 v0.9）：四个定制视图（G6 拓扑/lineage、Monaco diff/轨迹）无低代码替代路径 |
@@ -295,7 +297,8 @@ flowchart TB
 | ADR-21 | 交付分期按**自优化模式**切分（WEB 优化页三级选择）：P0 即交付 **P0 人工模式**（WEB 向导逐批驱动，人工晋升自动登记实验）+ **P1 半自动模式**（IterationEngine+人工门+三级验证）；LLM 增强（归因精分类/假设起草）归 P1、全自动（mode=p2）归 P2 | 备选：维持 P0 仅人工逐批（仅人工模式价值有限，用户否决）；P0 直达全自动（引入 LLM 智能点依赖与无人值守风险，不可控）。半自动闭环的人工门由 WEB 表单承载、不依赖 LLM——P0 范围扩容可控；iterations 状态与批次归属落库（iterations 表 + batches.iteration_id，接口文档 §2.2） |
 | ADR-22 | **载体接入分期：OpenCode 优先（P0 单载体），Claude Code P2** | 依据附 C 调研：OpenCode wire 级通道完备（prompt-logger 直接输出 assembled system+messages+tools 全文与原始 HTTP body）；Claude Code 需三通道组合重建（OTel 无消息正文，#42281）。P0 聚焦单载体降低并行风险；I-10 适配器插件接口保证 Claude Code 后续接入成本不变（全部实施事实预置于附 C） |
 | ADR-23 | **判定模型：LLM 为主判决层（P0 直接实现，用户决策）**——root_cause 语义比对（期望为自然语言根因描述）、诊断路径质量、checklist/risk 语义命中、结论-过程一致性全部 LLMJudge（P0；pairwise P1）；**保留两个确定性组件**：final_state 终态断言（判设备客观状态，非自然语言——LLM 判客观状态反引入不确定性，且为可复现性 NFR2 锚点）与 SafetyScanner 规则引擎（NFR1 安全红线依赖规则冻结与可审计性） | 备选：关键词/regex 实体匹配判语义（应用受限——同义表述漏判，用户判定无价值，否决）；全 LLM 判定含终态与安全（客观状态与安全规则用 LLM 反而不可靠/不可审计，否决）。可复现性护栏：裁判温度 0（ADR-10）+ 提示词哈希冻结（FR7.6）+ cassette 回归（ADR-7）+ **判决方差由噪声带吸收**（ADR-17 的 δ 实测方差天然包含 LLM 判决抖动）；修正 ADR-21"P0 闭环不依赖 LLM"表述——现仅指优化引擎执行器人工门，判决层 LLM 由本 ADR 提前 |
-| ADR-24 | **P0 多实例并行（用户决策）**：多沙箱实例部署于不同 VM/服务器，网络名字空间独立——适配层按 **(网络名, 设备名) → 唯一 (IP+端口)** 映射 SSH 寻址（同名设备跨沙箱端点不同，天然隔离）；端点解析三级：适配器映射（权威，落 labs.device_endpoints_json）→ env.ssh_access（基准校验+凭证）→ 站点覆盖；SshPool 会话键=(ip,port)；backends 多实例键 `<type>-<n>` P0 即用；并发度可配（默认 2）；LabScheduler 选实例（P0 指定/最少活跃，P2 自动） | 备选：同 (evalset,backend) 互斥排队（牺牲并行且与多沙箱部署模型不符，否决）；单沙箱实例内多 lab 并行（依赖后端网络隔离能力，ENSP 模板 IP 固定会冲突——并行一律跨实例，实例内串行）。P0 上限由部署校验（check-subnets 扩展校验各实例端口映射唯一性）与后端容量决定 |
+| ADR-24 | **P0 多实例并行（用户决策）**：多沙箱实例部署于不同 VM/服务器，网络名字空间独立——适配层按 **(网络名, 设备名) → 唯一 (IP+端口)** 映射 SSH 寻址（同名设备跨沙箱端点不同，天然隔离）；端点解析三级：适配器映射（权威，落 labs.device_endpoints_json）→ env.ssh_access（基准校验+凭证）→ 站点覆盖；SshPool 会话键=(ip,port)；backends 多实例键 `<type>-<n>` P0 即用；并发度可配（默认 2）；LabScheduler 选实例（P0 指定/最少活跃，P2 自动）。**注记（ADR-25）**：预建模式即本 ADR 设备级映射的直接落地形态——env.yaml ssh_access 即设备级 (ip,port) 映射的权威载体 | 备选：同 (evalset,backend) 互斥排队（牺牲并行且与多沙箱部署模型不符，否决）；单沙箱实例内多 lab 并行（依赖后端网络隔离能力，ENSP 模板 IP 固定会冲突——并行一律跨实例，实例内串行）。P0 上限由部署校验（check-subnets 扩展校验各实例端口映射唯一性）与后端容量决定 |
+| ADR-25 | **沙箱预建模式与平台/设备双层寻址（用户澄清 2026-11-09）**：① **平台控制面=URL**——eNSP Pro（8443 网页）/PNETLab（Web）是网页平台，官方不开放 SSH，平台监控走 URL 探活（任何 HTTP 响应=在线）；② **设备数据面=env.yaml ssh_access**——每设备独立 (ip,port,username,password)，同一沙箱多设备常复用同一 IP、以不同端口区分；设备登录 IP 可与平台 URL IP 不同，分别定义（ADR-24 设备级映射的直接落地）；③ **P0 拓扑生命周期=预建**——拓扑人工在平台网页预建；build=平台在线校验（URL 探活）+设备端点透传（LabHandle.endpoints=ssh_access），snapshot/restore=no-op（L1 配置备份恢复已覆盖任务恢复，L2 退化由 reset 承担），reset 经设备 SSH 执行厂商命令；平台 Web API 编排留 P1/S11；④ **设备在线判定=SSH 可达**——ready=SSH 端口可达轮询（ReadinessChecker.ssh_reachable），健康=SSH 登录探测（display clock） | 备选：host-agent（pg-enspctl）宿主 SSH 编排（模型性错误——平台不可 SSH，用户澄清后否决）；后端原生 REST API 编排（eNSP Pro 无公开编排 API，PNETLab EVE-NG 兼容 API 实测不稳，P1 再评估）。错误语义两层：平台离线→build 立即 EnvError/调度跳过（已建 lab 不受影响——设备 SSH 与平台 Web 无关）；设备不可达→wait_ready 超时→env_failed，错误定位到设备 (ip,port) |
 
 ---
 
@@ -641,18 +644,17 @@ CoverageReport = {
 
 **P1 during_task 任务中动态执行**：经 SandboxControl 直接接受 exec_cli 动作（契约 P1 定义）；**P0 交付内容 = 手册模板文档**（原故障编译测试用例已随编译层删除）。
 
-#### 3.4.3 ENSPProAdapter（ADR-6）
+#### 3.4.3 真实后端：PrebuiltBackend（ensp-pro / pnetlab 共用，ADR-25 预建模式）
 
-- 通道：SSH → Windows host-agent（OpenSSH + `pg-enspctl`）；主机/SSH/参数在 `sandbox.backends.ensp-pro` 配置段自包含定义（配置文档 §2，FR5.8；配置键与 env.yaml backend 枚举同名）；
-- `pg-enspctl` 子命令（P0 集合，随 Q1 PoC 增补）：`lab new-from-template <tpl> <lab_id>` / `lab start|stop|del` / `device start <node>` / `device export-config` / `lab snapshot-file`（降级）/ `probe`（Q1 探针：版本、拓扑 API 可用性、设备枚举）；
-- 模板：每个评估集（数据集级环境）对应 `deploy/ensp-templates/<evalset_id>.topo` 预置文件；参数差异（如对端 IP）经设备配置文件注入而非改拓扑；
-- 设备端点：host-agent 返回节点名→管理 IP/端口映射，写入 `labs.device_endpoints_json`。
+- **预建模式**：拓扑人工在平台网页预建（原"host SSH + pg-enspctl"方案随 ADR-25 废除，ADR-6 模板策略同步废止）；平台经 URL 探活监控（`platform_probe.py`，TTL 缓存——任何 HTTP 响应含 401/403 自签重定向=在线）；设备命令经**设备级 SSH 会话池（netmiko，键=(ip,port)）**；平台 Web API 编排留 P1/S11；
+- 配置形态：`sandbox.backends.<key>` = `{kind, url, verify_tls, api, subnets}`（kind=ensp-pro|pnetlab|fake；url=平台 Web 入口，探活目标；verify_tls 自签默认关；api 为 P1/S11 预留）——配置文档 §2②，FR5.8 模块自管，键与 env.yaml backend 枚举同名；
+- 生命周期（预建语义）：build=平台在线校验 + LabHandle(endpoints=env.ssh_access 透传)；wait_ready=每设备 SSH 端口可达；snapshot/restore=no-op（L1 已覆盖任务恢复）；reset=经设备 SSH 执行厂商 reset_cmd；destroy=回收 lab 会话；exec/健康检查经共享 SshPool；
+- 设备端点：env.yaml `ssh_access` 为权威（ADR-24 三级解析中 ② 升为基准），写入 `labs.device_endpoints_json` 与 `LabHandle.endpoints`。
 
-#### 3.4.4 PNETLabAdapter
+#### 3.4.4 PNETLab（PrebuiltBackend kind=pnetlab）
 
-- 通道：宿主 SSH（`/opt/unetlab/` CLI 与脚本）优先，REST API（`/api/auth/login`、`/api/labs/...`）为可选增强（I-3 通道约定）；
-- 拓扑：P0 同样采用"模板 lab + SSH 参数化"；P1 视 Q2 结论升级 API 建拓扑；
-- 快照：`export-config`（收集全部设备配置）+ reset 重放实现 degraded 快照。
+- 同一 PrebuiltBackend 实现（kind 区分探活 URL 与预留 API 通道）；P1 视 Q2 结论评估 EVE-NG 兼容 REST API 编排；
+- 快照：no-op（L1 配置备份恢复已覆盖；L2 退化由 reset 承担）。
 
 **快照统一语义**：`LabSnapshot.impl_kind ∈ {native, degraded}`；`restore()` 对 degraded 执行 `reset → 重放初始配置 → 重放故障序列`（重放来源=ops.jsonl，见 3.4.1），由 SandboxService 保证等价（FR4.4 验收允许降级，需求 v0.8）。
 
@@ -938,7 +940,7 @@ web/src/
 
 #### 3.11.1 会话模型与信任边界（ADR-19）
 
-**会话**：无状态 JWT（HS256，exp 12h，config `security.jwt_expire_hours`）+ **每请求 users.disabled 校验**（SQLite 本地索引查询，微秒级）——禁用账号即时生效与无状态实现兼得；备选 refresh token 轮换留待 P2 按需升级。**内部信任边界**：Platform API 是唯一对外鉴权面；trace-collector 只绑定内网/compose 网络，OTLP/NDJSON 接收不加认证（NFR1⑥"架构性隔离优于过滤检测"）；Git/DB/文件存储不暴露端口；service 角色（DDL users.role 已含）走同一 login 机制、RBAC 最小权限，供 CI/未来 host-agent 回连；跨主机部署时再评估 mTLS（P2）。
+**会话**：无状态 JWT（HS256，exp 12h，config `security.jwt_expire_hours`）+ **每请求 users.disabled 校验**（SQLite 本地索引查询，微秒级）——禁用账号即时生效与无状态实现兼得；备选 refresh token 轮换留待 P2 按需升级。**内部信任边界**：Platform API 是唯一对外鉴权面；trace-collector 只绑定内网/compose 网络，OTLP/NDJSON 接收不加认证（NFR1⑥"架构性隔离优于过滤检测"）；Git/DB/文件存储不暴露端口；service 角色（DDL users.role 已含）走同一 login 机制、RBAC 最小权限，供 CI/未来脚本回连；跨主机部署时再评估 mTLS（P2）。
 
 #### 3.11.2 组件职责
 
@@ -1112,7 +1114,7 @@ sequenceDiagram
 
 - **封装**：`rsi/log.py`（structlog）为全模块唯一日志入口，禁止裸 `print` / 自行配置 logging；
 - **结构**：JSON 行式，字段 `ts / level / logger / msg / run_id / batch_id / experiment_id / node_id`——关联 ID 经 contextvars 在 BatchRunner / IterationEngine 入口自动注入，**任取一个 run/experiment 即可检索其全链执行日志**（排障主路径）；
-- **命名**：logger = `rsi.<模块>.<子模块>`（如 `rsi.orchestrator.batch`、`rsi.sandbox.backends.ensp_pro`）；
+- **命名**：logger = `rsi.<模块>.<子模块>`（如 `rsi.orchestrator.batch`、`rsi.sandbox.backends.prebuilt`）；
 - **级别语义**：DEBUG=细查（默认关闭）/ INFO=状态转换（默认）/ WARNING=重试与降级 / ERROR=失败但流程已兜底 / CRITICAL=预算熔断、冻结校验失败、数据不一致；
 - **落盘**：`var/logs/rsi-YYYYMMDD.log` 按天轮转保留 30 天；`rsi-error.log` 单独实时；开发态 `RSI_LOG_FORMAT=console` 切换彩色可读格式；
 - **审计分离**：审计事件（谁/何时/改了什么）只入 `audit_log` 表（3.11），不混入运行日志；
@@ -1175,7 +1177,7 @@ S7 judge：DSL(终态/缺试)+safety+LLMJudge(P0 语义主判决，ADR-23)+aggre
 S8 instrumentor：scanner/planner/injector+mcp-proxy             ← 依赖 S4（P0 配置级）
 S9 api+web 最小版：batches/runs/iterations/SSE+拓扑/轨迹两组件+优化页（自优化模式选择/人工门/P0 向导，ADR-21）← 依赖 S6/S6b/S7
 S10 E2E 拉通（EE-001~009）+ fixture SUT（sut_demo_oc，P0；sut_demo_cc→P2，ADR-22）← 交付 P0 验收
-S11 真实后端/主机接入：ENSP Pro host-agent+模板 / PNETLab + check-subnets 网段校验与路由（含 Q1/Q2/Q10 验证）→ SIM-001/002
+S11 真实后端/主机接入：ENSP Pro / PNETLab 预建模式接入（平台 URL 探活 + 设备级 SSH 验证）+ check-subnets 网段校验与路由（含 Q2/Q10 验证；平台 Web API 编排在此切片评估）→ SIM-001/002
 
 P1 增量：optimizer LLM 增强（归因精分类/假设起草）+LLMJudge/antihack+decision(noise/显著性)+
         tracing(redact/cluster/TraceDiffer)+instrumentor 源码级+web(看板/diff/lineage/轨迹查看器/版本对比页)
@@ -1219,10 +1221,10 @@ P2 增量：Critic 自动化+IterationEngine 全自动+exploration+审批工作�
 | 脚本 | 平台 | 职责 |
 |------|------|------|
 | `windows/install-main.ps1` | 主节点 | 环境检查（Python 3.12 / Docker Desktop WSL2 / 端口）→ `uv sync --frozen` 安装锁定依赖（支持 `--offline` 离线包目录）→ DB 迁移 + Git 仓库初始化 + 管理员账号创建 → NSSM 注册 `platform-api` / `trace-collector` 服务 → 启动自检 |
-| `join-node.ps1` / `join-node.sh` | 执行节点 | SSH 服务与专用账号配置、host-agent 安装（Windows）或后端依赖（Linux）、向主节点注册并执行 netcheck 自检 |
+| `join-node.ps1` / `join-node.sh` | 执行节点 | 仿真平台安装指引（Windows ENSP Pro / Linux PNETLab 网页平台——预建拓扑账号）与网络可达性配置、向主节点登记并执行 netcheck 自检（平台 URL 可达 + 设备 SSH 端口可达） |
 | `check-subnets.ps1` | — | 部署时校验各模块配置段（sandbox.backends/carrier.hosts）网段全局唯一，输出冲突报告；附 Q10 网段规划与路由配置示例 |
 
-安装验收：全新裸机按 `docs/manual/install.md` 执行脚本后，`pg-enspctl probe`、各模块资源就绪探测（后端 SSH/主机 Docker 可达）与 `check-subnets.ps1` 全绿（列入 P0 验收演示）。
+安装验收：全新裸机按 `docs/manual/install.md` 执行后，各模块资源就绪探测（平台 URL 探活/设备 SSH 端口可达/主机 Docker 可达）与 `check-subnets.ps1` 全绿（列入 P0 验收演示）。
 
 ### 10.2 依赖管理（可离线安装）
 

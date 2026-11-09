@@ -43,6 +43,46 @@ def test_default_settings(monkeypatch):
     assert s.instrumentor.policy.prefer[0] == "hooks"
 
 
+def test_default_sandbox_backends(monkeypatch):
+    _clean_env(monkeypatch)
+    from rsi.settings import Settings
+
+    b = Settings().sandbox.backends
+    assert set(b) == {"fake", "ensp-pro-1", "pnetlab"}
+    assert b["fake"].kind == "fake" and b["fake"].url == ""
+    assert b["ensp-pro-1"].kind == "ensp-pro"
+    assert b["ensp-pro-1"].url == "https://192.168.56.101:8443"
+    assert b["ensp-pro-1"].verify_tls is False
+    assert b["ensp-pro-1"].subnets == ["10.101.0.0/16"]
+    assert b["pnetlab"].kind == "pnetlab"
+    assert b["pnetlab"].url == "http://192.168.56.102"
+
+
+def test_sandbox_backend_legacy_keys_ignored(monkeypatch, tmp_path):
+    """Old SSH-shaped YAML loads silently (extra=ignore)."""
+    _clean_env(monkeypatch)
+    import yaml
+    from rsi.settings import Settings
+
+    cfg = yaml.safe_load("""
+sandbox:
+  backends:
+    ensp-pro-1:
+      host: 192.168.1.50
+      ssh_port: 22
+      ssh_user: administrator
+      agent_cmd: pg-enspctl
+      kind: ensp-pro
+      url: https://192.0.2.1:8443
+""")
+    s = Settings(**cfg)
+    b = s.sandbox.backends["ensp-pro-1"]
+    assert b.kind == "ensp-pro"
+    assert b.url == "https://192.0.2.1:8443"
+    assert not hasattr(b, "host") and not hasattr(b, "ssh_user")
+
+
+
 def test_env_override(monkeypatch):
     _clean_env(monkeypatch)
     from rsi.settings import Settings
