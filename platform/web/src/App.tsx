@@ -6,6 +6,7 @@ import { AuthGuard, RequirePerm } from './components/AuthGuard';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { LoginPage } from './pages/login/LoginPage';
 import { ComingSoon } from './pages/placeholder';
+import { DashboardPage } from './pages/dashboard/DashboardPage';
 import { useEventStream } from './api/sse';
 
 const queryClient = new QueryClient({
@@ -19,7 +20,7 @@ function Shell() {
       <Route path="/login" element={<LoginPage />} />
       <Route element={<AuthGuard />}>
         <Route element={<Layout />}>
-          <Route path="/" element={<ComingSoon title="Dashboard" />} />
+          <Route path="/" element={<DashboardPage />} />
           <Route path="/sessions" element={<ComingSoon title="会话管理" />} />
           <Route path="/sessions/:id" element={<ComingSoon title="会话详情" />} />
           <Route path="/evalsets" element={<ComingSoon title="评测集" />} />
