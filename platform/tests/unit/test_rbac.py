@@ -15,6 +15,9 @@ ALL_PERMISSIONS = {
     "user:manage",
     "system:stop",
     "view:read",
+    "image:manage",
+    "sandbox:manage",
+    "env:manage",
 }
 
 

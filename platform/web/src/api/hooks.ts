@@ -6,7 +6,7 @@ import {
   type UseQueryResult,
 } from '@tanstack/react-query';
 import { message } from 'antd';
-import { ApiError, apiFetch } from './client';
+import { ApiError, apiFetch, apiUpload } from './client';
 
 // iterations.py IterationOut
 export interface Iteration {
@@ -162,7 +162,15 @@ export function useSystemHealth(): UseQueryResult<SystemHealth, Error> {
   });
 }
 
-// evalsets.py EvalsetPage / EvalsetOut
+// evalsets.py EvalsetPage / EvalsetOut（T6：env = 解析后的 env.yaml）
+export interface EvalsetEnv {
+  backend?: string;
+  devices?: { name: string; type?: string }[];
+  ssh_access?: Record<string, { ip: string; port: number; username?: string }>;
+  config_apis?: Record<string, Record<string, unknown>>;
+  [k: string]: unknown;
+}
+
 export interface Evalset {
   id: string;
   name: string;
@@ -172,6 +180,7 @@ export interface Evalset {
   frozen: boolean;
   version: number;
   created_at: string;
+  env?: EvalsetEnv | null;
 }
 
 export interface EvalsetPage {
@@ -428,5 +437,162 @@ export function useRunTrace(
     queryKey: ['run-trace', runId],
     queryFn: () => apiFetch<TracePage>('GET', `/runs/${runId}/traces`),
     enabled: !!runId,
+  });
+}
+
+// ── 资源页（T6）：镜像 / 执行主机 / 沙箱 / 评测集写操作 ────────────────────
+
+// GET /docker/images（images.py DockerImagePage）
+export interface DockerImage {
+  host: string;
+  ref: string;
+  size_mb: number | null;
+  created_at: string | null;
+  used_by: string[];
+}
+
+export interface DockerImagePage {
+  items: DockerImage[];
+  offline_hosts: string[];
+}
+
+export function useImages(): UseQueryResult<DockerImagePage, Error> {
+  return useQuery({
+    queryKey: ['images'],
+    queryFn: () => apiFetch<DockerImagePage>('GET', '/docker/images'),
+    staleTime: 15_000,
+  });
+}
+
+export function useLoadImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { host: string; tar_path: string }) =>
+      apiFetch<{ status: string; host: string }>('POST', '/docker/images:load', body),
+    onSuccess: (out) => {
+      void message.success(`镜像导入任务已提交（${out.host}）`);
+      void qc.invalidateQueries({ queryKey: ['images'] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+export function useDeleteImage() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ref, host }: { ref: string; host: string }) =>
+      apiFetch<void>('DELETE', `/docker/images/${encodeURIComponent(ref)}?host=${encodeURIComponent(host)}`),
+    onSuccess: () => {
+      void message.success('镜像已删除');
+      void qc.invalidateQueries({ queryKey: ['images'] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+// PUT /carrier/hosts（hosts.py：静态段重写 → restart_required）
+export interface HostSaveItem {
+  key: string;
+  endpoint: string;
+  max_instances?: number | null;
+  subnets: string[];
+}
+
+export function useSaveHosts() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (items: HostSaveItem[]) =>
+      apiFetch<{ restart_required: boolean }>('PUT', '/carrier/hosts', { items }),
+    onSuccess: () => {
+      void message.success('已写入 settings.yaml，重启平台后生效');
+      void qc.invalidateQueries({ queryKey: ['environments'] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+// PUT /sandbox/backends/{key}（labs.py：静态段 → restart_required）
+export interface BackendSaveBody {
+  kind: string;
+  url: string;
+  verify_tls: boolean;
+  subnets: string[];
+}
+
+export function useSaveBackend() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ key, ...body }: BackendSaveBody & { key: string }) =>
+      apiFetch<{ restart_required: boolean }>(
+        'PUT',
+        `/sandbox/backends/${encodeURIComponent(key)}`,
+        body,
+      ),
+    onSuccess: () => {
+      void message.success('已写入 settings.yaml，重启平台后生效');
+      void qc.invalidateQueries({ queryKey: ['backends'] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+export function useDeleteEvalset() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => apiFetch<void>('DELETE', `/evalsets/${id}`),
+    onSuccess: () => {
+      void message.success('评测集已删除');
+      void qc.invalidateQueries({ queryKey: ['evalsets'] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+// POST /evalsets/{id}:clone（evalsets.py CloneBody）
+export interface CloneOverrides {
+  device_endpoints?: Record<string, { ip?: string; port?: number }>;
+  config_apis?: { name?: string; base_url: string; [k: string]: unknown }[];
+  site_name?: string;
+}
+
+export function useCloneEvalset() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      new_name,
+      overrides,
+    }: {
+      id: string;
+      new_name: string;
+      overrides: CloneOverrides;
+    }) =>
+      apiFetch<Evalset>('POST', `/evalsets/${id}:clone`, {
+        new_name,
+        overrides,
+      }),
+    onSuccess: (out) => {
+      void message.success(`已克隆为 ${out.name}`);
+      void qc.invalidateQueries({ queryKey: ['evalsets'] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+// POST /evalsets:import（multipart zip；导入即入库，前端预览卡展示摘要）
+export function useImportEvalset() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ file, name }: { file: File; name?: string }) => {
+      const form = new FormData();
+      form.append('file', file);
+      if (name) form.append('name', name);
+      return apiUpload<Evalset>('/evalsets:import', form);
+    },
+    onSuccess: (out) => {
+      void message.success(`已导入 ${out.name}`);
+      void qc.invalidateQueries({ queryKey: ['evalsets'] });
+    },
+    onError: (err) => void message.error(err.message),
   });
 }

@@ -1,0 +1,247 @@
+// 仿真沙箱管理（DD-14 §5.8，T6）：平台卡片 + 探活 + 设备端点聚合 + 新增/编辑平台
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  Collapse,
+  Descriptions,
+  Empty,
+  Form,
+  Input,
+  Modal,
+  Select,
+  Space,
+  Switch,
+  Tag,
+  Typography,
+  message,
+} from 'antd';
+import { useState } from 'react';
+import { Link } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
+import {
+  useBackends,
+  useEvalsets,
+  useSaveBackend,
+} from '../../api/hooks';
+import { FieldWithHints } from '../../components/FieldWithHints';
+
+const KIND_LABEL: Record<string, string> = {
+  'ensp-pro': 'eNSP Pro',
+  pnetlab: 'PNETLab',
+  fake: 'Fake',
+};
+
+// env.backend（如 ensp-pro）↔ 平台键（如 ensp-pro-1）：按键前缀匹配
+function backendKeyMatches(key: string, envBackend?: string | null): boolean {
+  if (!envBackend) return false;
+  return key === envBackend || key.startsWith(`${envBackend}-`);
+}
+
+export function SandboxesPage() {
+  const { data } = useBackends();
+  const { data: evalsets } = useEvalsets();
+  const saveMut = useSaveBackend();
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [form] = Form.useForm<{
+    key: string;
+    kind: string;
+    url: string;
+    verify_tls: boolean;
+    subnets: string[];
+  }>();
+
+  const openEdit = (name?: string, kind?: string, url?: string) => {
+    form.setFieldsValue({
+      key: name ?? '',
+      kind: kind ?? 'fake',
+      url: url ?? '',
+      verify_tls: true,
+      subnets: [],
+    });
+    setOpen(true);
+  };
+
+  return (
+    <div>
+      <Space style={{ marginBottom: 16 }}>
+        <a role="button" onClick={() => openEdit()}>
+          新增平台
+        </a>
+        <Button
+          size="small"
+          onClick={() => {
+            void qc.invalidateQueries({ queryKey: ['backends'] });
+            void message.info('已刷新探活状态');
+          }}
+        >
+          手动刷新
+        </Button>
+      </Space>
+      {saved && (
+        <Alert
+          data-testid="restart-alert"
+          type="info"
+          showIcon
+          message="已写入配置，重启平台后生效"
+          description="sandbox.backends 为静态配置段，运行中的沙箱服务不会热重建"
+          closable
+          style={{ marginBottom: 16 }}
+        />
+      )}
+      <Space wrap size={16} align="start">
+        {(data?.items ?? []).map((b) => {
+          const related = (evalsets?.items ?? []).filter((e) =>
+            backendKeyMatches(b.name, e.env?.backend),
+          );
+          return (
+            <Card
+              key={b.name}
+              title={
+                <Space>
+                  <b>{b.name}</b>
+                  <Tag color="purple">{KIND_LABEL[b.kind] ?? b.kind}</Tag>
+                  {b.kind === 'fake' && <Tag>离线开发用</Tag>}
+                </Space>
+              }
+              style={{ width: 460 }}
+              extra={
+                <Badge
+                  status={b.available ? 'success' : 'error'}
+                  text={b.available ? '在线' : '离线'}
+                />
+              }
+              actions={[
+                <a
+                  key="edit"
+                  role="button"
+                  onClick={() => openEdit(b.name, b.kind, undefined)}
+                >
+                  编辑
+                </a>,
+              ]}
+            >
+              <Descriptions column={1} size="small">
+                <Descriptions.Item label="类型">
+                  {KIND_LABEL[b.kind] ?? b.kind}
+                </Descriptions.Item>
+                <Descriptions.Item label="状态详情">
+                  {b.detail ?? (b.available ? '探活正常' : '不可用')}
+                </Descriptions.Item>
+                <Descriptions.Item label="活跃实验室">
+                  {b.active_labs}
+                </Descriptions.Item>
+              </Descriptions>
+              <Collapse
+                ghost
+                items={[
+                  {
+                    key: 'endpoints',
+                    label: `设备端点（关联评测集 ${related.length}）`,
+                    children: related.length ? (
+                      related.map((e) => (
+                        <div key={e.id} style={{ marginBottom: 8 }}>
+                          <Typography.Text strong>{e.name}</Typography.Text>{' '}
+                          <Link to="/evalsets">去编辑凭证</Link>
+                          <div style={{ paddingLeft: 12 }}>
+                            {Object.entries(e.env?.ssh_access ?? {}).map(
+                              ([dev, sa]) => (
+                                <div key={dev} data-testid="device-endpoint">
+                                  {dev}: {sa.ip}:{sa.port}
+                                </div>
+                              ),
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <Empty
+                        image={Empty.PRESENTED_IMAGE_SIMPLE}
+                        description="暂无评测集使用该平台"
+                      />
+                    ),
+                  },
+                ]}
+              />
+            </Card>
+          );
+        })}
+      </Space>
+
+      <Modal
+        open={open}
+        title="新增 / 编辑平台"
+        okText="保存"
+        confirmLoading={saveMut.isPending}
+        onCancel={() => setOpen(false)}
+        onOk={async () => {
+          const v = await form.validateFields();
+          try {
+            await saveMut.mutateAsync({
+              key: v.key,
+              kind: v.kind,
+              url: v.url,
+              verify_tls: v.verify_tls,
+              subnets: v.subnets ?? [],
+            });
+          } catch {
+            return;
+          }
+          setOpen(false);
+          setSaved(true);
+        }}
+      >
+        <Form form={form} layout="vertical">
+          <FieldWithHints
+            label="平台键"
+            required
+            name="key"
+            example="ensp-pro-1"
+            extra="settings.yaml sandbox.backends 下的键名"
+            tooltip="评测集 env.backend（如 ensp-pro）按键前缀匹配到平台"
+          >
+            <Input />
+          </FieldWithHints>
+          <FieldWithHints label="类型" required name="kind">
+            <Select
+              options={[
+                { value: 'ensp-pro', label: 'eNSP Pro' },
+                { value: 'pnetlab', label: 'PNETLab' },
+                { value: 'fake', label: 'Fake（离线开发）' },
+              ]}
+            />
+          </FieldWithHints>
+          <FieldWithHints
+            label="URL"
+            name="url"
+            example="https://192.168.56.101:8443"
+            tooltip="eNSP Pro 网页入口；平台不可 SSH（ADR-25 形态）"
+          >
+            <Input />
+          </FieldWithHints>
+          <FieldWithHints
+            label="校验 TLS 证书"
+            name="verify_tls"
+            valuePropName="checked"
+            extra="自签证书无需校验（缺省开）"
+            tooltip="平台入口多为自签 HTTPS，默认校验关闭"
+          >
+            <Switch />
+          </FieldWithHints>
+          <FieldWithHints
+            label="网段"
+            name="subnets"
+            example="10.101.0.0/16"
+            extra="回车添加多个"
+            tooltip="该平台实验室使用的子网池"
+          >
+            <Select mode="tags" open={false} suffixIcon={null} />
+          </FieldWithHints>
+        </Form>
+      </Modal>
+    </div>
+  );
+}

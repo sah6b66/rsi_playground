@@ -9,6 +9,8 @@ from rsi.api.routers import (
     evalsets,
     experiments,
     hypotheses,
+    hosts,
+    images,
     instances,
     instrumentation,
     iterations,
@@ -38,6 +40,9 @@ ALL_ROUTERS = [
     # extended (Task 4)
     iterations.router,
     labs.router,
+    # resource pages (T6)
+    hosts.router,
+    images.router,
     instances.router,
     judgments.runs_router,
     judgments.router,
@@ -52,7 +57,7 @@ ALL_ROUTERS = [
 ]
 
 __all__ = ["ALL_ROUTERS", "audit_logs", "auth", "batches", "credentials",
-           "dashboard", "evalsets", "experiments", "hypotheses",
-           "instances", "instrumentation", "iterations", "judgments",
+           "dashboard", "evalsets", "experiments", "hypotheses", "hosts",
+           "images", "instances", "instrumentation", "iterations", "judgments",
            "labs", "profiles", "runs", "suts", "streaming", "system",
            "traces", "users", "versions"]

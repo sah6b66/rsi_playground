@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 from typing import Literal, Optional
 
+import yaml
+
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -27,6 +29,55 @@ def _resolve(home: Path, value: str | Path) -> Path:
 
 def _rsi_home() -> Path:
     return Path(os.environ.get("RSI_HOME", DEFAULT_HOME)).resolve()
+
+
+def settings_yaml_path(home: Path | None = None) -> Path:
+    """Locate the settings.yaml to persist static config edits to.
+
+    Resolution order: ``RSI_SETTINGS`` env var (absolute, or relative to
+    *home*), else ``<home>/settings.yaml`` (*home* = RSI_HOME env default).
+    """
+    home = home or _rsi_home()
+    override = os.environ.get("RSI_SETTINGS")
+    if override:
+        p = Path(override)
+        return p if p.is_absolute() else home / p
+    return home / "settings.yaml"
+
+
+def write_settings_section(section_key: str, data: object, *, home: Path | None = None) -> Path:
+    """Rewrite one dotted section (e.g. ``carrier.hosts``) in settings.yaml.
+
+    Conservative round-trip: yaml.safe_load the whole document (missing
+    file → empty doc), replace only the targeted section, safe_dump back
+    with an atomic tmp-file + os.replace so a crash never truncates the
+    config. Existing unrelated sections are preserved verbatim (values,
+    not comments). Runtime Settings objects are NOT reloaded — callers
+    surface ``restart_required`` to the user instead.
+    """
+    path = settings_yaml_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc: dict = {}
+    if path.is_file():
+        doc = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(doc, dict):
+        doc = {}
+    node = doc
+    keys = section_key.split(".")
+    for key in keys[:-1]:
+        child = node.get(key)
+        if not isinstance(child, dict):
+            child = {}
+            node[key] = child
+        node = child
+    node[keys[-1]] = data
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
+        yaml.safe_dump(doc, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+    return path
 
 
 # ════════ ① Infrastructure (config doc §2 ①) ════════

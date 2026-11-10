@@ -56,6 +56,10 @@ class LLMOutputInvalid(RsiError):
     """LLM output failed schema validation after retries exhausted (ADR-1/7)."""
 
 
+class UpstreamError(RsiError):
+    """External system (Docker daemon, etc.) call failed (API 502)."""
+
+
 class GitStoreError(RsiError):
     """Git-backed artifact store failure."""
 
@@ -110,6 +114,7 @@ __all__ = [
     "TraceError",
     "JudgeError",
     "LLMOutputInvalid",
+    "UpstreamError",
     "GitStoreError",
     "FreezeViolationError",
     "NotFastForwardError",

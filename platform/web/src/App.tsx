@@ -10,6 +10,10 @@ import { DashboardPage } from './pages/dashboard/DashboardPage';
 import { SessionListPage } from './pages/sessions/SessionListPage';
 import { CreateSessionWizard } from './pages/sessions/CreateSessionWizard';
 import { SessionDetailPage } from './pages/sessions/detail/SessionDetailPage';
+import { EvalsetListPage } from './pages/evalsets/EvalsetListPage';
+import { ImagesPage } from './pages/images/ImagesPage';
+import { SandboxesPage } from './pages/sandboxes/SandboxesPage';
+import { EnvironmentsPage } from './pages/environments/EnvironmentsPage';
 import { useEventStream } from './api/sse';
 
 const queryClient = new QueryClient({
@@ -27,12 +31,12 @@ function Shell() {
           <Route path="/sessions" element={<SessionListPage />} />
           <Route path="/sessions/new" element={<CreateSessionWizard />} />
           <Route path="/sessions/:id" element={<SessionDetailPage />} />
-          <Route path="/evalsets" element={<ComingSoon title="评测集" />} />
+          <Route path="/evalsets" element={<EvalsetListPage />} />
           <Route path="/suts" element={<ComingSoon title="SUT 管理" />} />
           <Route path="/suts/:id" element={<ComingSoon title="SUT 详情" />} />
-          <Route path="/images" element={<ComingSoon title="Docker 镜像" />} />
-          <Route path="/sandboxes" element={<ComingSoon title="仿真沙箱" />} />
-          <Route path="/environments" element={<ComingSoon title="运行环境" />} />
+          <Route path="/images" element={<ImagesPage />} />
+          <Route path="/sandboxes" element={<SandboxesPage />} />
+          <Route path="/environments" element={<EnvironmentsPage />} />
           <Route
             path="/settings"
             element={

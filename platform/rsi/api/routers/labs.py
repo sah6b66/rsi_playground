@@ -15,6 +15,7 @@ from rsi.api.pagination import DEFAULT_LIMIT, paginate
 from rsi.core.enums import LabStatus
 from rsi.core.errors import ConflictError, NotFoundError
 from rsi.security.auth import Claims
+from rsi.settings import write_settings_section
 
 router = APIRouter(tags=["labs"])
 
@@ -182,6 +183,42 @@ async def list_backends(
             {"name": "mock", "status": "ready"},
         ]
     }
+
+
+class BackendPutBody(BaseModel):
+    """PUT /sandbox/backends/{key}：写 settings.yaml 静态段（DD-14 §5.8）。"""
+
+    kind: str  # ensp-pro | pnetlab | fake
+    url: str = ""
+    verify_tls: bool = False
+    subnets: list[str] = []
+
+
+@router.put("/sandbox/backends/{key}")
+@audit.audited("sandbox.backend_update", object_type="settings")
+async def put_backend(
+    key: str,
+    body: BackendPutBody,
+    request: Request,
+    user: Claims = Depends(require_perms("sandbox:manage")),
+) -> dict:
+    """编辑/新增沙箱平台 → 写 settings.yaml ``sandbox.backends.<key>``。
+
+    静态项语义：运行中的 SandboxService 不热重建，返回 restart_required。
+    """
+    services = getattr(request.app.state, "services", None) or {}
+    settings = services.get("settings")
+    write_settings_section(
+        f"sandbox.backends.{key}",
+        {
+            "kind": body.kind,
+            "url": body.url,
+            "verify_tls": body.verify_tls,
+            "subnets": body.subnets,
+        },
+        home=getattr(settings, "home", None),
+    )
+    return {"restart_required": True}
 
 
 # ── snapshots / restore / readiness / exec（interfaces §9.13）────────────

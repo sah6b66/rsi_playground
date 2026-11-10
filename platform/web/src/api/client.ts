@@ -81,3 +81,25 @@ export async function apiFetch<T>(
   if (resp.status === 204) return undefined as T;
   return (await resp.json()) as T;
 }
+
+// multipart 上传（T6 评测集导入 zip 等；FormData 自带 boundary，勿设 Content-Type）
+export async function apiUpload<T>(path: string, form: FormData): Promise<T> {
+  const headers: Record<string, string> = {};
+  const token = getToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const resp = await fetch(`${API_PREFIX}${path}`, {
+    method: 'POST',
+    headers,
+    body: form,
+  });
+  if (!resp.ok) {
+    let detail: unknown;
+    try {
+      detail = ((await resp.json()) as ApiErrorBody).detail;
+    } catch {
+      detail = undefined;
+    }
+    throw new ApiError(resp.status, messageOf(detail), detail);
+  }
+  return (await resp.json()) as T;
+}

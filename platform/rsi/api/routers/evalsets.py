@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
@@ -10,6 +11,7 @@ import zipfile
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+import yaml
 from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
 from pydantic import BaseModel, Field
 
@@ -57,6 +59,9 @@ class EvalsetOut(BaseModel):
     frozen: bool
     version: int
     created_at: str
+    # T6: 解析后的 env.yaml（backend/devices/ssh_access/...）；无 env 的记
+    # 录为 None（前端克隆表单/沙箱设备端点聚合消费）
+    env: dict[str, Any] | None = None
 
 
 class EvalsetPage(BaseModel):
@@ -93,6 +98,22 @@ def _get(store: dict, evalset_id: str) -> dict:
         ) from None
 
 
+def _env_of(es: dict) -> dict[str, Any] | None:
+    """解析记录的 env_yaml；无 env 或解析失败 → None（诚实空）。"""
+    text = es.get("env_yaml") or ""
+    if not text.strip():
+        return None
+    try:
+        parsed = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _out(es: dict) -> EvalsetOut:
+    return EvalsetOut(**{**es, "env": _env_of(es)})
+
+
 @router.get("", response_model=EvalsetPage)
 async def list_evalsets(
     response: Response,
@@ -104,7 +125,7 @@ async def list_evalsets(
     items, page = paginate(list(store.values()), cursor, limit)
     response.headers["x-pagination"] = json.dumps(page)
     return EvalsetPage(
-        items=[EvalsetOut(**i) for i in items],
+        items=[_out(i) for i in items],
         next_cursor=page['next_cursor'],
         has_more=page['has_more'],
     )
@@ -133,7 +154,7 @@ async def create_evalset(
         "versions": [],
     }
     store[es["id"]] = es
-    return EvalsetOut(**es)
+    return _out(es)
 
 
 @router.get("/{evalset_id}", response_model=EvalsetOut)
@@ -142,7 +163,7 @@ async def get_evalset(
     user: Claims = Depends(get_current_user),
     store: dict = Depends(get_store("evalsets")),
 ) -> EvalsetOut:
-    return EvalsetOut(**_get(store, evalset_id))
+    return _out(_get(store, evalset_id))
 
 
 @router.put("/{evalset_id}", response_model=EvalsetOut)
@@ -163,7 +184,7 @@ async def update_evalset(
     if updates:
         es.update(updates)
         es["version"] += 1
-    return EvalsetOut(**es)
+    return _out(es)
 
 
 @router.delete("/{evalset_id}", status_code=204)
@@ -207,7 +228,7 @@ async def freeze_evalset(
             "created_at": _now(),
         }
     )
-    return EvalsetOut(**es)
+    return _out(es)
 
 
 @router.get("/{evalset_id}/versions", response_model=VersionPage)
@@ -336,4 +357,96 @@ async def import_evalset(
         "versions": [],
     }
     store[es["id"]] = es
-    return EvalsetOut(**es)
+    return _out(es)
+
+
+# ── :clone（DD-14 §5.5 U3：复制修改成新集，T6）───────────────────────────────
+
+
+class DeviceEndpointOverride(BaseModel):
+    ip: str | None = Field(default=None, json_schema_extra={"example": "10.201.0.10"})
+    port: int | None = Field(
+        default=None, ge=1, le=65535, json_schema_extra={"example": 2222}
+    )
+
+
+class CloneOverrides(BaseModel):
+    device_endpoints: dict[str, DeviceEndpointOverride] = Field(
+        default_factory=dict,
+        json_schema_extra={"example": {"R1": {"ip": "10.201.0.10", "port": 2222}}},
+    )
+    config_apis: list[dict[str, Any]] | None = Field(
+        default=None,
+        json_schema_extra={
+            "example": [
+                {"name": "nms", "base_url": "http://10.201.0.20/api", "timeout_s": 30}
+            ]
+        },
+    )
+    site_name: str | None = Field(default=None, json_schema_extra={"example": "site2"})
+
+
+class CloneBody(BaseModel):
+    new_name: str = Field(json_schema_extra={"example": "netops-bgp-site2"})
+    overrides: CloneOverrides = CloneOverrides()
+
+
+@router.post("/{evalset_id}:clone", response_model=EvalsetOut, status_code=201)
+@audit.audited("evalset.clone", object_type="evalset")
+async def clone_evalset(
+    evalset_id: str,
+    body: CloneBody,
+    user: Claims = Depends(require_perms("evalset:manage")),
+    store: dict = Depends(get_store("evalsets")),
+) -> EvalsetOut:
+    """克隆评测集：复制源记录，仅 env 覆盖项可改（DD-14 §5.5）。
+
+    - ``device_endpoints``：改写 env.yaml ``ssh_access.<dev>.ip/port``
+    - ``config_apis``：整表替换 env.yaml ``config_apis``（列表项以
+      ``name``（缺省 ``api-<序号>``）为映射键）
+    - ``site_name``：非空时存为新记录 ``overrides.site_name``（站点覆盖
+      条目——store 无既有 site_overrides 形态，P0 落 overrides 字段）
+    - tasks/configs 复制（跨集可比性：任务集只读引用）
+    """
+    src = _get(store, evalset_id)
+    if any(e["name"] == body.new_name for e in store.values()):
+        raise ConflictError(
+            f"evalset name {body.new_name!r} already exists",
+            context={"name": body.new_name},
+        )
+    env: dict[str, Any] = _env_of(src) or {}
+    for dev, over in body.overrides.device_endpoints.items():
+        sa = env.setdefault("ssh_access", {}).setdefault(dev, {})
+        if over.ip is not None:
+            sa["ip"] = over.ip
+        if over.port is not None:
+            sa["port"] = over.port
+    if body.overrides.config_apis is not None:
+        env["config_apis"] = {
+            str(item.get("name") or f"api-{i}"): {
+                k: v for k, v in item.items() if k != "name"
+            }
+            for i, item in enumerate(body.overrides.config_apis)
+        }
+    env_yaml = (
+        yaml.safe_dump(env, allow_unicode=True, sort_keys=False)
+        if str(src.get("env_yaml") or "").strip() or env
+        else ""
+    )
+    es = {
+        "id": f"es-{uuid.uuid4().hex[:8]}",
+        "name": body.new_name,
+        "purpose": src.get("purpose", "iterate"),
+        "tasks": copy.deepcopy(src.get("tasks", [])),
+        "description": f"cloned from {src['name']}",
+        "env_yaml": env_yaml,
+        "configs": dict(src.get("configs") or {}),
+        "frozen": False,
+        "version": 1,
+        "created_at": _now(),
+        "versions": [],
+    }
+    if body.overrides.site_name:
+        es["overrides"] = {"site_name": body.overrides.site_name}
+    store[es["id"]] = es
+    return _out(es)

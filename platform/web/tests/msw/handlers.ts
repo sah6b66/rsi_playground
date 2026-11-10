@@ -82,6 +82,42 @@ export const resetSessionFixtures = () => {
 resetSessionFixtures();
 const sessionItems = () => sessions;
 
+// ── Task 6 评测集 fixtures（可变：克隆/导入/删除后变化，测试间重置）──────
+const baseEvalsets = () => [
+  {
+    id: 'eval-0001',
+    name: 'netops-bgp-triage',
+    purpose: 'iterate',
+    tasks: [{ id: 't-001' }, { id: 't-002' }],
+    description: '',
+    frozen: true,
+    version: 1,
+    created_at: '2026-11-01T00:00:00Z',
+    env: {
+      backend: 'ensp-pro',
+      devices: [{ name: 'R1', type: 'vrp' }],
+      ssh_access: { R1: { ip: '192.168.56.10', port: 22, username: 'admin' } },
+    },
+  },
+  {
+    id: 'eval-0002',
+    name: 'netops-smoke',
+    purpose: 'smoke',
+    tasks: [{ id: 't-101' }],
+    description: '',
+    frozen: true,
+    version: 1,
+    created_at: '2026-11-01T00:00:00Z',
+    env: null,
+  },
+];
+let evalsetData: ReturnType<typeof baseEvalsets>;
+const evalsets = () => evalsetData;
+export const resetEvalsetFixtures = () => {
+  evalsetData = baseEvalsets();
+};
+resetEvalsetFixtures();
+
 // 向导提交请求体捕获（sessions.test.tsx 断言用）
 export const iterationCreateRequests: unknown[] = [];
 
@@ -128,31 +164,10 @@ export const sessionsHandlers = [
     HttpResponse.json(iteration({ state: 'aborted' })),
   ),
   http.delete(/\/api\/v1\/iterations\/[^/]+$/, () => new HttpResponse(null, { status: 204 })),
-  // 评测集列表（evalsets.py EvalsetPage shape）
+  // 评测集列表（evalsets.py EvalsetPage shape；T6 起 env 为解析后 env.yaml）
   http.get('/api/v1/evalsets', () =>
     HttpResponse.json({
-      items: [
-        {
-          id: 'eval-0001',
-          name: 'netops-bgp-triage',
-          purpose: 'iterate',
-          tasks: [{ id: 't-001' }, { id: 't-002' }],
-          description: '',
-          frozen: true,
-          version: 1,
-          created_at: '2026-11-01T00:00:00Z',
-        },
-        {
-          id: 'eval-0002',
-          name: 'netops-smoke',
-          purpose: 'smoke',
-          tasks: [{ id: 't-101' }],
-          description: '',
-          frozen: true,
-          version: 1,
-          created_at: '2026-11-01T00:00:00Z',
-        },
-      ],
+      items: evalsets(),
       next_cursor: null,
       has_more: false,
     }),
@@ -524,3 +539,147 @@ export const handlers = [
   ...sessionDetailHandlers,
   ...task5Handlers,
 ];
+
+// ── Task 6 资源页 fixtures：镜像 / 主机 / 沙箱 / 克隆 ─────────────────────
+// 请求捕获（resources.test.tsx 断言用）
+export const resourceRequests: Record<string, unknown[]> = {
+  imageLoad: [],
+  carrierHosts: [],
+  sandboxBackend: [],
+  clone: [],
+};
+
+const dockerImages = () => ({
+  items: [
+    {
+      host: 'main',
+      ref: 'ipops-agent:v1.2',
+      size_mb: 512.0,
+      created_at: '2026-11-01T00:00:00Z',
+      used_by: ['sut-1'],
+    },
+    {
+      host: 'main',
+      ref: 'busybox:latest',
+      size_mb: 4.3,
+      created_at: '2026-10-01T00:00:00Z',
+      used_by: [],
+    },
+    {
+      host: 'remote-1',
+      ref: 'ipops-agent:v1.1',
+      size_mb: 500.0,
+      created_at: '2026-09-01T00:00:00Z',
+      used_by: [],
+    },
+  ],
+  offline_hosts: ['remote-2'],
+});
+
+export const resourcesHandlers = [
+  http.get('/api/v1/docker/images', () => HttpResponse.json(dockerImages())),
+  http.post('/api/v1/docker/images:load', async ({ request }) => {
+    const body = (await request.json()) as { host?: string; tar_path?: string };
+    resourceRequests.imageLoad.push(body);
+    if ((body.tar_path ?? '').includes('missing')) {
+      return HttpResponse.json(
+        { code: 'NOT_FOUND', message: 'tar file not found on host' },
+        { status: 404 },
+      );
+    }
+    return HttpResponse.json(
+      { status: 'loaded', host: body.host ?? 'main' },
+      { status: 202 },
+    );
+  }),
+  http.delete(/\/api\/v1\/docker\/images\/.+$/, ({ request }) => {
+    const ref = decodeURIComponent(
+      new URL(request.url).pathname.split('/').pop() ?? '',
+    );
+    if (ref === 'ipops-agent:v1.2') {
+      return HttpResponse.json(
+        {
+          code: 'CONFLICT',
+          message: "image 'ipops-agent:v1.2' is used by suts ['sut-1']",
+          detail: { used_by: ['sut-1'] },
+        },
+        { status: 409 },
+      );
+    }
+    return new HttpResponse(null, { status: 204 });
+  }),
+  http.put('/api/v1/carrier/hosts', async ({ request }) => {
+    resourceRequests.carrierHosts.push(await request.json());
+    return HttpResponse.json({ restart_required: true });
+  }),
+  http.put(/\/api\/v1\/sandbox\/backends\/[^/]+$/, async ({ request }) => {
+    resourceRequests.sandboxBackend.push({
+      key: new URL(request.url).pathname.split('/').pop(),
+      body: await request.json(),
+    });
+    return HttpResponse.json({ restart_required: true });
+  }),
+  http.post(/\/api\/v1\/evalsets\/[^/]+:clone$/, async ({ request }) => {
+    const body = (await request.json()) as { new_name?: string };
+    resourceRequests.clone.push(body);
+    if (evalsets().some((e) => e.name === body.new_name)) {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: 'CONFLICT',
+            message: `evalset name '${body.new_name}' already exists`,
+          },
+        },
+        { status: 409 },
+      );
+    }
+    const id = `eval-new-${evalsets().length + 1}`;
+    const clone = {
+      id,
+      name: body.new_name ?? 'cloned',
+      purpose: 'iterate',
+      tasks: [{ id: 't-001' }, { id: 't-002' }],
+      description: 'cloned',
+      frozen: false,
+      version: 1,
+      created_at: '2026-11-05T00:00:00Z',
+      env: {
+        backend: 'ensp-pro',
+        devices: [{ name: 'R1', type: 'vrp' }],
+        ssh_access: { R1: { ip: '10.201.0.10', port: 2222, username: 'admin' } },
+      },
+    };
+    evalsetData = [...evalsets(), clone];
+    return HttpResponse.json(clone, { status: 201 });
+  }),
+  http.post('/api/v1/evalsets:import', async ({ request }) => {
+    const form = await request.formData();
+    const name = String(form.get('name') || '') || 'imported-set';
+    if (evalsets().some((e) => e.name === name)) {
+      return HttpResponse.json(
+        { code: 'CONFLICT', message: `evalset name '${name}' already exists` },
+        { status: 409 },
+      );
+    }
+    const es = {
+      id: `eval-imp-${evalsets().length + 1}`,
+      name,
+      purpose: 'iterate',
+      tasks: [{ id: 't-900' }],
+      description: 'imported',
+      frozen: false,
+      version: 1,
+      created_at: '2026-11-05T00:00:00Z',
+      env: null,
+    };
+    evalsetData = [...evalsets(), es];
+    return HttpResponse.json(es, { status: 201 });
+  }),
+  http.delete(/\/api\/v1\/evalsets\/[^/]+$/, ({ request }) => {
+    const id = new URL(request.url).pathname.split('/').pop() ?? '';
+    evalsetData = evalsets().filter((e) => e.id !== id);
+    return new HttpResponse(null, { status: 204 });
+  }),
+];
+
+handlers.push(...resourcesHandlers);

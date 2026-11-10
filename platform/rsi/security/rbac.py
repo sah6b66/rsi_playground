@@ -19,6 +19,10 @@ Permission = Literal[
     "user:manage",
     "system:stop",
     "view:read",
+    # infra 资源管理（DD-14 §5.7-§5.9，T6）：admin 专属
+    "image:manage",
+    "sandbox:manage",
+    "env:manage",
 ]
 
 ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
@@ -35,6 +39,9 @@ ROLE_PERMISSIONS: dict[str, frozenset[str]] = {
             "user:manage",
             "system:stop",
             "view:read",
+            "image:manage",
+            "sandbox:manage",
+            "env:manage",
         }
     ),
     "agent_engineer": frozenset(
