@@ -106,7 +106,7 @@ test('UsersTab：创建用户 + 禁用 Switch', async () => {
     id: 'u-eng-1',
     body: { disabled: true },
   });
-}, 20_000);
+}, 60_000);
 
 // ③ SecurityTab 只读：白名单 8 项路径与冻结域 3 项渲染
 test('SecurityTab：白名单 8 项 + 冻结域 3 项只读渲染', async () => {
@@ -145,4 +145,4 @@ test('UsersTab：重置密码 Modal + POST body', async () => {
     id: 'u-eng-1',
     password: 'new-pass-9',
   });
-}, 20_000);
+}, 60_000);

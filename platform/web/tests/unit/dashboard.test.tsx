@@ -27,24 +27,24 @@ test('仪表盘渲染指标卡片：会话/镜像/环境/沙箱/实例计数', a
   expect(screen.getByText('待审批会话')).toBeInTheDocument();
   expect(screen.getByText('已完成会话')).toBeInTheDocument();
   expect(screen.getAllByText('1').length).toBeGreaterThan(0);
-  // 网络Agent 数 = 5
-  expect(screen.getByText('网络Agent 数')).toBeInTheDocument();
-  expect(screen.getByText('5')).toBeInTheDocument();
+  // 网络Agent 合并卡（标题与最近会话列同名，取一；副行含注册数 5）
+  expect(screen.getAllByText('网络Agent').length).toBeGreaterThanOrEqual(1);
+  expect(screen.getByText(/已注册 5/)).toBeInTheDocument();
   // 运行环境（platform:* 检查项 1/2）
   expect(screen.getByText('运行环境（在线）')).toBeInTheDocument();
   expect(screen.getByText('1/2')).toBeInTheDocument();
   // 网络仿真平台 3（2 在线）
   expect(screen.getByText('网络仿真平台（在线）')).toBeInTheDocument();
   expect(screen.getByText('2/3')).toBeInTheDocument();
-  // Agent 实例运行数 = 2
-  expect(screen.getByText('Agent 实例（运行中）')).toBeInTheDocument();
-  expect(screen.getAllByText('2').length).toBeGreaterThanOrEqual(1);
-  // MetricCard 数量 = 8，且指标卡栅格统一（U1：全部 span=6）
-  expect(screen.getAllByTestId('metric-card').length).toBe(8);
-  expect(document.querySelectorAll('.ant-row .ant-col-6').length).toBeGreaterThanOrEqual(8);
+  // 指标卡 6 张两行（会话类/资源类分行，span=8 等宽）；无独立 Token 卡
+  expect(screen.getAllByTestId('metric-card').length).toBe(6);
+  expect(
+    document.querySelectorAll('.ant-row .ant-col-8').length,
+  ).toBeGreaterThanOrEqual(6);
+  expect(screen.queryByText('Token 预算消耗')).not.toBeInTheDocument();
 });
 
-test('依赖面板展示依赖项（中文名）与离线原因', async () => {
+test('依赖面板展示依赖项（中文名）、中文状态与中文离线原因', async () => {
   renderDashboard();
   await waitFor(() =>
     expect(screen.getByText('网络仿真平台（pnetlab）')).toBeInTheDocument(),
@@ -53,7 +53,11 @@ test('依赖面板展示依赖项（中文名）与离线原因', async () => {
   expect(screen.getByText('数据库')).toBeInTheDocument();
   expect(screen.getByText('LLM 服务')).toBeInTheDocument();
   expect(screen.getByText('外部依赖状态')).toBeInTheDocument();
-  expect(screen.getByText('connect timeout')).toBeInTheDocument();
+  // 中文状态词
+  expect(screen.getAllByText('在线').length).toBeGreaterThanOrEqual(3);
+  expect(screen.getByText('离线')).toBeInTheDocument();
+  // 离线原因中文映射（fixture detail "connect timeout" → 连接超时）
+  expect(screen.getByText('连接超时')).toBeInTheDocument();
   expect(screen.getByText(/211/)).toBeInTheDocument();
 });
 

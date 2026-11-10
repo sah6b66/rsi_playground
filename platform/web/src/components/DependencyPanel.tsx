@@ -1,7 +1,7 @@
-// 外部依赖面板（DD-14 §5.2）：状态灯 + 名称 + 延迟/失败原因。
+// 外部依赖面板：状态灯 + 中文名 + 中文状态 + 延迟/失败原因。
 import { Empty, List, Spin } from 'antd';
 import { useDependencies, type Dependency } from '../api/hooks';
-import { depLabel } from '../utils/labels';
+import { depDetailText, depLabel, depStatusText } from '../utils/labels';
 
 const DOT: Record<string, string> = {
   ok: '#52c41a',
@@ -9,7 +9,9 @@ const DOT: Record<string, string> = {
 };
 
 function dotColor(dep: Dependency): string {
-  return DOT[dep.status] ?? '#8c8c8c'; // 未配置/未知 → 灰
+  if (dep.status === 'down' || dep.status === 'error') return DOT.down!;
+  if (dep.status === 'ok' || dep.status === 'up') return DOT.ok!;
+  return '#8c8c8c'; // 未配置/未知 → 灰
 }
 
 export function DependencyPanel() {
@@ -23,28 +25,42 @@ export function DependencyPanel() {
     <List
       size="small"
       dataSource={items}
-      renderItem={(dep) => (
-        <List.Item>
-          <span
-            style={{
-              display: 'inline-block',
-              width: 8,
-              height: 8,
-              borderRadius: '50%',
-              background: dotColor(dep),
-              marginRight: 8,
-            }}
-          />
-          <span style={{ flex: 1 }}>{depLabel(dep.name)}</span>
-          <span style={{ color: '#8c8c8c', fontSize: 12 }}>
-            {dep.status !== 'ok' && dep.detail
-              ? dep.detail
-              : dep.latency_ms != null
-                ? `${dep.latency_ms}ms`
-                : '—'}
-          </span>
-        </List.Item>
-      )}
+      renderItem={(dep) => {
+        const ok = dep.status === 'ok' || dep.status === 'up';
+        return (
+          <List.Item>
+            <span
+              style={{
+                display: 'inline-block',
+                width: 8,
+                height: 8,
+                borderRadius: '50%',
+                background: dotColor(dep),
+                marginRight: 8,
+              }}
+            />
+            <span style={{ flex: 1 }}>
+              {depLabel(dep.name)}
+              <span
+                style={{
+                  marginLeft: 8,
+                  fontSize: 12,
+                  color: ok ? '#389e0d' : '#8c8c8c',
+                }}
+              >
+                {depStatusText(dep.status)}
+              </span>
+            </span>
+            <span style={{ color: '#8c8c8c', fontSize: 12 }}>
+              {!ok && dep.detail
+                ? depDetailText(dep.detail)
+                : dep.latency_ms != null
+                  ? `${dep.latency_ms}ms`
+                  : '—'}
+            </span>
+          </List.Item>
+        );
+      }}
     />
   );
 }

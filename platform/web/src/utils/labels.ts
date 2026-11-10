@@ -46,6 +46,47 @@ export function depLabel(name: string): string {
   return name; // 未知名保留原文
 }
 
+// 外部依赖状态中文名
+export function depStatusText(status: string | null | undefined): string {
+  switch (status) {
+    case 'ok':
+    case 'up':
+      return '在线';
+    case 'down':
+    case 'error':
+      return '离线';
+    case 'not_configured':
+      return '未配置';
+    default:
+      return '未知';
+  }
+}
+
+// 外部依赖失败/详情的中文描述（后端 checker 的 detail 原文映射）。
+// full=true 表示整句替换（语义短语）；否则子串替换（保留路径/数量等上下文）。
+const DEP_DETAIL_PHRASES: Array<{ re: RegExp; zh: string; full?: boolean }> = [
+  { re: /^not_configured$/i, zh: '未配置', full: true },
+  { re: /offline stub pool/i, zh: '离线桩（未配置执行主机）', full: true },
+  { re: /offline mock handler/i, zh: '离线模拟（内置 Mock）', full: true },
+  { re: /(\d+) active labs?/i, zh: '$1 个在用实验环境' },
+  { re: /(\d+) running instances?/i, zh: '$1 个运行中 Agent 实例' },
+  { re: /SELECT 1 ok/i, zh: '连接正常', full: true },
+  { re: /checker error:\s*(\w+)/i, zh: '检查失败（$1）' },
+  { re: /ConnectError|Connection refused|connection error/i, zh: '连接失败', full: true },
+  { re: /timeout|ReadTimeout|TimeoutError|timed?\s*out/i, zh: '连接超时', full: true },
+  { re: /UnsupportedProtocol/i, zh: '地址未配置', full: true },
+  { re: /SSLError|certificate/i, zh: '证书错误', full: true },
+  { re: /not writable/i, zh: '（不可写）' },
+];
+
+export function depDetailText(detail: string | null | undefined): string {
+  if (!detail) return '';
+  for (const { re, zh, full } of DEP_DETAIL_PHRASES) {
+    if (re.test(detail)) return full ? zh : detail.replace(re, zh);
+  }
+  return detail; // 未覆盖的技术细节保留原文（灰字小号展示）
+}
+
 // 轨迹事件类型中文名（TraceTimeline Tag）
 export const EVENT_TYPE_LABELS: Record<string, string> = {
   tool_call: '工具调用',

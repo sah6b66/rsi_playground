@@ -1,5 +1,7 @@
-// Dashboard 运行总览（DD-14 §5.2，U1 布局规范化）：
-// 指标卡统一栅格（span=6 一行 4 张）+ 依赖/系统面板并列同高 + 最近会话独占一行。
+// Dashboard 运行总览（DD-14 §5.2，UX 二轮）：
+// 指标卡两行各 3 张（会话类/资源类分行，span=8 等宽）；系统状态与外部依赖
+// 各自独占一行（全宽）；Token 消耗并入系统状态面板；网络Agent 卡合并
+// 运行实例与注册数。
 import { Card, Col, Empty, Progress, Row, Table } from 'antd';
 import { Link } from 'react-router-dom';
 import {
@@ -73,75 +75,64 @@ export function DashboardPage() {
   return (
     <div>
       <Row gutter={[12, 12]}>
-        <Col span={6}>
+        <Col span={8}>
           <MetricCard title="运行中会话" value={running} status="running" />
         </Col>
-        <Col span={6}>
+        <Col span={8}>
           <MetricCard
             title="待审批会话"
             value={awaiting}
             status={awaiting > 0 ? 'paused_awaiting' : undefined}
           />
         </Col>
-        <Col span={6}>
+        <Col span={8}>
           <MetricCard title="已完成会话" value={done} status="finalized" />
         </Col>
-        <Col span={6}>
-          <MetricCard title="网络Agent 数" value={agentCount} sub="已登记 Agent" />
+        <Col span={8}>
+          <MetricCard
+            title="网络Agent"
+            value={runningInstances}
+            sub={`运行实例 · 已注册 ${agentCount} 个`}
+          />
         </Col>
-        <Col span={6}>
+        <Col span={8}>
           <MetricCard
             title="运行环境（在线）"
             value={`${hostOk}/${hostChecks.length}`}
             sub="执行主机在线 / 总数"
           />
         </Col>
-        <Col span={6}>
+        <Col span={8}>
           <MetricCard
             title="网络仿真平台（在线）"
             value={`${backendOnline}/${backendItems.length}`}
             sub={`共 ${backendItems.length} 个平台`}
           />
         </Col>
-        <Col span={6}>
-          <MetricCard
-            title="Agent 实例（运行中）"
-            value={runningInstances}
-            sub="运行中的 Agent 实例数"
-          />
-        </Col>
-        <Col span={6}>
-          <MetricCard
-            title="Token 预算消耗"
-            value={tokensUsed}
-            sub={`占缺省上限 ${budgetPct}%`}
-          />
-        </Col>
       </Row>
 
-      <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
-        <Col span={12}>
-          <Card size="small" title="外部依赖状态" style={{ height: '100%' }}>
-            <DependencyPanel />
-          </Card>
-        </Col>
-        <Col span={12}>
-          <Card size="small" title="系统状态" style={{ height: '100%' }}>
-            服务状态：
-            {health.data ? health.data.status : '…'}
-            <div style={{ marginTop: 8 }}>
-              预算消耗（Token）
-              <Progress
-                percent={budgetPct}
-                status={budgetPct >= 100 ? 'exception' : 'normal'}
-              />
-              <span style={{ color: '#8c8c8c', fontSize: 12 }}>
-                {tokensUsed.toLocaleString()} / {BUDGET_LIMIT.toLocaleString()}（缺省上限）
-              </span>
-            </div>
-          </Card>
-        </Col>
-      </Row>
+      <Card size="small" title="系统状态" style={{ marginTop: 12 }}>
+        服务状态：
+        {health.data
+          ? health.data.status === 'ok'
+            ? '正常'
+            : health.data.status
+          : '…'}
+        <div style={{ marginTop: 8 }}>
+          Token 消耗
+          <Progress
+            percent={budgetPct}
+            status={budgetPct >= 100 ? 'exception' : 'normal'}
+          />
+          <span style={{ color: '#8c8c8c', fontSize: 12 }}>
+            {tokensUsed.toLocaleString()} / {BUDGET_LIMIT.toLocaleString()}（缺省上限）
+          </span>
+        </div>
+      </Card>
+
+      <Card size="small" title="外部依赖状态" style={{ marginTop: 12 }}>
+        <DependencyPanel />
+      </Card>
 
       <Card size="small" title="最近会话" style={{ marginTop: 12 }}>
         {recent.length === 0 ? (
