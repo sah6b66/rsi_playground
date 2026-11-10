@@ -700,8 +700,14 @@ export const t7Requests: Record<string, unknown[]> = {
 
 // system.py SettingItem 形态：{path, value, source, mutable}（静态 → PUT 409）
 type SettingRow = { path: string; value: unknown; source: string; mutable: boolean };
+// 与后端 deps.py default_stores["settings"] 键清单一致（8 项）
 const baseSettings = (): SettingRow[] => [
-  { path: 'judge.llm.model', value: 'default', source: 'runtime', mutable: true },
+  { path: 'sandbox.build_retry', value: 2, source: 'config', mutable: true },
+  { path: 'sandbox.ready_timeout_s', value: 600, source: 'config', mutable: true },
+  { path: 'judge.det_timeout_s', value: 120, source: 'config', mutable: true },
+  { path: 'judge.llm_retry', value: 2, source: 'config', mutable: true },
+  { path: 'logging.level', value: 'info', source: 'config', mutable: true },
+  { path: 'judge.llm.model', value: 'default', source: 'config', mutable: true },
   { path: 'budget.llm.daily', value: 100, source: 'runtime', mutable: true },
   { path: 'platform.static_item', value: 'static', source: 'runtime', mutable: false },
 ];

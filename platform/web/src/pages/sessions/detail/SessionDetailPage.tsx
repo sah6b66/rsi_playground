@@ -66,9 +66,15 @@ export function SessionDetailPage() {
           <Descriptions.Item label="状态">
             <StatusBadge value={it.state} />
           </Descriptions.Item>
-          <Descriptions.Item label="预算消耗">
+          <Descriptions.Item label="Token 消耗">
             {typeof it.budget_used?.tokens === 'number'
               ? `${it.budget_used.tokens.toLocaleString()} Token`
+              : '—'}
+          </Descriptions.Item>
+          <Descriptions.Item label="模型调用次数">
+            {typeof (it.budget_used as { llm_calls?: unknown } | undefined)?.llm_calls ===
+            'number'
+              ? (it.budget_used as { llm_calls: number }).llm_calls.toLocaleString()
               : '—'}
           </Descriptions.Item>
         </Descriptions>

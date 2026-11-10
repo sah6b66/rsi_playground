@@ -48,7 +48,7 @@ export function ProfileForm({ value, onChange }: Props) {
         <Form.Item
           label="优化目标（权重编辑器）"
           required
-          tooltip="S = Σ wᵢ·(±Δmᵢ/σᵢ)；σ 取基线噪声标准差（DD-14 §5.5）"
+          tooltip="综合得分 S = Σ 权重×(各指标变化量/基线噪声)；σ 为基线噪声标准差，避免把噪声误判为提升"
         >
           <WeightEditor
             goals={value.goals}

@@ -66,7 +66,7 @@ export function SandboxesPage() {
       key: name ?? '',
       kind: kind ?? 'fake',
       url: url ?? '',
-      verify_tls: true,
+      verify_tls: false,
       subnets: [],
     });
     setOpen(true);
@@ -103,7 +103,7 @@ export function SandboxesPage() {
           type="info"
           showIcon
           message="已写入配置，重启平台后生效"
-          description="sandbox.backends 为静态配置段，运行中的沙箱服务不会热重建"
+          description="平台清单属于静态配置，保存后需重启平台才会生效；运行中的沙箱服务不会自动重建"
           closable
           style={{ marginBottom: 16 }}
         />
@@ -216,12 +216,12 @@ export function SandboxesPage() {
       >
         <Form form={form} layout="vertical">
           <FieldWithHints
-            label="平台键"
+            label="平台标识"
             required
             name="key"
             example="ensp-pro-1"
-            extra="settings.yaml sandbox.backends 下的键名"
-            tooltip="评测集 env.backend（如 ensp-pro）按键前缀匹配到平台"
+            extra="仅小写字母、数字与连字符；创建后不可修改"
+            tooltip="用于在平台内唯一标识这台网络仿真平台，评测集按名称前缀匹配到它"
           >
             <Input />
           </FieldWithHints>
@@ -238,7 +238,7 @@ export function SandboxesPage() {
             label="URL"
             name="url"
             example="https://192.168.56.101:8443"
-            tooltip="eNSP Pro 网页入口；平台不可 SSH（ADR-25 形态）"
+            tooltip="网络仿真平台的网页管理入口地址，平台通过此地址监控它是否在线"
           >
             <Input />
           </FieldWithHints>
@@ -246,8 +246,8 @@ export function SandboxesPage() {
             label="校验 TLS 证书"
             name="verify_tls"
             valuePropName="checked"
-            extra="自签证书无需校验（缺省开）"
-            tooltip="平台入口多为自签 HTTPS，默认校验关闭"
+            extra="缺省关闭（多数仿真平台使用自签名证书）"
+            tooltip="平台使用自签名证书时保持关闭，否则探活会因证书校验失败而误报离线"
           >
             <Switch />
           </FieldWithHints>

@@ -156,11 +156,11 @@ export function SessionListPage() {
             render: (v: string | null) => v ?? '—',
           },
           {
-            title: '预算消耗',
+            title: 'Token 消耗',
             dataIndex: 'budget_used',
             render: (b: Record<string, unknown>) =>
               typeof b?.tokens === 'number'
-                ? `${(b.tokens as number).toLocaleString()} tokens`
+                ? `${(b.tokens as number).toLocaleString()} Token`
                 : '—',
           },
           {

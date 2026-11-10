@@ -1,23 +1,22 @@
-// 参数 Tab（DD-14 §5.10①）：按 settings.yaml 章节分组；动态项（mutable=true）
-// 行内编辑 → PUT /system/settings/{path} → "已热生效"；静态项锁标 +
-// tooltip "修改 settings.yaml 后重启"。列四件套对齐（缺省/范围后端未
-// 暴露时显示 —）。
-import { Badge, Input, InputNumber, Select, Space, Spin, Table, Tooltip } from 'antd';
+// 参数 Tab（U2 重构）：中文名+描述为主列，内部 path 收进 tooltip 供排障；
+// 分组标题中文；"可热更/需重启" Tag 替代原 mutable 文案。
+import { Input, InputNumber, Select, Space, Spin, Table, Tag, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { LockOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { useMemo, useState } from 'react';
 import {
   useSystemSettings,
   useUpdateSetting,
   type SettingItem,
 } from '../../../api/hooks';
+import { GROUP_LABELS, settingLabel } from '../../../utils/settingsLabels';
 
-// 分组映射：按 settings.yaml.example 章节前缀归组（前端常量；未匹配 → 其他）
+// 分组映射：按配置章节前缀归组（前端常量；未匹配 → 其他）
 const SETTINGS_GROUPS: [string, string[]][] = [
   ['server', ['server.']],
   ['database', ['database.', 'db.']],
   ['git', ['git.']],
   ['storage', ['storage.']],
+  ['logging', ['logging.']],
   ['sandbox', ['sandbox.']],
   ['carrier', ['carrier.']],
   ['instrumentor', ['instrumentor.']],
@@ -143,11 +142,29 @@ export function ParamsTab() {
   }, [data]);
 
   const columns: ColumnsType<SettingItem> = [
-    { title: '键', dataIndex: 'path' },
     {
-      title: '类型',
-      width: 80,
-      render: (_, r) => typeOf(r.value),
+      title: '配置项',
+      render: (_, r) => {
+        const label = settingLabel(r.path);
+        return (
+          <Tooltip title={`内部标识：${r.path}`} placement="right">
+            <span data-testid={`label-${r.path}`}>
+              <b>{label.name}</b>
+              {label.desc && (
+                <span
+                  style={{
+                    display: 'block',
+                    fontSize: 12,
+                    color: 'rgba(0,0,0,0.45)',
+                  }}
+                >
+                  {label.desc}
+                </span>
+              )}
+            </span>
+          </Tooltip>
+        );
+      },
     },
     {
       title: '当前值',
@@ -169,26 +186,32 @@ export function ParamsTab() {
         ),
     },
     {
+      title: '值类型',
+      width: 80,
+      render: (_, r) => typeOf(r.value),
+    },
+    {
       title: '缺省值',
-      width: 100,
-      render: () => '—', // 后端 SettingItem 未暴露缺省值/范围（U9 以后端补充为准）
-    },
-    {
-      title: '范围/可选值',
       width: 120,
-      render: () => '—',
+      render: (_, r) => {
+        const def = settingLabel(r.path).def;
+        if (def === null) return '—（不限）';
+        return def === undefined || (Array.isArray(def) && def.length === 0)
+          ? '—'
+          : String(def);
+      },
     },
     {
-      title: '生效方式',
-      width: 150,
+      title: '在线修改',
+      width: 110,
       render: (_, r) =>
         r.mutable ? (
           <Tooltip title="修改后立即生效，无需重启">
-            <Badge status="processing" text={<Space size={4}><ThunderboltOutlined />动态</Space>} />
+            <Tag color="green" data-testid={`mut-${r.path}`}>可热更</Tag>
           </Tooltip>
         ) : (
-          <Tooltip title="修改 settings.yaml 后重启">
-            <Badge status="default" text={<Space size={4}><LockOutlined />静态</Space>} />
+          <Tooltip title="属于静态配置，修改配置文件并重启平台后生效">
+            <Tag data-testid={`mut-${r.path}`}>需重启</Tag>
           </Tooltip>
         ),
     },
@@ -200,7 +223,7 @@ export function ParamsTab() {
       {groups.map((g) => (
         <Table
           key={g.key}
-          title={() => <b>{g.group}</b>}
+          title={() => <b>{GROUP_LABELS[g.group] ?? g.group}</b>}
           rowKey="path"
           size="small"
           dataSource={g.items}

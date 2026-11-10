@@ -265,7 +265,7 @@ export function EvalsetListPage() {
             required
             name="new_name"
             example="netops-bgp-site2"
-            tooltip="重名会返回 409"
+            tooltip="名称需唯一，与已有评测集重名将无法创建"
           >
             <Input />
           </FieldWithHints>
@@ -303,10 +303,10 @@ export function EvalsetListPage() {
             </Form.List>
           ) : null}
           <FieldWithHints
-            label="config_apis（可选）"
+            label="外部配置 API（可选）"
             name="config_apis"
             extra='JSON 数组，如 [{"name":"nms","base_url":"http://10.0.0.20/api"}]；留空不改'
-            tooltip="整表替换 env.yaml 的 config_apis 段"
+            tooltip="保存后将整体替换该评测集的外部配置 API 清单；留空表示沿用原值"
           >
             <Input.TextArea rows={3} />
           </FieldWithHints>

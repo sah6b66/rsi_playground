@@ -89,20 +89,19 @@ export function SecurityTab() {
       <Card size="small" title="三层保障（G3）">
         <ul style={{ margin: 0, paddingLeft: 20 }}>
           <li>
-            <b>白名单执行层校验</b>：TargetRegistry.validate 在 ChangeApplier 与
-            DeterministicCritic 双重执行（DD-11 §4），越界路径 409 拒绝。
+            <b>白名单执行层校验</b>：变更在执行与自动评审两个环节均会校验白名单，
+            越界路径一律拒绝。
           </li>
           <li>
-            <b>冻结域</b>：judge/prompts/evalsets 正则硬编码于
-            rsi/optimizer/targets.py，任何 changeset（含人工 FileEditor 提交）不可通过。
+            <b>冻结域</b>：评审器、评审提示词与评测集属于固定保护内容，
+            任何修改（包括人工提交）都无法通过。
           </li>
           <li>
-            <b>平台冻结开关</b>：POST /system:stop + frozen 状态暂停全部变更通道。
+            <b>平台冻结开关</b>：必要时管理员可一键暂停全部变更通道。
           </li>
         </ul>
         <p style={{ marginBottom: 0, color: 'rgba(0,0,0,0.45)' }}>
-          本页清单为代码级常量兜底展示（后端 /system/freeze 仅返回 frozen 布尔），
-          权威定义以 rsi/optimizer/targets.py 为准。
+          本页清单与平台内置安全规则一致，仅作展示，不支持在此修改。
         </p>
       </Card>
     </Space>

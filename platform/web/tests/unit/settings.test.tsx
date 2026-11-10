@@ -34,12 +34,18 @@ beforeEach(() => {
 // 静态项锁标"静态"、无编辑控件
 test('ParamsTab：动态编辑保存热生效 + 静态项锁', async () => {
   renderSettings();
-  // 动态 number 项渲染为 InputNumber（仅 budget.llm.daily 一项）
-  const num = await screen.findByRole('spinbutton');
-  // 静态项：锁标文案 + 动态标记
-  expect(screen.getByText('静态')).toBeInTheDocument();
-  expect(screen.getAllByText('动态').length).toBeGreaterThanOrEqual(2);
-  // 编辑动态项 budget.llm.daily：清空 → 输入 200 → 失焦保存
+  // U2：配置项以中文名渲染，内部 path 不作为单元格文本（在 tooltip 中）
+  await screen.findByText('裁判模型');
+  expect(screen.getByText('每日模型调用上限')).toBeInTheDocument();
+  expect(screen.getByText('环境构建重试次数')).toBeInTheDocument();
+  expect(screen.queryByText('budget.llm.daily')).not.toBeInTheDocument();
+  // 缺省值列来自静态快照
+  expect(screen.getByText('100')).toBeInTheDocument(); // budget.llm.daily 缺省
+  // 可热更 / 需重启 Tag
+  expect(screen.getByText('需重启')).toBeInTheDocument();
+  expect(screen.getAllByText('可热更').length).toBeGreaterThanOrEqual(2);
+  // 编辑动态项 budget.llm.daily（数值输入框）：清空 → 输入 200 → 失焦保存
+  const num = screen.getByTestId('edit-budget.llm.daily');
   await userEvent.clear(num);
   await userEvent.type(num, '200');
   await userEvent.tab();
@@ -51,11 +57,9 @@ test('ParamsTab：动态编辑保存热生效 + 静态项锁', async () => {
   expect(put.path).toBe('budget.llm.daily');
   expect(put.body.value).toBe(200);
   // invalidate 后编辑器重挂载显示新值 200（key=value 强制刷新）
-  await waitFor(() =>
-    expect(screen.getByRole('spinbutton')).toHaveValue('200'),
-  );
-  // 静态项没有编辑输入框（spinbutton 仅动态数字项 1 个）
-  expect(screen.getAllByRole('spinbutton').length).toBe(1);
+  await waitFor(() => expect(num).toHaveValue('200'));
+  // 数字型动态项共 5 个（4 个 config 重试/超时 + budget.llm.daily），静态项无输入框
+  expect(screen.getAllByRole('spinbutton').length).toBe(5);
 }, 20_000);
 
 // ② UsersTab：创建 Modal（用户名/角色 5 选/密码 ≥8 位）→ POST body；
