@@ -75,6 +75,30 @@ rsi_playground/
 
 Python 3.12 / FastAPI / Pydantic v2 / SQLModel (SQLite WAL → PostgreSQL) / GitPython / structlog / Docker (docker-py) / pytest
 
+## WEB 前端
+
+React 18 + TypeScript + Vite + Ant Design 5 + TanStack Query（目录 `platform/web/`，Node ≥ 20）。
+
+```bash
+# 开发模式（vite dev server 代理 /api 到 127.0.0.1:8000）
+cd platform/web
+npm install
+npm run dev            # → http://localhost:5173（后端 uv run uvicorn ... 起在 8000）
+
+# 生产模式：构建产物由 FastAPI 单进程服务（SPA history fallback 已内置）
+npm run build          # → web/dist/，后端启动后直接访问 http://localhost:8000/
+
+# 单元测试（vitest + Testing Library + MSW，全离线）
+npm test -- --run
+
+# e2e（Playwright 真实浏览器，EE-007 golden path；离线后端自动拉起）
+npx playwright install chromium   # 首次安装浏览器
+npx playwright test               # 自动 npm run build + 启动离线后端(127.0.0.1:8765)
+
+# 由后端 OpenAPI 生成类型化客户端 schema（需后端在 8000 运行）
+npm run gen:api
+```
+
 ## 许可证
 
 Private

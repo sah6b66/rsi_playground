@@ -8,7 +8,7 @@ from typing import Any
 
 import asyncio
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from rsi.api.deps import default_stores, reset_audit_log, set_current_audit_log
@@ -170,13 +170,27 @@ def create_app(
     # N-6 (DD-13 §4.5): servers / tags / Error schema customization.
     app.openapi = lambda: customize_openapi(app, API_PREFIX)
 
-    # DD-14 §7: 生产模式挂载 SPA 静态产物（必须放在全部 API 路由之后，
-    # 否则 mount("/") 会吞掉 /api/v1/*）；web/dist 不存在时跳过（开发走 vite）。
+    # DD-14 §7: 生产模式挂载 SPA 静态产物（必须放在全部 API 路由之后）。
+    # T8：改用 catch-all 路由（StaticFiles mount 无法做 history fallback）——
+    # 命中真实静态文件 → FileResponse；否则返回 index.html（SPA 深链刷新
+    # /sessions/abc 不再 404）。/api/* 未匹配保持 404 JSON，不被 index 吞。
     dist = web_dist if web_dist is not None else Path(__file__).resolve().parents[2] / "web" / "dist"
-    if dist.is_dir():
-        from fastapi.staticfiles import StaticFiles
+    if (dist / "index.html").is_file():
 
-        app.mount("/", StaticFiles(directory=dist, html=True), name="web")
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def spa_fallback(full_path: str) -> Response:
+            from fastapi.responses import FileResponse
+
+            if full_path.startswith("api/"):
+                raise HTTPException(status_code=404, detail="Not Found")
+            candidate = (dist / full_path).resolve() if full_path else None
+            if (
+                candidate is not None
+                and candidate.is_file()
+                and candidate.is_relative_to(dist.resolve())
+            ):
+                return FileResponse(candidate)
+            return FileResponse(dist / "index.html")
 
     return app
 

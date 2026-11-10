@@ -3,7 +3,7 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DD-14 |
-| 版本 | v2.0（用户 9 条需求 + 补充，brainstorming 逐节确认 2026-11-09；取代 v1.x 页面级设计，v1.x 既有组件设计——WeightEditor/SecurityTab/EvalsetImport/SutCreate/GateWorkbench——已并入本文） |
+| 版本 | v2.0（用户 9 条需求 + 补充，brainstorming 逐节确认 2026-11-09；取代 v1.x 页面级设计，v1.x 既有组件设计——WeightEditor/SecurityTab/EvalsetImport/SutCreate/GateWorkbench——已并入本文）。v2.0 实施完成（T1-T8，feat/web-frontend） |
 | 上游 | 设计 3.10.2/3.10.3、接口 §9；FR10、NFR8、ADR-9/18/25 |
 | 交付切片 | S9（web 全量：10 页 + 登录 + 全局 UX 规范） |
 | 关联决策 | RSI 会话=iterations 实体；沙箱页聚合展示设备端点（凭证编辑留评测集页）；镜像管理新增后端端点 |

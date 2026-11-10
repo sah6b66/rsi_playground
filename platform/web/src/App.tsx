@@ -5,7 +5,7 @@ import { Layout } from './components/Layout';
 import { AuthGuard, RequirePerm } from './components/AuthGuard';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { LoginPage } from './pages/login/LoginPage';
-import { ComingSoon } from './pages/placeholder';
+import { ComingSoon } from './components/ComingSoon';
 import { DashboardPage } from './pages/dashboard/DashboardPage';
 import { SessionListPage } from './pages/sessions/SessionListPage';
 import { CreateSessionWizard } from './pages/sessions/CreateSessionWizard';

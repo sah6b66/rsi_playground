@@ -1,4 +1,4 @@
-// 占位页面（Task 1 过渡用，后续任务逐个替换，Task 8 清理）
+// 未实施路由的占位（原 pages/placeholder.tsx，T8 收编）
 import { Card, Result } from 'antd';
 
 export function ComingSoon({ title }: { title: string }) {
