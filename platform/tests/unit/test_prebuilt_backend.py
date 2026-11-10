@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import socket
+
 import pytest
 
 from rsi.core.errors import EnvError
 from rsi.core.models import DeviceSpec, EnvSpec, LinkSpec, SshAccess, Topology
+from rsi.sandbox.backends import prebuilt
 from rsi.sandbox.backends.prebuilt import PrebuiltBackend
 from rsi.sandbox.platform_probe import PlatformProbeResult
 from rsi.sandbox.readiness import ReadyReport
@@ -325,6 +328,72 @@ class TestStatus:
         status = backend.status()
         assert status.available is False
         assert status.detail == "ConnectError"
+
+
+# ---------------------------------------------------------------------------
+# status 在线判定增补（ADR-25）：未配置 URL → 设备 SSH 可达回退
+
+
+class TestStatusNoUrlFallback:
+    def _no_url_backend(self):
+        probe = StubProbe()
+        probe.url = ""  # 未配置平台 URL（物理网络）
+        return make_backend(probe=probe)
+
+    @pytest.mark.asyncio
+    async def test_no_url_with_reachable_device_is_online(self):
+        # 本地起一个 TCP listener 模拟可达设备 SSH 端口
+        with socket.socket() as srv:
+            srv.bind(("127.0.0.1", 0))
+            srv.listen(1)
+            port = srv.getsockname()[1]
+            backend = self._no_url_backend()
+            base = make_env()
+            env = base.model_copy(
+                update={
+                    "ssh_access": {
+                        "R1": SshAccess(
+                            ip="127.0.0.1", port=port, username="admin", password="pw"
+                        ),
+                        "R2": SshAccess(
+                            ip="127.0.0.1", port=1, username="admin", password="pw"
+                        ),  # 不可达端口——任一可达即可
+                    }
+                }
+            )
+            await backend.build(env)
+            status = backend.status()
+            assert status.available is True
+            assert status.detail == "设备 SSH 可达"
+            assert status.active_labs == 1
+
+    @pytest.mark.asyncio
+    async def test_no_url_without_labs_is_offline(self):
+        backend = self._no_url_backend()
+        status = backend.status()
+        assert status.available is False
+        assert status.detail == "未配置 URL 且无在用设备"
+
+    @pytest.mark.asyncio
+    async def test_no_url_unreachable_devices_are_offline(self, monkeypatch):
+        monkeypatch.setattr(
+            prebuilt, "tcp_reachable", lambda ip, port: False
+        )
+        backend = self._no_url_backend()
+        await backend.build(make_env())
+        status = backend.status()
+        assert status.available is False
+        assert status.detail == "未配置 URL 且无在用设备"
+
+    @pytest.mark.asyncio
+    async def test_build_without_url_skips_platform_probe(self):
+        # 物理网络：无 URL 也可 build（端点透传），可达性交给 wait_ready
+        probe = StubProbe()
+        probe.url = ""
+        backend = make_backend(probe=probe)
+        lab = await backend.build(make_env())
+        assert lab.endpoints == make_env().ssh_access
+        assert lab.host == ""
 
 
 # ---------------------------------------------------------------------------

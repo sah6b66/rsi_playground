@@ -247,11 +247,9 @@ def build_services(
             backends.setdefault(name, FakeSandboxBackend())
             continue
         if not cfg.url:
-            # Keep the backend constructed so the registry matches settings,
-            # but its probe reports offline for an empty URL (probing ""
-            # never raises) — the scheduler skips it and doctor flags the
-            # config. This prevents "no candidate" EnvErrors from bad YAML
-            # while still surfacing the misconfiguration.
+            # No platform URL（物理网络 kind=physical 或未配 URL）：backend 保持
+            # 构造，在线判定回退为设备 SSH 可达（PrebuiltBackend.status，
+            # ADR-25 增补）——建成 lab 之前 status 报离线。
             logger.warning(
                 "bootstrap.sandbox_backend_missing_url",
                 backend=name,

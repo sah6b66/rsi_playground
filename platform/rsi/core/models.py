@@ -147,7 +147,7 @@ class ExternalDep(_M):
 
 class EnvSpec(_M):
     name: str
-    backend: Literal["ensp-pro", "pnetlab", "containerlab", "fake"]
+    backend: Literal["ensp-pro", "pnetlab", "physical", "containerlab", "fake"]
     devices: list[DeviceSpec] = Field(min_length=1)
     topology: Topology
     ssh_access: dict[str, SshAccess]  # keys == device names

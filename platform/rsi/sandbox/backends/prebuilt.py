@@ -17,6 +17,7 @@ This backend therefore:
 
 from __future__ import annotations
 
+import socket
 from urllib.parse import urlparse
 
 from rsi.core.errors import EnvError
@@ -60,19 +61,22 @@ class PrebuiltBackend(SandboxBackend):
 
     async def build(self, env: EnvSpec) -> LabHandle:
         logger.debug("build.entry", env=env.name, devices=len(env.devices), kind=self.kind)
-        result = self._probe.probe_cached()
-        if not result.ok:
-            logger.debug(
-                "build.error", exc_type="EnvError", url=self._probe.url, detail=result.detail
-            )
-            raise EnvError(
-                f"platform {self._probe.url!r} is offline: {result.detail}",
-                context={
-                    "url": self._probe.url,
-                    "detail": result.detail,
-                    "backend": self._key,
-                },
-            )
+        # 未配置平台 URL（物理网络）无平台层可探——build 仅透传设备端点，
+        # 设备可达性由 wait_ready / status 的设备 SSH 判定承担。
+        if self._probe.url:
+            result = self._probe.probe_cached()
+            if not result.ok:
+                logger.debug(
+                    "build.error", exc_type="EnvError", url=self._probe.url, detail=result.detail
+                )
+                raise EnvError(
+                    f"platform {self._probe.url!r} is offline: {result.detail}",
+                    context={
+                        "url": self._probe.url,
+                        "detail": result.detail,
+                        "backend": self._key,
+                    },
+                )
         lab_id = new_id("lab")
         self._envs[lab_id] = env
         logger.debug("build.exit", lab_id=lab_id)
@@ -197,13 +201,34 @@ class PrebuiltBackend(SandboxBackend):
         return len(self._envs)
 
     def status(self) -> BackendStatus:
-        result = self._probe.probe_cached()
+        # ADR-25 增补：配置了 URL → URL 探活；未配置 URL（物理网络）→
+        # 任一在用设备 SSH 可达即在线（同步 TCP 探测，3s 超时，语义同
+        # readiness 的 ssh_reachable）。
+        if self._probe.url:
+            result = self._probe.probe_cached()
+            return BackendStatus(
+                key=self._key,
+                kind=self.kind,
+                active_labs=len(self._envs),
+                available=result.ok,
+                detail=result.detail,
+            )
+        for env in self._envs.values():
+            for access in env.ssh_access.values():
+                if tcp_reachable(access.ip, access.port):
+                    return BackendStatus(
+                        key=self._key,
+                        kind=self.kind,
+                        active_labs=len(self._envs),
+                        available=True,
+                        detail="设备 SSH 可达",
+                    )
         return BackendStatus(
             key=self._key,
             kind=self.kind,
             active_labs=len(self._envs),
-            available=result.ok,
-            detail=result.detail,
+            available=False,
+            detail="未配置 URL 且无在用设备",
         )
 
     # -- internals ----------------------------------------------------------------
@@ -226,3 +251,15 @@ class PrebuiltBackend(SandboxBackend):
 
 def _url_host(url: str) -> str:
     return urlparse(url).hostname or url
+
+
+DEVICE_SSH_TIMEOUT_S = 3.0
+
+
+def tcp_reachable(ip: str, port: int) -> bool:
+    """Synchronous TCP connect probe (mirrors readiness ssh_reachable, 3s)."""
+    try:
+        with socket.create_connection((ip, port), timeout=DEVICE_SSH_TIMEOUT_S):
+            return True
+    except OSError:
+        return False

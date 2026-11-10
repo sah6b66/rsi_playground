@@ -325,6 +325,20 @@ class TestSandboxBackendPut:
             "subnets": ["10.104.0.0/16"],
         }
 
+    async def test_put_accepts_physical_kind_without_url(self, client, tmp_path):
+        # 物理网络类型（ADR-25 增补）：无 URL，在线判定走设备 SSH 回退
+        yml = tmp_path / "settings.yaml"
+        yml.write_text("", encoding="utf-8")
+        h = await admin_headers(client)
+        resp = await client.put(
+            "/api/v1/sandbox/backends/phys-1",
+            json={"kind": "physical", "url": "", "verify_tls": False, "subnets": []},
+            headers=h,
+        )
+        assert resp.status_code == 200, resp.text
+        doc = yaml.safe_load(yml.read_text(encoding="utf-8"))
+        assert doc["sandbox"]["backends"]["phys-1"]["kind"] == "physical"
+
 
 # ── POST /evalsets/{id}:clone ───────────────────────────────────────────────
 

@@ -19,6 +19,13 @@ import {
   Row,
   Col,
 } from 'antd';
+import {
+  CloudOutlined,
+  CloudServerOutlined,
+  ExperimentOutlined,
+  HddOutlined,
+} from '@ant-design/icons';
+import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -35,7 +42,16 @@ import { useUiStore } from '../../stores/ui';
 const KIND_LABEL: Record<string, string> = {
   'ensp-pro': 'eNSP Pro',
   pnetlab: 'PNETLab',
+  physical: '物理网络',
   fake: 'Fake',
+};
+
+// 类型图标（四态）：仿真平台=云、物理网络=桌面/服务器、Fake=烧瓶
+const KIND_ICON: Record<string, ReactNode> = {
+  'ensp-pro': <CloudServerOutlined />,
+  pnetlab: <CloudOutlined />,
+  physical: <HddOutlined />,
+  fake: <ExperimentOutlined />,
 };
 
 // env.backend（如 ensp-pro）↔ 平台键（如 ensp-pro-1）：按键前缀匹配
@@ -60,6 +76,8 @@ export function SandboxesPage() {
     verify_tls: boolean;
     subnets: string[];
   }>();
+  // physical 类型隐藏 URL 输入（在线判定=设备 SSH 可达，无需平台地址）
+  const formKind = Form.useWatch('kind', form);
 
   const openEdit = (name?: string, kind?: string, url?: string) => {
     form.setFieldsValue({
@@ -119,7 +137,12 @@ export function SandboxesPage() {
               title={
                 <Space>
                   <b>{b.name}</b>
-                  <Tag color="purple">{KIND_LABEL[b.kind] ?? b.kind}</Tag>
+                  <Tag color="purple">
+                    <Space size={4}>
+                      {KIND_ICON[b.kind]}
+                      {KIND_LABEL[b.kind] ?? b.kind}
+                    </Space>
+                  </Tag>
                   {b.kind === 'fake' && <Tag>离线开发用</Tag>}
                 </Space>
               }
@@ -228,20 +251,62 @@ export function SandboxesPage() {
           <FieldWithHints label="类型" required name="kind">
             <Select
               options={[
-                { value: 'ensp-pro', label: 'eNSP Pro' },
-                { value: 'pnetlab', label: 'PNETLab' },
-                { value: 'fake', label: 'Fake（离线开发）' },
+                {
+                  value: 'ensp-pro',
+                  label: (
+                    <Space>
+                      <CloudServerOutlined />
+                      eNSP Pro
+                    </Space>
+                  ),
+                },
+                {
+                  value: 'pnetlab',
+                  label: (
+                    <Space>
+                      <CloudOutlined />
+                      PNETLab
+                    </Space>
+                  ),
+                },
+                {
+                  value: 'physical',
+                  label: (
+                    <Space>
+                      <HddOutlined />
+                      物理网络
+                    </Space>
+                  ),
+                },
+                {
+                  value: 'fake',
+                  label: (
+                    <Space>
+                      <ExperimentOutlined />
+                      Fake（离线开发）
+                    </Space>
+                  ),
+                },
               ]}
             />
           </FieldWithHints>
-          <FieldWithHints
-            label="URL"
-            name="url"
-            example="https://192.168.56.101:8443"
-            tooltip="网络仿真平台的网页管理入口地址，平台通过此地址监控它是否在线"
-          >
-            <Input />
-          </FieldWithHints>
+          {formKind === 'physical' ? (
+            <Typography.Text
+              type="secondary"
+              style={{ display: 'block', marginBottom: 16 }}
+            >
+              物理网络无需平台地址，以设备 SSH 可达判断在线
+            </Typography.Text>
+          ) : (
+            <FieldWithHints
+              label="URL"
+              name="url"
+              example="https://192.168.56.101:8443"
+              tooltip="网络仿真平台的网页管理入口地址，平台通过此地址监控它是否在线"
+            >
+              <Input />
+            </FieldWithHints>
+          )}
           <FieldWithHints
             label="校验 TLS 证书"
             name="verify_tls"

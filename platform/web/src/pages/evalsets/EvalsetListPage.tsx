@@ -303,10 +303,10 @@ export function EvalsetListPage() {
             </Form.List>
           ) : null}
           <FieldWithHints
-            label="外部配置 API（可选）"
+            label="网络环境准备API（可选）"
             name="config_apis"
             extra='JSON 数组，如 [{"name":"nms","base_url":"http://10.0.0.20/api"}]；留空不改'
-            tooltip="保存后将整体替换该评测集的外部配置 API 清单；留空表示沿用原值"
+            tooltip="用于评测集任务执行前准备网络环境（如网管 API 预置状态）；保存后将整体替换该评测集的 API 清单；留空表示沿用原值"
           >
             <Input.TextArea rows={3} />
           </FieldWithHints>

@@ -27,15 +27,17 @@ test('仪表盘渲染指标卡片：会话/镜像/环境/沙箱/实例计数', a
   expect(screen.getByText('待审批会话')).toBeInTheDocument();
   expect(screen.getByText('已完成会话')).toBeInTheDocument();
   expect(screen.getAllByText('1').length).toBeGreaterThan(0);
-  // 网络Agent 合并卡（标题与最近会话列同名，取一；副行含注册数 5）
+  // 资源卡统一 X/Y 风格（第 5 轮反馈 1a）：
+  // 网络Agent=运行实例 2 / 注册总数 5
   expect(screen.getAllByText('网络Agent').length).toBeGreaterThanOrEqual(1);
-  expect(screen.getByText(/已注册 5/)).toBeInTheDocument();
-  // 运行环境（platform:* 检查项 1/2）
-  expect(screen.getByText('运行环境（在线）')).toBeInTheDocument();
-  expect(screen.getByText('1/2')).toBeInTheDocument();
-  // 网络仿真平台 3（2 在线）
-  expect(screen.getByText('网络仿真平台（在线）')).toBeInTheDocument();
-  expect(screen.getByText('2/3')).toBeInTheDocument();
+  expect(screen.getByText('2/5')).toBeInTheDocument();
+  expect(screen.getByText('运行实例 / 注册总数')).toBeInTheDocument();
+  // 运行环境：GET /carrier/hosts（fixture 2 在线 / 共 2）
+  expect(screen.getByText('运行环境')).toBeInTheDocument();
+  expect(screen.getByText('2/2')).toBeInTheDocument();
+  // 网络仿真平台：4 个平台（ensp-pro-1/pnetlab/fake/phys-1）3 在线
+  expect(screen.getByText('网络仿真平台')).toBeInTheDocument();
+  expect(screen.getByText('3/4')).toBeInTheDocument();
   // 指标卡 6 张两行（会话类/资源类分行，span=8 等宽）；无独立 Token 卡
   expect(screen.getAllByTestId('metric-card').length).toBe(6);
   expect(
@@ -44,20 +46,22 @@ test('仪表盘渲染指标卡片：会话/镜像/环境/沙箱/实例计数', a
   expect(screen.queryByText('Token 预算消耗')).not.toBeInTheDocument();
 });
 
-test('依赖面板展示依赖项（中文名）、中文状态与中文离线原因', async () => {
+test('环境状态面板：保留 LLM/数据库等项，隐藏已由指标卡覆盖的项', async () => {
   renderDashboard();
   await waitFor(() =>
-    expect(screen.getByText('网络仿真平台（pnetlab）')).toBeInTheDocument(),
+    expect(screen.getByText('数据库')).toBeInTheDocument(),
   );
-  expect(screen.getByText('网络仿真平台（ensp-pro-1）')).toBeInTheDocument();
-  expect(screen.getByText('数据库')).toBeInTheDocument();
   expect(screen.getByText('LLM 服务')).toBeInTheDocument();
-  expect(screen.getByText('外部依赖状态')).toBeInTheDocument();
-  // 中文状态词
-  expect(screen.getAllByText('在线').length).toBeGreaterThanOrEqual(3);
-  expect(screen.getByText('离线')).toBeInTheDocument();
-  // 离线原因中文映射（fixture detail "connect timeout" → 连接超时）
-  expect(screen.getByText('连接超时')).toBeInTheDocument();
+  expect(screen.getByText('环境状态')).toBeInTheDocument(); // 标题改名（原「外部依赖状态」）
+  expect(screen.queryByText('外部依赖状态')).not.toBeInTheDocument();
+  // 隐藏集（第 5 轮反馈 1a）：docker/docker:*/lab/instances/platform:*
+  expect(screen.queryByText('Docker 引擎')).not.toBeInTheDocument();
+  expect(screen.queryByText('实验环境设备')).not.toBeInTheDocument();
+  expect(screen.queryByText('Agent 实例')).not.toBeInTheDocument();
+  expect(screen.queryByText('网络仿真平台（pnetlab）')).not.toBeInTheDocument();
+  expect(screen.queryByText('网络仿真平台（ensp-pro-1）')).not.toBeInTheDocument();
+  // 中文状态词 + 延迟展示（db/llm 在线）
+  expect(screen.getAllByText('在线').length).toBeGreaterThanOrEqual(2);
   expect(screen.getByText(/211/)).toBeInTheDocument();
 });
 

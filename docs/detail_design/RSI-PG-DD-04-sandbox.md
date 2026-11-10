@@ -173,7 +173,7 @@ build/wait_ready/snapshot(degraded 标记)/restore=重放（与真实现同语�
 - **构造**：`PrebuiltBackend(key, kind, probe, ssh_pool, readiness)`（bootstrap 按 settings kind 组装：ensp-pro/pnetlab→Prebuilt，共享全局 SshPool + ReadinessChecker + PlatformProbe；fake→FakeSandboxBackend）；内部 `_envs[lab_id]` 登记；
 - **共享 pool 的 (ip,port) 键**：exec 与健康检查与 SandboxService 走**同一共享 SshPool**（SessionKey=(ip,port) 全局唯一，ADR-24）——无双层会话；lab 销毁按 lab_id 批量回收；
 - **生命周期**：build=probe 在线校验（离线→EnvError 含平台 url）→ `LabHandle(endpoints=dict(env.ssh_access))`（端点透传，不创建任何对象）；wait_ready=ReadinessChecker（缺省每设备 ssh_reachable TCP 轮询）；snapshot=no-op（SnapRef.impl_kind="noop"）；restore=no-op+warning（L1 配置备份恢复已覆盖任务恢复，L2 退化由 reset 承担）；**reset≠no-op**——逐设备经共享 pool 执行厂商 reset_cmd（vendor.py SSOT）；destroy=pop _envs + `ssh_pool.close_lab(lab_id)`；
-- **status()**：覆盖为探活结果——`BackendStatus.available = probe.probe_cached().ok`（TTL 缓存，默认 15s）；`backend_status()` 聚合各后端，LabScheduler select 过滤 available=False（全不可用→EnvError）；
+- **status()**：覆盖为探活结果——`BackendStatus.available = probe.probe_cached().ok`（TTL 缓存，默认 15s）；**在线判定增补（ADR-25）**：未配置 URL（空串，含 kind=physical 物理网络）时以设备 SSH 可达为回退判据——遍历当前 active labs 的 endpoints 做同步 TCP 探测（3s 超时），任一可达即 available=True，无 active lab 则 available=False；`backend_status()` 聚合各后端，LabScheduler select 过滤 available=False（全不可用→EnvError）；
 - **两层错误语义**：平台离线（URL 探活失败）→ build 立即 EnvError（含 url 与异常 detail）、BackendStatus.available=False、HealthMonitor `platform:<key>` checker down+system.alert 告警、调度器跳过——**已建 lab 不受影响**（设备 SSH 与平台 Web 无关）；设备 SSH 不可达→wait_ready 轮询超时→EnvError→env_failed、health_check（display clock 登录探测）False，错误定位到设备 (ip,port)。
 
 ## 6. 依赖矩阵

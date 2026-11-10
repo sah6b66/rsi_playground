@@ -195,7 +195,7 @@ class SandboxBackend(BaseModel):
     """
 
     model_config = _C
-    kind: Literal["ensp-pro", "pnetlab", "fake"] = "fake"
+    kind: Literal["ensp-pro", "pnetlab", "physical", "fake"] = "fake"
     url: str = ""  # platform Web entry, e.g. https://192.168.56.101:8443
     verify_tls: bool = False  # self-signed certs off by default
     api: Optional[str] = None  # reserved for S11 Web-API orchestration

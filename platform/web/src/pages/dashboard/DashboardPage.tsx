@@ -1,12 +1,13 @@
-// Dashboard 运行总览（DD-14 §5.2，UX 二轮）：
-// 指标卡两行各 3 张（会话类/资源类分行，span=8 等宽）；系统状态与外部依赖
-// 各自独占一行（全宽）；Token 消耗并入系统状态面板；网络Agent 卡合并
-// 运行实例与注册数。
+// Dashboard 运行总览（DD-14 §5.2，UX 二轮+第 5 轮）：
+// 指标卡两行各 3 张（会话类/资源类分行，span=8 等宽）；资源卡统一 X/Y 风格
+// （网络Agent=运行实例/注册总数、运行环境=/carrier/hosts 在线数、
+// 网络仿真平台=available 数）；系统状态与环境状态面板各自独占一行
+// （全宽）；Token 消耗并入系统状态面板。
 import { Card, Col, Empty, Progress, Row, Table } from 'antd';
 import { Link } from 'react-router-dom';
 import {
   useBackends,
-  useDependencies,
+  useEnvironments,
   useInstances,
   useSessions,
   useSuts,
@@ -35,7 +36,7 @@ export function DashboardPage() {
   const suts = useSuts();
   const backends = useBackends();
   const instances = useInstances();
-  const deps = useDependencies();
+  const environments = useEnvironments();
   const health = useSystemHealth();
 
   const items = sessions.data?.items ?? [];
@@ -45,11 +46,9 @@ export function DashboardPage() {
 
   const agentCount = suts.data?.items.length ?? 0;
 
-  // 运行环境：T6 前无 /carrier/hosts —— 用 dependencies 中
-  // platform:*（执行主机探活项）计数替代。
-  const depItems = deps.data?.items ?? [];
-  const hostChecks = depItems.filter((d) => d.name.startsWith('platform:'));
-  const hostOk = hostChecks.filter((d) => d.status === 'ok').length;
+  // 运行环境（X/Y）：GET /carrier/hosts，在线=online true 计数
+  const hostItems = environments.data?.items ?? [];
+  const hostOnline = hostItems.filter((h) => h.online).length;
 
   const backendItems = backends.data?.items ?? [];
   const backendOnline = backendItems.filter((b) => b.available).length;
@@ -91,22 +90,22 @@ export function DashboardPage() {
         <Col span={8}>
           <MetricCard
             title="网络Agent"
-            value={runningInstances}
-            sub={`运行实例 · 已注册 ${agentCount} 个`}
+            value={`${runningInstances}/${agentCount}`}
+            sub="运行实例 / 注册总数"
           />
         </Col>
         <Col span={8}>
           <MetricCard
-            title="运行环境（在线）"
-            value={`${hostOk}/${hostChecks.length}`}
-            sub="执行主机在线 / 总数"
+            title="运行环境"
+            value={`${hostOnline}/${hostItems.length}`}
+            sub="在线 / 总数"
           />
         </Col>
         <Col span={8}>
           <MetricCard
-            title="网络仿真平台（在线）"
+            title="网络仿真平台"
             value={`${backendOnline}/${backendItems.length}`}
-            sub={`共 ${backendItems.length} 个平台`}
+            sub="在线 / 总数"
           />
         </Col>
       </Row>
@@ -130,7 +129,7 @@ export function DashboardPage() {
         </div>
       </Card>
 
-      <Card size="small" title="外部依赖状态" style={{ marginTop: 12 }}>
+      <Card size="small" title="环境状态" style={{ marginTop: 12 }}>
         <DependencyPanel />
       </Card>
 

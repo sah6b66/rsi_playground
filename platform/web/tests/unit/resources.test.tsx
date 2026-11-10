@@ -133,6 +133,38 @@ test('沙箱页：平台卡片 + 探活 detail + 设备端点聚合', async () =
   );
 }, 60000);
 
+// ③b 物理网络类型（用户第 5 轮反馈 3）：kind 四值 + physical 隐藏 URL + 卡片 Tag
+test('沙箱页：kind 四值选项 + physical 隐藏 URL 输入 + 物理网络卡片 Tag', async () => {
+  renderApp('/sandboxes');
+  await waitFor(() => expect(screen.getByText('phys-1')).toBeInTheDocument());
+  expect(screen.getAllByText('物理网络').length).toBeGreaterThanOrEqual(1); // phys-1 卡片类型 Tag（卡头+描述行）
+  // 打开新增平台弹窗：类型选项四值（文本嵌在 Space 内——按 option-content DOM 断言）
+  await userEvent.click(screen.getByRole('button', { name: '新增平台' }));
+  const kindSelect = await screen.findByRole('combobox', { name: '类型' });
+  await userEvent.click(kindSelect);
+  const optionEls = await waitFor(() => {
+    const els = document.querySelectorAll('.ant-select-item-option-content');
+    expect(els.length).toBe(4);
+    return els;
+  }, { timeout: 10_000 });
+  expect(Array.from(optionEls).map((e) => e.textContent)).toEqual([
+    'eNSP Pro',
+    'PNETLab',
+    '物理网络',
+    'Fake（离线开发）',
+  ]);
+  // 选「物理网络」→ URL 输入隐藏，出现设备 SSH 提示
+  await userEvent.click(optionEls[2]!);
+  await waitFor(() =>
+    expect(
+      screen.getByText('物理网络无需平台地址，以设备 SSH 可达判断在线'),
+    ).toBeInTheDocument(),
+  );
+  expect(
+    screen.queryByPlaceholderText('https://192.168.56.101:8443'),
+  ).not.toBeInTheDocument();
+}, 60000);
+
 // ④ 克隆向导：设备 ip/port 动态行（源 ssh_access 预填）→ 提交 201 → 列表出现新名
 test('评测集克隆：设备端点预填 + 覆盖提交 + 重名 409', async () => {
   renderApp('/evalsets');

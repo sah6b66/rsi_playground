@@ -188,7 +188,7 @@ async def list_backends(
 class BackendPutBody(BaseModel):
     """PUT /sandbox/backends/{key}：写 settings.yaml 静态段（DD-14 §5.8）。"""
 
-    kind: Literal["ensp-pro", "pnetlab", "fake"]
+    kind: Literal["ensp-pro", "pnetlab", "physical", "fake"]
     url: str = ""
     verify_tls: bool = False
     subnets: list[str] = []
