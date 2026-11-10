@@ -177,19 +177,16 @@ def build_services(
     _prompts_dir = _Path(__file__).parent / "judge" / "prompts"
     prompt_library = PromptLibrary(template_dir=_prompts_dir, component="judge")
     accountant = Accountant(session_factory=session_factory)  # C-7: llm_calls rows
+    judge_cfg = settings.llm.defaults.get("judge")
     llm_client = LLMClient(
         handler=_offline_llm_handler,
         max_concurrent_calls=settings.llm.max_concurrent_calls,
-        model=settings.llm.defaults.get("judge").model
-        if settings.llm.defaults.get("judge")
-        else "mock",
+        # 本地 settings.yaml 可能只写 judge 的部分键（如仅 model）——
+        # temperature/model 缺省回退，避免 None 进入 float()/LLM 调用。
+        model=(judge_cfg.model or "mock") if judge_cfg else "mock",
         prompt_library=prompt_library,
         accountant=accountant,
-        temperature=float(
-            settings.llm.defaults.get("judge").temperature
-            if settings.llm.defaults.get("judge")
-            else 0.0
-        ),
+        temperature=float(judge_cfg.temperature) if judge_cfg and judge_cfg.temperature is not None else 0.0,
     )
 
     # -- Judge (session_factory wired -> judgments table persistence) -----
@@ -263,6 +260,7 @@ def build_services(
             probe=probe,
             ssh_pool=ssh_pool,
             readiness=readiness_checker,
+            devices=cfg.devices,
         )
 
     sandbox_service = SandboxService(
