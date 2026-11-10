@@ -1,9 +1,14 @@
-// 用户管理 Tab（admin，DD-14 §5.10⑥）：列表/创建（5 角色）/禁用 Switch。
-// users.py 实际端点：GET/POST /users、PUT /users/{user_id}（role/disabled）；
-// 无 reset-password 端点、无 created_at 字段——按后端实际对齐。
+// 用户管理 Tab（admin，DD-14 §5.10⑥）：列表/创建（5 角色）/禁用 Switch/重置密码。
+// users.py 实际端点：GET/POST /users、PUT /users/{user_id}（role/disabled）、
+// POST /users/{user_id}:reset-password（≥8 位，204）；无 created_at 字段。
 import { Alert, Button, Form, Input, Modal, Select, Space, Switch, Table, Tag } from 'antd';
 import { useState } from 'react';
-import { useCreateUser, useUpdateUser, useUsers } from '../../../api/hooks';
+import {
+  useCreateUser,
+  useResetPassword,
+  useUpdateUser,
+  useUsers,
+} from '../../../api/hooks';
 import { FieldWithHints } from '../../../components/FieldWithHints';
 import { ROLES, ROLE_LABEL, type Role } from '../../../utils/permissions';
 
@@ -25,7 +30,10 @@ export function UsersTab() {
   const { data, isLoading } = useUsers();
   const createMut = useCreateUser();
   const updateMut = useUpdateUser();
+  const resetMut = useResetPassword();
   const [open, setOpen] = useState(false);
+  const [resetTarget, setResetTarget] = useState<{ id: string; username: string } | null>(null);
+  const [resetForm] = Form.useForm<{ password: string }>();
   const [form] = Form.useForm<UserForm>();
 
   return (
@@ -71,8 +79,60 @@ export function UsersTab() {
             ),
           },
           { title: '用户 ID', dataIndex: 'id' },
+          {
+            title: '操作',
+            key: 'actions',
+            width: 110,
+            render: (_, r) => (
+              <Button
+                size="small"
+                onClick={() => {
+                  setResetTarget({ id: r.id, username: r.username });
+                  resetForm.resetFields();
+                }}
+              >
+                重置密码
+              </Button>
+            ),
+          },
         ]}
       />
+
+      <Modal
+        open={resetTarget !== null}
+        title={`重置密码：${resetTarget?.username ?? ''}`}
+        okText="重置"
+        cancelText="取消"
+        confirmLoading={resetMut.isPending}
+        onCancel={() => setResetTarget(null)}
+        onOk={() => resetForm.submit()}
+        destroyOnHidden
+      >
+        <Form
+          form={resetForm}
+          layout="vertical"
+          onFinish={(v) => {
+            if (!resetTarget) return;
+            resetMut.mutate(
+              { id: resetTarget.id, password: v.password },
+              { onSuccess: () => setResetTarget(null) },
+            );
+          }}
+        >
+          <FieldWithHints
+            label="新密码"
+            required
+            name="password"
+            extra="至少 8 位"
+            rules={[
+              { required: true, message: '请输入新密码' },
+              { min: 8, message: '至少 8 位' },
+            ]}
+          >
+            <Input.Password />
+          </FieldWithHints>
+        </Form>
+      </Modal>
 
       <Modal
         open={open}

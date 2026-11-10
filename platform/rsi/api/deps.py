@@ -84,7 +84,33 @@ STORE_KEYS = [
 ]
 
 
-def default_stores() -> dict[str, Any]:
+def default_stores(settings: Any = None) -> dict[str, Any]:
+    """P0 in-memory stores.
+
+    The ``settings`` store is derived from the *real* :class:`Settings`
+    instance (env > settings.yaml > defaults — H1-A) so GET
+    /system/settings shows the actually-effective values. ``settings_path``
+    marks entries backed by a Settings field: PUT updates the shared
+    Settings object (hot-reload) and persists the leaf to settings.yaml
+    (H1-B/C). Entries without it (e.g. ``sse.max_seconds``) stay
+    runtime-only knobs.
+    """
+    from rsi.settings import Settings, get_dotted
+
+    settings = settings or Settings()
+
+    def derived(path: str, spath: str | None = None) -> dict[str, Any]:
+        try:
+            value = get_dotted(settings, spath or path)
+        except (KeyError, AttributeError):
+            value = None
+        return {
+            "value": value,
+            "mutable": True,
+            "source": "config",
+            "settings_path": spath or path,
+        }
+
     return {
         "suts": {},
         "evalsets": {},
@@ -99,8 +125,19 @@ def default_stores() -> dict[str, Any]:
         "hypotheses": {},
         "credentials": {},
         "settings": {
-            "judge.llm.model": {"value": "default", "mutable": True},
+            # real Settings-backed runtime knobs (hot-update + yaml write-back)
+            "sandbox.build_retry": derived("sandbox.build_retry"),
+            "sandbox.ready_timeout_s": derived("sandbox.ready_timeout_s"),
+            "judge.det_timeout_s": derived("judge.det_timeout_s"),
+            "judge.llm_retry": derived("judge.llm_retry"),
+            "logging.level": derived("logging.level"),
+            # display path maps to llm.defaults.judge.model in Settings
+            "judge.llm.model": derived(
+                "judge.llm.model", "llm.defaults.judge.model"
+            ),
+            # legacy knobs not represented in Settings (runtime-only)
             "budget.llm.daily": {"value": 100, "mutable": True},
+            # static placeholder (immutable at runtime → 409)
             "platform.static_item": {"value": "static", "mutable": False},
         },
         "system": {"stopped": False, "frozen": False},

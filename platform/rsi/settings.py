@@ -9,16 +9,56 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import yaml
 
-from pydantic import BaseModel, ConfigDict, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic_settings import (
+    BaseSettings,
+    SettingsConfigDict,
+    YamlConfigSettingsSource,
+)
 
 DEFAULT_HOME = "./var"
 
 _C = ConfigDict(extra="ignore", validate_assignment=True)
+
+
+# -- dotted-path access on Settings trees (system settings hot-update) ------
+
+
+def get_dotted(obj: object, path: str) -> object:
+    """Read a ``a.b.c`` leaf from nested BaseModels / dicts (KeyError /
+    AttributeError propagate for unknown paths)."""
+    for part in path.split("."):
+        obj = obj[part] if isinstance(obj, dict) else getattr(obj, part)
+    return obj
+
+
+def set_dotted(obj: object, path: str, value: object) -> object:
+    """Write a ``a.b.c`` leaf on nested BaseModels / dicts.
+
+    For pydantic model leaves the raw (often str) value is converted to
+    the field's annotation via ``TypeAdapter`` first; ``setattr`` then
+    re-validates (model_config has validate_assignment). Raises
+    ``pydantic.ValidationError`` on invalid values — callers map it to
+    API 422. Returns the converted value.
+    """
+    parts = path.split(".")
+    parent = obj
+    for part in parts[:-1]:
+        parent = parent[part] if isinstance(parent, dict) else getattr(parent, part)
+    leaf = parts[-1]
+    if isinstance(parent, dict):
+        parent[leaf] = value
+        return value
+    field = type(parent).model_fields.get(leaf)
+    converted = (
+        TypeAdapter(field.annotation).validate_python(value) if field else value
+    )
+    setattr(parent, leaf, converted)
+    return converted
 
 
 def _resolve(home: Path, value: str | Path) -> Path:
@@ -452,6 +492,33 @@ class Settings(BaseSettings):
     security: SecuritySettings = SecuritySettings()
     scheduler: SchedulerSettings = SchedulerSettings()
     seed: SeedSettings = SeedSettings()
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: Any,
+        env_settings: Any,
+        dotenv_settings: Any,
+        file_secret_settings: Any,
+    ) -> tuple[Any, ...]:
+        """Priority: init kwargs > env (RSI_*) > settings.yaml > defaults.
+
+        The yaml file lives at ``settings_yaml_path()`` (RSI_SETTINGS or
+        ``<RSI_HOME>/settings.yaml``); a missing file yields an empty
+        source, so settings.yaml is now authoritative at runtime — not
+        just a doctor-checked document.
+        """
+        yaml_source = YamlConfigSettingsSource(
+            settings_cls, yaml_file=str(settings_yaml_path())
+        )
+        return (
+            init_settings,
+            env_settings,
+            yaml_source,
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     # RSI_HOME, read once at construction (env var wins; default ./var).
     home: Path = Field(default_factory=_rsi_home)

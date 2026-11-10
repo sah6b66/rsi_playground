@@ -139,7 +139,9 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.services = services
-    app.state.stores = services.get("stores") or default_stores()
+    app.state.stores = services.get("stores") or default_stores(
+        services.get("settings")
+    )
 
     app.add_middleware(
         CORSMiddleware,
