@@ -14,6 +14,9 @@ import { EvalsetListPage } from './pages/evalsets/EvalsetListPage';
 import { ImagesPage } from './pages/images/ImagesPage';
 import { SandboxesPage } from './pages/sandboxes/SandboxesPage';
 import { EnvironmentsPage } from './pages/environments/EnvironmentsPage';
+import { SutListPage } from './pages/suts/SutListPage';
+import { SutDetailPage } from './pages/suts/SutDetailPage';
+import { SettingsPage } from './pages/settings/SettingsPage';
 import { useEventStream } from './api/sse';
 
 const queryClient = new QueryClient({
@@ -32,8 +35,8 @@ function Shell() {
           <Route path="/sessions/new" element={<CreateSessionWizard />} />
           <Route path="/sessions/:id" element={<SessionDetailPage />} />
           <Route path="/evalsets" element={<EvalsetListPage />} />
-          <Route path="/suts" element={<ComingSoon title="SUT 管理" />} />
-          <Route path="/suts/:id" element={<ComingSoon title="SUT 详情" />} />
+          <Route path="/suts" element={<SutListPage />} />
+          <Route path="/suts/:id" element={<SutDetailPage />} />
           <Route path="/images" element={<ImagesPage />} />
           <Route path="/sandboxes" element={<SandboxesPage />} />
           <Route path="/environments" element={<EnvironmentsPage />} />
@@ -41,7 +44,7 @@ function Shell() {
             path="/settings"
             element={
               <RequirePerm perm="settings:write">
-                <ComingSoon title="参数配置" />
+                <SettingsPage />
               </RequirePerm>
             }
           />

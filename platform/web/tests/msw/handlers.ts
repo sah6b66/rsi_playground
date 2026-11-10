@@ -683,3 +683,303 @@ export const resourcesHandlers = [
 ];
 
 handlers.push(...resourcesHandlers);
+
+// ── Task 7 fixtures：settings 六 Tab + SUT 管理 ────────────────────────────
+// 请求捕获（settings/suts 测试断言用）
+export const t7Requests: Record<string, unknown[]> = {
+  settingPut: [],
+  userCreate: [],
+  userUpdate: [],
+  credCreate: [],
+  credRotate: [],
+  sutCreate: [],
+  filePut: [],
+  fileCreate: [],
+};
+
+// system.py SettingItem 形态：{path, value, source, mutable}（静态 → PUT 409）
+type SettingRow = { path: string; value: unknown; source: string; mutable: boolean };
+const baseSettings = (): SettingRow[] => [
+  { path: 'judge.llm.model', value: 'default', source: 'runtime', mutable: true },
+  { path: 'budget.llm.daily', value: 100, source: 'runtime', mutable: true },
+  { path: 'platform.static_item', value: 'static', source: 'runtime', mutable: false },
+];
+let settingsData: SettingRow[];
+export const resetT7Settings = () => {
+  settingsData = baseSettings();
+};
+
+// users.py UserOut：{id, username, role, disabled}（无 created_at/reset-password）
+type UserRowData = { id: string; username: string; role: string; disabled: boolean };
+const baseUsers = (): UserRowData[] => [
+  { id: 'u-admin', username: 'admin', role: 'admin', disabled: false },
+  { id: 'u-eng-1', username: 'eng-1', role: 'agent_engineer', disabled: false },
+];
+let usersData: UserRowData[];
+export const resetT7Users = () => {
+  usersData = baseUsers();
+};
+
+const auditEntries = [
+  {
+    ts: '2026-11-05T08:00:00Z',
+    actor: 'admin',
+    action: 'sut.create',
+    object_type: 'sut',
+    object_id: 'sut-t7',
+    detail: { name: 'ipops-agent', image_ref: 'ipops-agent:v1.2' },
+  },
+  {
+    ts: '2026-11-05T08:05:00Z',
+    actor: 'eng-1',
+    action: 'sut.file_write',
+    object_type: 'sut',
+    object_id: 'sut-t7',
+    detail: { path: 'skills/bgp.md', commit: false },
+  },
+];
+
+const logEntries = [
+  { ts: '2026-11-05T08:00:00Z', level: 'INFO', message: 'iteration started', component: 'engine' },
+  { ts: '2026-11-05T08:01:00Z', level: 'ERROR', message: 'device unreachable', component: 'sandbox' },
+];
+
+// suts 详情 fixture（区别于 dashboardHandlers 的 sut-1..5，避免 handler 冲突）
+export const t7SutId = 'sut-t7';
+const t7Sut = () => ({
+  id: t7SutId,
+  name: 'ipops-agent',
+  carrier: 'opencode',
+  image_ref: 'ipops-agent:v1.2',
+  description: 'Network ops SUT',
+  created_at: '2026-11-01T00:00:00Z',
+});
+const t7Files: Record<string, string> = {
+  'skills/bgp.md': '# BGP triage\ncheck peers\n',
+  'judge/rubric.md': '# judge rubric (frozen fixture)\n',
+};
+// 与后端 _validate_editable 同构的白名单前缀（D-12）
+const EDITABLE_RE =
+  /^(system-prompt(\.md)?|skills\/|scripts\/|mcp\.json|mcp-src\/|memory\/|knowledge\/|model\.json)/;
+
+export const settingsHandlers = [
+  http.get('/api/v1/system/settings', () =>
+    HttpResponse.json({ items: settingsData }),
+  ),
+  http.put(/\/api\/v1\/system\/settings\/.+$/, async ({ request }) => {
+    const path = decodeURIComponent(
+      new URL(request.url).pathname.replace('/api/v1/system/settings/', ''),
+    );
+    const body = (await request.json()) as { value?: unknown };
+    t7Requests.settingPut.push({ path, body });
+    const item = settingsData.find((s) => s.path === path);
+    if (!item) {
+      return HttpResponse.json(
+        { detail: { code: 'CONFLICT', message: `unknown setting '${path}'` } },
+        { status: 409 },
+      );
+    }
+    if (!item.mutable) {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: 'CONFLICT',
+            message: `setting '${path}' is static and cannot be changed at runtime`,
+          },
+        },
+        { status: 409 },
+      );
+    }
+    item.value = body.value;
+    return HttpResponse.json({ ...item });
+  }),
+  http.get('/api/v1/system/freeze', () => HttpResponse.json({ frozen: false })),
+  http.get('/api/v1/system/logs', ({ request }) => {
+    const level = new URL(request.url).searchParams.get('level');
+    const items = level
+      ? logEntries.filter((e) => e.level.toLowerCase() === level.toLowerCase())
+      : logEntries;
+    return HttpResponse.json({ items });
+  }),
+  http.get('/api/v1/audit-logs', ({ request }) => {
+    const url = new URL(request.url);
+    const action = url.searchParams.get('action');
+    const actor = url.searchParams.get('actor');
+    let items = auditEntries;
+    if (action) items = items.filter((e) => e.action.includes(action));
+    if (actor) items = items.filter((e) => e.actor === actor);
+    return HttpResponse.json({ items });
+  }),
+  // credentials.py：响应无 secret/指纹字段（值永不回显）
+  http.get('/api/v1/credentials', () =>
+    HttpResponse.json({
+      items: [
+        {
+          id: 'cred-vault-0001',
+          name: 'core-sw-ssh',
+          kind: 'device_ssh',
+          created_at: '2026-11-01T00:00:00Z',
+        },
+      ],
+    }),
+  ),
+  http.post('/api/v1/credentials', async ({ request }) => {
+    const body = (await request.json()) as { name?: string; kind?: string; secret?: string };
+    t7Requests.credCreate.push(body);
+    return HttpResponse.json(
+      {
+        id: 'cred-vault-0002',
+        name: body.name ?? '',
+        kind: body.kind ?? 'llm_api',
+        created_at: '2026-11-05T00:00:00Z',
+      },
+      { status: 201 },
+    );
+  }),
+  http.post(/\/api\/v1\/credentials\/[^:]+:rotate$/, async ({ request }) => {
+    t7Requests.credRotate.push(await request.json());
+    return new HttpResponse(null, { status: 204 });
+  }),
+  // users.py：POST /users + PUT /users/{id}（role/disabled）
+  http.get('/api/v1/users', () => HttpResponse.json({ items: usersData })),
+  http.post('/api/v1/users', async ({ request }) => {
+    const body = (await request.json()) as {
+      username?: string;
+      password?: string;
+      role?: string;
+    };
+    t7Requests.userCreate.push(body);
+    if (usersData.some((u) => u.username === body.username)) {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: 'CONFLICT',
+            message: `username '${body.username}' already exists`,
+          },
+        },
+        { status: 409 },
+      );
+    }
+    const u: UserRowData = {
+      id: `u-${body.username ?? ''}`,
+      username: body.username ?? '',
+      role: body.role ?? 'researcher',
+      disabled: false,
+    };
+    usersData = [...usersData, u];
+    return HttpResponse.json(u, { status: 201 });
+  }),
+  http.put(/\/api\/v1\/users\/[^/]+$/, async ({ request }) => {
+    const id = new URL(request.url).pathname.split('/').pop() ?? '';
+    const body = (await request.json()) as { role?: string; disabled?: boolean };
+    t7Requests.userUpdate.push({ id, body });
+    const u = usersData.find((x) => x.id === id);
+    if (u) {
+      if (body.disabled !== undefined) u.disabled = body.disabled;
+      if (body.role !== undefined) u.role = body.role;
+    }
+    return new HttpResponse(null, { status: 204 });
+  }),
+];
+
+export const sutsHandlers = [
+  // POST /suts：捕获 body（suts.test.tsx 断言提交形态）
+  http.post('/api/v1/suts', async ({ request }) => {
+    const body = (await request.json()) as {
+      name?: string;
+      carrier?: string;
+      image_ref?: string;
+    };
+    t7Requests.sutCreate.push(body);
+    if (body.name === 'dup') {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: 'CONFLICT',
+            message: `sut name '${body.name}' already exists`,
+          },
+        },
+        { status: 409 },
+      );
+    }
+    return HttpResponse.json(
+      { ...t7Sut(), name: body.name ?? '', image_ref: body.image_ref ?? '' },
+      { status: 201 },
+    );
+  }),
+  http.get(`/api/v1/suts/${t7SutId}`, () => HttpResponse.json(t7Sut())),
+  // verify-image 为 GET（suts.py 实际）；checks 为 string 列表（carrier ImageCheck）
+  http.get(/\/api\/v1\/suts\/[^/]+\/verify-image$/, () =>
+    HttpResponse.json({
+      ok: false,
+      image_ref: 'ipops-agent:v1.2',
+      checks: ['image exists on host main', 'container runs --version'],
+      detail: 'docker: image not found',
+    }),
+  ),
+  http.get(`/api/v1/suts/${t7SutId}/lineage`, () =>
+    HttpResponse.json({
+      nodes: [
+        {
+          version_id: 'v1',
+          label: 'v1',
+          kind: 'snapshot',
+          parent_ids: [],
+          experiment_ids: [],
+        },
+        {
+          version_id: 'v2',
+          label: 'v2',
+          kind: 'commit',
+          parent_ids: ['v1'],
+          experiment_ids: ['exp-1'],
+        },
+      ],
+      edges: [['v1', 'v2']],
+    }),
+  ),
+  // GET files（无 path/version → staging 全文件 {path:content}）
+  http.get(`/api/v1/suts/${t7SutId}/files`, ({ request }) => {
+    const path = new URL(request.url).searchParams.get('path') ?? '';
+    const files = path
+      ? path in t7Files
+        ? { [path]: t7Files[path]! }
+        : {}
+      : t7Files;
+    return HttpResponse.json({ files });
+  }),
+  // PUT files：越界路径（非 suts/<id>/ 白名单）→ 409 CONFLICT（D-12）
+  http.put(/\/api\/v1\/suts\/[^/]+\/files\/.+$/, async ({ request }) => {
+    const path = decodeURIComponent(
+      new URL(request.url).pathname.replace(/^\/api\/v1\/suts\/[^/]+\/files\//, ''),
+    );
+    const body = (await request.json()) as {
+      content?: string;
+      commit?: boolean;
+      message?: string;
+    };
+    t7Requests.filePut.push({ path, body });
+    if (!EDITABLE_RE.test(path)) {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: 'CONFLICT',
+            message: `path '${path}' outside the editable target domain`,
+          },
+        },
+        { status: 409 },
+      );
+    }
+    return new HttpResponse(null, { status: 204 });
+  }),
+  http.post(`/api/v1/suts/${t7SutId}/files`, async ({ request }) => {
+    const body = (await request.json()) as { path?: string };
+    t7Requests.fileCreate.push(body);
+    return new HttpResponse(null, { status: 201 });
+  }),
+  http.delete(/\/api\/v1\/suts\/[^/]+$/, () => new HttpResponse(null, { status: 204 })),
+];
+
+resetT7Settings();
+resetT7Users();
+handlers.push(...settingsHandlers, ...sutsHandlers);

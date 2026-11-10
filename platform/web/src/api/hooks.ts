@@ -596,3 +596,341 @@ export function useImportEvalset() {
     onError: (err) => void message.error(err.message),
   });
 }
+
+// ── T7 参数六 Tab：settings / logs / audit / credentials / users ───────────
+
+// system.py SettingItem / SettingsPage
+export interface SettingItem {
+  path: string;
+  value: unknown;
+  source: string;
+  mutable: boolean;
+}
+
+export interface SettingsPageDto {
+  items: SettingItem[];
+}
+
+export function useSystemSettings(): UseQueryResult<SettingsPageDto, Error> {
+  return useQuery({
+    queryKey: ['system-settings'],
+    queryFn: () => apiFetch<SettingsPageDto>('GET', '/system/settings'),
+  });
+}
+
+export function useUpdateSetting() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ path, value }: { path: string; value: unknown }) =>
+      apiFetch<SettingItem>(
+        'PUT',
+        `/system/settings/${encodeURIComponent(path)}`,
+        { value },
+      ),
+    onSuccess: (out) => {
+      void message.success(`已热生效：${out.path}`);
+      void qc.invalidateQueries({ queryKey: ['system-settings'] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+// system.py LogEntry（extra allow——component 等扩展字段）
+export interface LogEntryDto {
+  ts: string;
+  level: string;
+  message: string;
+  component?: string;
+}
+
+export function useSystemLogs(
+  params?: { level?: string },
+): UseQueryResult<{ items: LogEntryDto[] }, Error> {
+  const qs = params?.level ? `?level=${encodeURIComponent(params.level)}` : '';
+  return useQuery({
+    queryKey: ['system-logs', params?.level ?? null],
+    queryFn: () =>
+      apiFetch<{ items: LogEntryDto[] }>('GET', `/system/logs${qs}`),
+  });
+}
+
+// audit_logs.py AuditEntryOut：query 参数 cursor/limit/action/actor
+export interface AuditEntry {
+  ts: string;
+  actor: string;
+  action: string;
+  object_type: string;
+  object_id: string;
+  detail: Record<string, unknown>;
+}
+
+export function useAuditLogs(
+  params?: { action?: string; actor?: string },
+): UseQueryResult<{ items: AuditEntry[] }, Error> {
+  const qs = new URLSearchParams();
+  if (params?.action) qs.set('action', params.action);
+  if (params?.actor) qs.set('actor', params.actor);
+  const s = qs.toString();
+  return useQuery({
+    queryKey: ['audit-logs', params?.action ?? null, params?.actor ?? null],
+    queryFn: () =>
+      apiFetch<{ items: AuditEntry[] }>(
+        'GET',
+        `/audit-logs${s ? `?${s}` : ''}`,
+      ),
+  });
+}
+
+// credentials.py：Kind = device_ssh|nms_api|llm_api|backend_ssh；
+// CredentialOut 刻意无 secret/指纹字段——列表展示 id（密钥库引用）
+export const CREDENTIAL_KINDS = [
+  'device_ssh',
+  'nms_api',
+  'llm_api',
+  'backend_ssh',
+] as const;
+export type CredentialKind = (typeof CREDENTIAL_KINDS)[number];
+
+export interface Credential {
+  id: string;
+  name: string;
+  kind: string;
+  created_at: string;
+}
+
+export function useCredentials(): UseQueryResult<
+  { items: Credential[] },
+  Error
+> {
+  return useQuery({
+    queryKey: ['credentials'],
+    queryFn: () => apiFetch<{ items: Credential[] }>('GET', '/credentials'),
+  });
+}
+
+export function useCreateCredential() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { name: string; kind: CredentialKind; secret: string }) =>
+      apiFetch<Credential>('POST', '/credentials', body),
+    onSuccess: (out) => {
+      // secret 永不回显——成功后仅提示密钥库引用 id
+      void message.success(`凭证已创建（引用 ${out.id}）`);
+      void qc.invalidateQueries({ queryKey: ['credentials'] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+export function useRotateCredential() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, secret }: { id: string; secret: string }) =>
+      apiFetch<void>(
+        'POST',
+        `/credentials/${encodeURIComponent(id)}:rotate`,
+        { secret },
+      ),
+    onSuccess: () => {
+      void message.success('凭证已轮换');
+      void qc.invalidateQueries({ queryKey: ['credentials'] });
+    },
+    // 503 = credential store 未配置（后端 N-8：拒绝假装成功）
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+// users.py：GET/POST /users + PUT /users/{user_id}（role/disabled）；
+// 后端无 reset-password 端点、无 created_at 字段——按实际对齐
+export interface UserRow {
+  id: string;
+  username: string;
+  role: string;
+  disabled: boolean;
+}
+
+export function useUsers(): UseQueryResult<{ items: UserRow[] }, Error> {
+  return useQuery({
+    queryKey: ['users'],
+    queryFn: () => apiFetch<{ items: UserRow[] }>('GET', '/users'),
+  });
+}
+
+export function useCreateUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { username: string; password: string; role: string }) =>
+      apiFetch<UserRow>('POST', '/users', body),
+    onSuccess: () => {
+      void message.success('用户已创建');
+      void qc.invalidateQueries({ queryKey: ['users'] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+export function useUpdateUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      ...body
+    }: {
+      id: string;
+      role?: string;
+      disabled?: boolean;
+    }) => apiFetch<void>('PUT', `/users/${encodeURIComponent(id)}`, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['users'] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+// ── T7 SUT 管理页 ──────────────────────────────────────────────────────────
+
+export function useSut(id: string | undefined): UseQueryResult<Sut, Error> {
+  return useQuery({
+    queryKey: ['sut', id],
+    queryFn: () => apiFetch<Sut>('GET', `/suts/${id}`),
+    enabled: !!id,
+  });
+}
+
+// POST /suts（SutCreate：name/carrier/image_ref/description）
+export function useCreateSut() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      name: string;
+      carrier: string;
+      image_ref: string;
+      description?: string;
+    }) => apiFetch<Sut>('POST', '/suts', body),
+    onSuccess: (out) => {
+      void message.success(`SUT ${out.name} 已创建`);
+      void qc.invalidateQueries({ queryKey: ['suts'] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+export function useDeleteSut() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => apiFetch<void>('DELETE', `/suts/${id}`),
+    onSuccess: () => {
+      void message.success('SUT 已删除');
+      void qc.invalidateQueries({ queryKey: ['suts'] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+// GET /suts/{id}/verify-image → {ok, image_ref, checks: string[], detail}
+export interface ImageCheckResult {
+  ok: boolean | null;
+  image_ref: string;
+  checks: string[];
+  detail: string;
+}
+
+export function useVerifyImage() {
+  return useMutation({
+    mutationFn: (sutId: string) =>
+      apiFetch<ImageCheckResult>('GET', `/suts/${sutId}/verify-image`),
+  });
+}
+
+// GET /suts/{id}/lineage → {nodes, edges}（版本谱系——列表/详情共用）
+export interface LineageNode {
+  version_id: string;
+  label: string;
+  kind: string;
+  parent_ids: string[];
+  experiment_ids: string[];
+}
+
+export interface LineageGraph {
+  nodes: LineageNode[];
+  edges: [string, string][];
+}
+
+export function useSutLineage(
+  sutId: string | undefined,
+): UseQueryResult<LineageGraph, Error> {
+  return useQuery({
+    queryKey: ['sut-lineage', sutId],
+    queryFn: () => apiFetch<LineageGraph>('GET', `/suts/${sutId}/lineage`),
+    enabled: !!sutId,
+  });
+}
+
+// GET /suts/{id}/files（无 version → staging 全文件 {path: content}）
+export function useSutFiles(
+  sutId: string | undefined,
+): UseQueryResult<Record<string, string>, Error> {
+  return useQuery({
+    queryKey: ['sut-files', sutId],
+    queryFn: async () =>
+      (
+        await apiFetch<{ files: Record<string, string> }>(
+          'GET',
+          `/suts/${sutId}/files`,
+        )
+      ).files,
+    enabled: !!sutId,
+  });
+}
+
+// PUT /suts/{id}/files/{path} body {content, commit, message} → 204；
+// 越界/冻结路径 → 409（409 由调用方行内提示，这里只 invalidate）
+export function useWriteSutFile(sutId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      path,
+      content,
+      commit,
+      message,
+    }: {
+      path: string;
+      content: string;
+      commit: boolean;
+      message: string;
+    }) =>
+      apiFetch<void>(
+        'PUT',
+        `/suts/${sutId}/files/${path.split('/').map(encodeURIComponent).join('/')}`,
+        { content, commit, message },
+      ),
+    onSuccess: (_d, vars) => {
+      void message.success(
+        vars.commit
+          ? '已提交新版本'
+          : '已存入 staging 区（开启 commit 后提交版本）',
+      );
+      void qc.invalidateQueries({ queryKey: ['sut-files', sutId] });
+      void qc.invalidateQueries({ queryKey: ['sut-lineage', sutId] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+// POST /suts/{id}/files（新建文件，path 在 body）→ 201
+export function useCreateSutFile(sutId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: {
+      path: string;
+      content: string;
+      commit?: boolean;
+      message?: string;
+    }) => apiFetch<void>('POST', `/suts/${sutId}/files`, body),
+    onSuccess: () => {
+      void message.success('文件已新建');
+      void qc.invalidateQueries({ queryKey: ['sut-files', sutId] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
