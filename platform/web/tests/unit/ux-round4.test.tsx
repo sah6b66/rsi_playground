@@ -93,6 +93,11 @@ test('向导：模式 Radio 中文描述 + 裁判模型提交体', async () => {
     '/sessions/new',
   );
   await waitFor(() => expect(screen.getByText('下一步')).toBeInTheDocument());
+  // U7a 会话标识为必填首字段
+  await userEvent.type(
+    screen.getByRole('textbox', { name: /会话标识/ }),
+    'BGP排障优化-第一轮',
+  );
   await userEvent.click(screen.getByRole('combobox', { name: '网络Agent' }));
   await userEvent.click(await screen.findByText('ipops-agent-1'));
   await userEvent.click(screen.getByRole('combobox', { name: '运行环境' }));

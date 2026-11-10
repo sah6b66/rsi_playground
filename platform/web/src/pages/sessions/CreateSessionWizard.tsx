@@ -1,5 +1,5 @@
 // 创建会话向导（DD-14 §5.3）：Steps 3 步 → POST /iterations → 跳列表。
-import { Alert, Button, Card, Descriptions, Select, Space, Steps, Tag } from 'antd';
+import { Alert, Button, Card, Descriptions, Input, Select, Space, Steps, Tag } from 'antd';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError } from '../../api/client';
@@ -10,16 +10,23 @@ import {
   useSuts,
 } from '../../api/hooks';
 import { ProfileForm, defaultProfile, type ProfileDraft } from '../../components/ProfileForm';
+import { FieldWithHints } from '../../components/FieldWithHints';
 import { modeLabel } from '../../utils/labels';
 import { scoreFormula } from '../../components/WeightEditor';
 
 interface Basics {
+  label: string;
   sut_id: string | null;
   environment: string | null;
   evalset_id: string | null;
 }
 
-const DEFAULT_BASICS: Basics = { sut_id: null, environment: null, evalset_id: null };
+const DEFAULT_BASICS: Basics = {
+  label: '',
+  sut_id: null,
+  environment: null,
+  evalset_id: null,
+};
 
 export function CreateSessionWizard() {
   const navigate = useNavigate();
@@ -46,7 +53,11 @@ export function CreateSessionWizard() {
     label: e.name,
   }));
 
-  const step1Valid = basics.sut_id && basics.environment && basics.evalset_id;
+  const step1Valid =
+    basics.label.trim().length > 0 &&
+    basics.sut_id &&
+    basics.environment &&
+    basics.evalset_id;
   const sutName =
     suts.data?.items.find((s) => s.id === basics.sut_id)?.name ?? basics.sut_id;
 
@@ -55,6 +66,7 @@ export function CreateSessionWizard() {
     try {
       await create.mutateAsync({
         sut_id: basics.sut_id!,
+        label: basics.label.trim(),
         evalset_id: basics.evalset_id ?? undefined,
         mode: profile.mode,
         profile: {
@@ -80,6 +92,21 @@ export function CreateSessionWizard() {
       <div style={{ marginTop: 16 }}>
         {step === 0 && (
           <Space direction="vertical" size="middle" style={{ width: 360 }}>
+            {/* U7a 会话标识：首字段、必选 */}
+            <FieldWithHints
+              label="会话标识"
+              required
+              example="BGP排障优化-第一轮"
+              extra="1-64 字符，中文可用"
+              tooltip="便于人理解记忆的会话名称"
+            >
+              <Input
+                value={basics.label}
+                maxLength={64}
+                aria-label="会话标识"
+                onChange={(e) => setBasics({ ...basics, label: e.target.value })}
+              />
+            </FieldWithHints>
             <Select
               placeholder="网络Agent *"
               value={basics.sut_id ?? undefined}
@@ -112,6 +139,7 @@ export function CreateSessionWizard() {
         {step === 1 && <ProfileForm value={profile} onChange={setProfile} />}
         {step === 2 && (
           <Descriptions bordered size="small" column={1}>
+            <Descriptions.Item label="会话标识">{basics.label}</Descriptions.Item>
             <Descriptions.Item label="网络Agent">{sutName}</Descriptions.Item>
             <Descriptions.Item label="运行环境">
               {basics.environment}

@@ -23,6 +23,8 @@ export interface Iteration {
   created_at: string;
   evalset_id?: string | null;
   profile?: Record<string, unknown> | null;
+  // U7a 会话标识（1-64 字符人可读名称；null → 列表回退 ID 前 8 位）
+  label?: string | null;
 }
 
 export interface IterationPage {
@@ -174,6 +176,20 @@ export interface EvalsetEnv {
   [k: string]: unknown;
 }
 
+// U7a 详情页摘要（凭证剥离：仅 name/type/version/ip/port/base_url）
+export interface EvalsetEnvParsed {
+  name?: string | null;
+  backend?: string | null;
+  devices: {
+    name?: string | null;
+    type?: string | null;
+    version?: string | null;
+    ip?: string | null;
+    port?: number | null;
+  }[];
+  config_apis: { name?: string | null; base_url?: string | null }[];
+}
+
 export interface Evalset {
   id: string;
   name: string;
@@ -184,6 +200,7 @@ export interface Evalset {
   version: number;
   created_at: string;
   env?: EvalsetEnv | null;
+  env_parsed?: EvalsetEnvParsed | null;
 }
 
 export interface EvalsetPage {
@@ -197,6 +214,17 @@ export function useEvalsets(): UseQueryResult<EvalsetPage, Error> {
     queryKey: ['evalsets'],
     queryFn: () => apiFetch<EvalsetPage>('GET', '/evalsets'),
     staleTime: 15_000,
+  });
+}
+
+// U7a 评测集详情
+export function useEvalset(
+  id: string | undefined,
+): UseQueryResult<Evalset, Error> {
+  return useQuery({
+    queryKey: ['evalset', id],
+    queryFn: () => apiFetch<Evalset>('GET', `/evalsets/${id}`),
+    enabled: !!id,
   });
 }
 
@@ -232,6 +260,8 @@ export interface CreateSessionBody {
   evalset_id?: string;
   profile_id?: string;
   profile?: Record<string, unknown>;
+  // U7a 会话标识（1-64 字符，中文可用）
+  label?: string;
 }
 
 export function useCreateSession() {

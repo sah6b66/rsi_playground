@@ -1,7 +1,7 @@
 // 网络Agent 管理页（DD-14 §5.6/§5.8，T7；U1 合并镜像库）：
 // Tab1「Agent 列表」= 原 SUT 列表（创建 Modal/验证镜像/删除，?image_ref= 预填）；
 // Tab2「镜像库」= 原 /images 页整体迁入（权限 image:manage，无权显示 403）。
-import { Button, Form, Input, Modal, Radio, Result, Space, Table, Tabs, Tag, Typography } from 'antd';
+import { Button, Form, Input, Modal, Result, Space, Table, Tabs, Tag, Tooltip, Typography } from 'antd';
 import type { TableProps } from 'antd';
 import type { Sut } from '../../api/hooks';
 import { useEffect, useState } from 'react';
@@ -13,6 +13,7 @@ import {
   useVerifyImage,
   type ImageCheckResult,
 } from '../../api/hooks';
+import { QuestionCircleOutlined } from '@ant-design/icons';
 import { DangerConfirm } from '../../components/DangerConfirm';
 import { FieldWithHints } from '../../components/FieldWithHints';
 import { ImagesPage } from '../images/ImagesPage';
@@ -172,11 +173,23 @@ function SutListTab({ presetImageRef }: { presetImageRef: string }) {
           >
             <Input placeholder="ipops-agent:v1.2" />
           </FieldWithHints>
-          <FieldWithHints label="载体" required name="carrier">
-            <Radio.Group>
-              <Radio value="opencode">OpenCode</Radio>
-            </Radio.Group>
-          </FieldWithHints>
+          {/* U7a 载体：只读展示（提交值固定 opencode），不再提供 Radio 选择 */}
+          <Form.Item
+            label={
+              <span>
+                载体&nbsp;
+                <Tooltip title="载体是容器内 Agent 的运行框架（提供 Agent 循环与轨迹采集）；镜像=打包了载体与插件的容器映像。当前支持 OpenCode，其他载体后续开放">
+                  <QuestionCircleOutlined style={{ color: 'rgba(0,0,0,0.45)' }} />
+                </Tooltip>
+              </span>
+            }
+            required
+          >
+            <Tag color="blue" data-testid="carrier-readonly">OpenCode</Tag>
+          </Form.Item>
+          <Form.Item name="carrier" hidden initialValue="opencode">
+            <Input />
+          </Form.Item>
           <FieldWithHints label="描述" name="description">
             <Input.TextArea rows={2} />
           </FieldWithHints>

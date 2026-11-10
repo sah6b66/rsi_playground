@@ -50,6 +50,9 @@ export function SessionDetailPage() {
       <Card style={{ marginBottom: 12 }}>
         <Descriptions size="small" column={3}>
           <Descriptions.Item label="会话 ID">{it.id}</Descriptions.Item>
+          <Descriptions.Item label="会话标识">
+            {it.label ?? '—'}
+          </Descriptions.Item>
           <Descriptions.Item label="网络Agent">{sutName}</Descriptions.Item>
           <Descriptions.Item label="评测集">
             {it.evalset_id ?? '—'}

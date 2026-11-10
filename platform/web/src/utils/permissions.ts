@@ -70,6 +70,13 @@ export const MENU: MenuGroup[] = [
   },
   {
     title: '系统',
-    items: [{ key: '/settings', label: '参数配置', icon: 'setting', perm: 'view:read' }],
+    // U7a：原 /settings 六 Tab 拆为五个直接子页（各自路由+权限）
+    items: [
+      { key: '/settings', label: '参数配置', icon: 'setting', perm: 'settings:write' },
+      { key: '/logs', label: '日志与审计', icon: 'file-text', perm: 'view:read' },
+      { key: '/credentials', label: '凭证管理', icon: 'key', perm: 'cred:manage' },
+      { key: '/security', label: '安全边界', icon: 'safety', perm: 'view:read' },
+      { key: '/users', label: '用户管理', icon: 'team', perm: 'user:manage' },
+    ],
   },
 ];

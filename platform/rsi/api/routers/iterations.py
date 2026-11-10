@@ -61,6 +61,11 @@ class IterationCreate(BaseModel):
         default=None, json_schema_extra={"example": "eval-0001"}
     )
     profile: dict[str, Any] | None = None
+    # U7a：人可读会话标识（1-64 字符，中文可用；空 → 列表回退显示 ID 前 8 位）
+    label: str | None = Field(
+        default=None, min_length=1, max_length=64,
+        json_schema_extra={"example": "BGP排障优化-第一轮"},
+    )
 
 
 class IterationOut(BaseModel):
@@ -69,6 +74,7 @@ class IterationOut(BaseModel):
     profile_id: str
     mode: str
     state: str
+    label: str | None = None
     current_step: str | None
     round: int
     experiments: list[str]
@@ -126,6 +132,7 @@ def _out(it: dict) -> IterationOut:
         budget_used=it["budget_used"], archived=it["archived"],
         created_at=it["created_at"],
         evalset_id=it.get("evalset_id"), profile=it.get("profile"),
+        label=it.get("label"),
     )
 
 
@@ -167,6 +174,7 @@ async def create_iteration(
             )
     it = {
         "id": f"iter-{uuid.uuid4().hex[:8]}",
+        "label": body.label,
         "sut_id": body.sut_id,
         "profile_id": body.profile_id or f"prof-{uuid.uuid4().hex[:8]}",
         "evalset_id": body.evalset_id,
@@ -379,7 +387,12 @@ async def get_iteration_timeline(
             for r in rounds
         ],
     }
-    return {"iteration_id": iteration_id, "rounds": rounds, "summary": summary}
+    return {
+        "iteration_id": iteration_id,
+        "label": it.get("label"),
+        "rounds": rounds,
+        "summary": summary,
+    }
 
 
 def _transition(it: dict, action: str) -> None:

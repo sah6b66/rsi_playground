@@ -8,8 +8,12 @@ import {
   DesktopOutlined,
   ExperimentOutlined,
   DatabaseOutlined,
+  FileTextOutlined,
+  KeyOutlined,
   LogoutOutlined,
+  SafetyOutlined,
   SettingOutlined,
+  TeamOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
@@ -28,6 +32,10 @@ const ICONS: Record<string, React.ReactNode> = {
   'cloud-server': <CloudServerOutlined />,
   desktop: <DesktopOutlined />,
   setting: <SettingOutlined />,
+  'file-text': <FileTextOutlined />,
+  key: <KeyOutlined />,
+  safety: <SafetyOutlined />,
+  team: <TeamOutlined />,
 };
 
 export function Layout() {

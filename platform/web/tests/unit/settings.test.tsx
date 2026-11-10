@@ -5,9 +5,12 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { SettingsPage } from '../../src/pages/settings/SettingsPage';
+import { UsersPage } from '../../src/pages/users/UsersPage';
+import { SecurityPage } from '../../src/pages/security/SecurityPage';
 import { useUiStore } from '../../src/stores/ui';
 import { resetT7Settings, resetT7Users, t7Requests } from '../msw/handlers';
 
+// U7a：六 Tab 容器拆为独立页面——按目标页渲染
 function renderSettings() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 0 } },
@@ -17,6 +20,34 @@ function renderSettings() {
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <SettingsPage />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+function renderUsers() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 0 } },
+  });
+  useUiStore.getState().setUser({ username: 'admin', role: 'admin' });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <UsersPage />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+function renderSecurity() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 0 } },
+  });
+  useUiStore.getState().setUser({ username: 'admin', role: 'admin' });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <SecurityPage />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -65,9 +96,7 @@ test('ParamsTab：动态编辑保存热生效 + 静态项锁', async () => {
 // ② UsersTab：创建 Modal（用户名/角色 5 选/密码 ≥8 位）→ POST body；
 // 禁用 Switch → PUT {disabled:true}
 test('UsersTab：创建用户 + 禁用 Switch', async () => {
-  renderSettings();
-  // 切到用户管理 Tab
-  await userEvent.click(screen.getByRole('tab', { name: '用户管理' }));
+  renderUsers();
   await screen.findByText('u-admin');
   expect(screen.getByText('u-eng-1')).toBeInTheDocument();
   // 创建 Modal
@@ -110,8 +139,7 @@ test('UsersTab：创建用户 + 禁用 Switch', async () => {
 
 // ③ SecurityTab 只读：白名单 8 项路径与冻结域 3 项渲染
 test('SecurityTab：白名单 8 项 + 冻结域 3 项只读渲染', async () => {
-  renderSettings();
-  await userEvent.click(screen.getByRole('tab', { name: '安全边界' }));
+  renderSecurity();
   // 白名单 8 项（代码级常量兜底）
   await waitFor(() =>
     expect(screen.getByText('suts/{id}/skills/.*')).toBeInTheDocument(),
@@ -124,14 +152,13 @@ test('SecurityTab：白名单 8 项 + 冻结域 3 项只读渲染', async () => 
   expect(screen.getByText('evalsets/.*')).toBeInTheDocument();
   // 三层保障说明
   expect(screen.getByText(/三层保障/)).toBeInTheDocument();
-  // 只读：激活面板内无任何按钮型写操作
-  expect(within(screen.getByRole('tabpanel')).queryAllByRole('button')).toEqual([]);
+  // 只读：页面内无任何按钮型写操作
+  expect(screen.queryAllByRole('button')).toEqual([]);
 });
 
 // ④ UsersTab 重置密码：操作列按钮 → Modal（Input.Password ≥8 位）→ POST body
 test('UsersTab：重置密码 Modal + POST body', async () => {
-  renderSettings();
-  await userEvent.click(screen.getByRole('tab', { name: '用户管理' }));
+  renderUsers();
   await screen.findByText('u-admin');
   // 每行操作列都有"重置密码"按钮
   const eng1Row = screen.getByText('u-eng-1').closest('tr') as HTMLElement;

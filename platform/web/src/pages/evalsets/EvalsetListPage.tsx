@@ -15,6 +15,7 @@ import {
 } from 'antd';
 import { InboxOutlined } from '@ant-design/icons';
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   useCloneEvalset,
   useDeleteEvalset,
@@ -112,7 +113,16 @@ export function EvalsetListPage() {
         dataSource={data?.items ?? []}
         pagination={false}
         columns={[
-          { title: '名称', dataIndex: 'name' },
+          {
+            title: '名称',
+            dataIndex: 'name',
+            // U7a：名称改为详情页链接
+            render: (name: string, rec) => (
+              <Link to={`/evalsets/${rec.id}`} data-testid={`evalset-link-${rec.id}`}>
+                {name}
+              </Link>
+            ),
+          },
           {
             title: '用途',
             dataIndex: 'purpose',

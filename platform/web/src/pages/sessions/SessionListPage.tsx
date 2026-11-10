@@ -130,6 +130,16 @@ export function SessionListPage() {
             dataIndex: 'id',
             render: (id: string) => <Link to={`/sessions/${id}`}>{id}</Link>,
           },
+          {
+            // U7a 会话标识：空回退 ID 前 8 位
+            title: '会话标识',
+            dataIndex: 'label',
+            render: (label: string | null | undefined, it: Iteration) => (
+              <Link to={`/sessions/${it.id}`}>
+                {label && label.trim() ? label : it.id.slice(0, 8)}
+              </Link>
+            ),
+          },
           { title: '开始时间', dataIndex: 'created_at' },
           { title: '网络Agent', dataIndex: 'sut_id', render: (v: string) => sutName(v) },
           {

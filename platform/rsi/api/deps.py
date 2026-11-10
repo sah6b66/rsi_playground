@@ -88,28 +88,61 @@ def default_stores(settings: Any = None) -> dict[str, Any]:
     """P0 in-memory stores.
 
     The ``settings`` store is derived from the *real* :class:`Settings`
-    instance (env > settings.yaml > defaults — H1-A) so GET
-    /system/settings shows the actually-effective values. ``settings_path``
-    marks entries backed by a Settings field: PUT updates the shared
-    Settings object (hot-reload) and persists the leaf to settings.yaml
-    (H1-B/C). Entries without it (e.g. ``sse.max_seconds``) stay
-    runtime-only knobs.
+    instance (env > settings.yaml > defaults — H1-A): the full Settings
+    tree is flattened to dotted-path keys so GET /system/settings exposes
+    every actually-effective value (U7a — was ~8 curated knobs).
+    ``settings_path`` marks entries backed by a Settings field: PUT
+    updates the shared Settings object (hot-reload) and persists the leaf
+    to settings.yaml (H1-B/C). Only the dynamic runtime-knob set (config
+    doc §2 — hot-reloadable leaves) is ``mutable``; the remaining static
+    keys are exposed read-only (PUT → 409). Entries without
+    ``settings_path`` (e.g. ``sse.max_seconds``) stay runtime-only knobs.
     """
-    from rsi.settings import Settings, get_dotted
+    from rsi.settings import Settings
 
     settings = settings or Settings()
 
-    def derived(path: str, spath: str | None = None) -> dict[str, Any]:
-        try:
-            value = get_dotted(settings, spath or path)
-        except (KeyError, AttributeError):
-            value = None
-        return {
+    # runtime-hot-reloadable Settings leaves (config doc §2 / deps 注释);
+    # everything else from the flattened Settings tree is static (read-only)
+    _MUTABLE_PATHS = {
+        "sandbox.build_retry",
+        "sandbox.ready_timeout_s",
+        "judge.det_timeout_s",
+        "judge.llm_retry",
+        "logging.level",
+        "llm.defaults.judge.model",
+    }
+
+    def _flatten(obj: Any, prefix: str = "") -> dict[str, Any]:
+        flat: dict[str, Any] = {}
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                path = f"{prefix}.{key}" if prefix else str(key)
+                if isinstance(value, dict) and value:
+                    flat.update(_flatten(value, path))
+                else:
+                    flat[path] = value
+        return flat
+
+    settings_store: dict[str, Any] = {}
+    for path, value in _flatten(settings.model_dump(mode="json")).items():
+        settings_store[path] = {
             "value": value,
-            "mutable": True,
+            "mutable": path in _MUTABLE_PATHS,
             "source": "config",
-            "settings_path": spath or path,
+            **({"settings_path": path} if path in _MUTABLE_PATHS else {}),
         }
+    # display alias → llm.defaults.judge.model in Settings (legacy path)
+    settings_store["judge.llm.model"] = {
+        "value": settings_store.get("llm.defaults.judge.model", {}).get("value"),
+        "mutable": True,
+        "source": "config",
+        "settings_path": "llm.defaults.judge.model",
+    }
+    # legacy knobs not represented in Settings (runtime-only)
+    settings_store["budget.llm.daily"] = {"value": 100, "mutable": True}
+    # static placeholder (immutable at runtime → 409)
+    settings_store["platform.static_item"] = {"value": "static", "mutable": False}
 
     return {
         "suts": {},
@@ -124,22 +157,7 @@ def default_stores(settings: Any = None) -> dict[str, Any]:
         "experiments": {},
         "hypotheses": {},
         "credentials": {},
-        "settings": {
-            # real Settings-backed runtime knobs (hot-update + yaml write-back)
-            "sandbox.build_retry": derived("sandbox.build_retry"),
-            "sandbox.ready_timeout_s": derived("sandbox.ready_timeout_s"),
-            "judge.det_timeout_s": derived("judge.det_timeout_s"),
-            "judge.llm_retry": derived("judge.llm_retry"),
-            "logging.level": derived("logging.level"),
-            # display path maps to llm.defaults.judge.model in Settings
-            "judge.llm.model": derived(
-                "judge.llm.model", "llm.defaults.judge.model"
-            ),
-            # legacy knobs not represented in Settings (runtime-only)
-            "budget.llm.daily": {"value": 100, "mutable": True},
-            # static placeholder (immutable at runtime → 409)
-            "platform.static_item": {"value": "static", "mutable": False},
-        },
+        "settings": settings_store,
         "system": {"stopped": False, "frozen": False},
         "metrics": {},
     }

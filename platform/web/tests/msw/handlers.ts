@@ -53,6 +53,7 @@ const baseSessions = () => [
   iteration({
     id: 'iter-aaaa1111',
     sut_id: 'sut-1',
+    label: 'BGP排障优化-第一轮',
     state: 'running',
     current_step: 'attributing',
     round: 3,
@@ -83,7 +84,30 @@ resetSessionFixtures();
 const sessionItems = () => sessions;
 
 // ── Task 6 评测集 fixtures（可变：克隆/导入/删除后变化，测试间重置）──────
-const baseEvalsets = () => [
+interface EvalsetFixture {
+  id: string;
+  name: string;
+  purpose: string;
+  tasks: { id: string }[];
+  description: string;
+  frozen: boolean;
+  version: number;
+  created_at: string;
+  env: Record<string, unknown> | null;
+  env_parsed: {
+    name: string | null;
+    backend: string | null;
+    devices: {
+      name: string;
+      type: string;
+      version: string | null;
+      ip: string;
+      port: number;
+    }[];
+    config_apis: { name: string; base_url: string }[];
+  } | null;
+}
+const baseEvalsets = (): EvalsetFixture[] => [
   {
     id: 'eval-0001',
     name: 'netops-bgp-triage',
@@ -98,6 +122,15 @@ const baseEvalsets = () => [
       devices: [{ name: 'R1', type: 'vrp' }],
       ssh_access: { R1: { ip: '192.168.56.10', port: 22, username: 'admin' } },
     },
+    // U7a 详情页摘要（凭证剥离）
+    env_parsed: {
+      name: 'env-bgp',
+      backend: 'ensp-pro',
+      devices: [
+        { name: 'R1', type: 'vrp', version: '8.180', ip: '192.168.56.10', port: 22 },
+      ],
+      config_apis: [{ name: 'nms', base_url: 'http://10.0.0.9/api' }],
+    },
   },
   {
     id: 'eval-0002',
@@ -109,6 +142,7 @@ const baseEvalsets = () => [
     version: 1,
     created_at: '2026-11-01T00:00:00Z',
     env: null,
+    env_parsed: null,
   },
 ];
 let evalsetData: ReturnType<typeof baseEvalsets>;
@@ -144,6 +178,7 @@ export const sessionsHandlers = [
       iteration({
         id,
         sut_id: (body as { sut_id?: string }).sut_id ?? 'sut-1',
+        label: (body as { label?: string }).label ?? null,
         state: 'attributing',
         current_step: 'awaiting_direction',
         round: 1,
@@ -172,6 +207,14 @@ export const sessionsHandlers = [
       has_more: false,
     }),
   ),
+  // U7a 评测集详情
+  http.get(/\/api\/v1\/evalsets\/[^/]+$/, ({ request }) => {
+    const id = new URL(request.url).pathname.split('/').pop();
+    const es = evalsets().find((e) => e.id === id);
+    if (!es)
+      return HttpResponse.json({ detail: 'not found' }, { status: 404 });
+    return HttpResponse.json(es);
+  }),
   // 运行环境（T6 /carrier/hosts 契约 stub；本任务 hooks 按该契约消费）
   http.get('/api/v1/carrier/hosts', () =>
     HttpResponse.json({
@@ -665,6 +708,14 @@ export const resourcesHandlers = [
         devices: [{ name: 'R1', type: 'vrp' }],
         ssh_access: { R1: { ip: '10.201.0.10', port: 2222, username: 'admin' } },
       },
+      env_parsed: {
+        name: null,
+        backend: 'ensp-pro',
+        devices: [
+          { name: 'R1', type: 'vrp', version: null, ip: '10.201.0.10', port: 2222 },
+        ],
+        config_apis: [],
+      },
     };
     evalsetData = [...evalsets(), clone];
     return HttpResponse.json(clone, { status: 201 });
@@ -688,6 +739,7 @@ export const resourcesHandlers = [
       version: 1,
       created_at: '2026-11-05T00:00:00Z',
       env: null,
+      env_parsed: null,
     };
     evalsetData = [...evalsets(), es];
     return HttpResponse.json(es, { status: 201 });
