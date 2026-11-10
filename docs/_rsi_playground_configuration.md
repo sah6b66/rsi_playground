@@ -39,6 +39,8 @@
 ## 2. 平台配置（`settings.py`，环境变量/`settings.yaml` 双源）
 
 > **动态/静态分区（v2.11）**：下述带 `§动态` 标注范围内的项可经 WEB/API（`PUT /system/settings/{path}`）热更（写回 settings.yaml + 内存刷新 + 审计，TU-034）；其余为静态项（路径/DB/git/网络类，改文件 + 重启生效，API 侧只读 409）。动态范围：`sandbox.build_retry/ready_timeout_s`、`carrier.task_timeout_s`、`judge.*`、`optimizer.*`、`decision.noise/alpha/no_gain_rounds_default`、`orchestrator.budget/checkpoint_interval_s`、`instrumentor.policy`、`tracing.redact/archive`、`llm.providers/defaults`、`security.jwt_expire_hours`。
+>
+> **热更真实语义（终审 H1 修复注记）**：`Settings` 现按 env > `settings.yaml` > 默认值构造（`YamlConfigSettingsSource`），PUT 会更新共享 `Settings` 对象并把叶子键写回 `settings.yaml`。**即时生效**仅限按需读取 `settings.*` 的消费方（hosts/images 路由、BatchRunner 每批次超时/重试、HostService 配额等）；构造时快照字段的服务（SandboxService.build_retry、JudgeService 判定超时、HealthMonitor 轮询周期等）需重启生效——yaml 已持久化，重启后自动加载（同名 env 变量仍优先于 yaml）。
 
 ```yaml
 # ════════ ① 基础设施（全局） ════════

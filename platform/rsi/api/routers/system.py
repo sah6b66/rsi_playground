@@ -127,7 +127,8 @@ async def get_settings(
 ) -> SettingsPage:
     return SettingsPage(
         items=[
-            SettingItem(path=p, value=v["value"], source="runtime",
+            SettingItem(path=p, value=v["value"],
+                        source=v.get("source", "runtime"),
                         mutable=v.get("mutable", False))
             for p, v in settings.items()
         ]
@@ -139,9 +140,23 @@ async def get_settings(
 async def update_setting(
     path: str,
     body: SettingUpdate,
+    request: Request,
     user: Claims = Depends(require_perms("credential:manage")),
     settings: dict = Depends(get_store("settings")),
 ) -> SettingItem:
+    """Update a mutable setting.
+
+    H1-B/C: for Settings-backed entries (``settings_path`` present) the
+    shared ``services["settings"]`` object is updated in place — consumers
+    that lazily read ``settings.<field>`` per request/batch (routers hosts
+    / images, BatchRunner per-batch timeouts, HostService quotas) see the
+    new value immediately; services that snapshotted fields at
+    construction (SandboxService.build_retry, JudgeService det timeout,
+    HealthMonitor interval, ...) take effect after restart, and the value
+    is persisted to settings.yaml (env vars still win over yaml on
+    reload). Store-only knobs (no ``settings_path``) remain runtime-only.
+    Invalid values are rejected with 422; static entries with 409.
+    """
     if path not in settings:
         raise ConflictError(
             f"unknown setting {path!r}", context={"path": path}
@@ -152,8 +167,36 @@ async def update_setting(
             f"setting {path!r} is static and cannot be changed at runtime",
             context={"path": path},
         )
-    item["value"] = body.value
-    return SettingItem(path=path, value=item["value"], source="runtime",
+    spath = item.get("settings_path")
+    if not spath:
+        # runtime-only knob (not represented in Settings/yaml)
+        item["value"] = body.value
+        return SettingItem(path=path, value=item["value"], source="runtime",
+                           mutable=True)
+    real = request.app.state.services.get("settings")
+    value = body.value
+    if real is not None:
+        from pydantic import ValidationError as PydanticValidationError
+
+        from rsi.core.errors import ValidationError
+        from rsi.settings import set_dotted, write_settings_section
+
+        try:
+            value = set_dotted(real, spath, body.value)
+        except PydanticValidationError as exc:
+            raise ValidationError(
+                f"invalid value for {path!r}: {exc.error_count()} error(s)",
+                context={"path": path},
+            ) from exc
+        except (KeyError, AttributeError) as exc:
+            raise ConflictError(
+                f"setting {path!r} has no backing Settings field",
+                context={"path": path},
+            ) from exc
+        # persist the leaf key to settings.yaml (atomic rewrite)
+        write_settings_section(spath, value)
+    item["value"] = value
+    return SettingItem(path=path, value=item["value"], source="yaml+runtime",
                        mutable=True)
 
 

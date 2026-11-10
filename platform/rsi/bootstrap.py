@@ -333,7 +333,7 @@ def build_services(
     # dicts (routers register evalsets/suts; the resolver reads them).
     from rsi.api.deps import default_stores
 
-    stores = default_stores()
+    stores = default_stores(settings)
     batch_resolver = build_batch_resolver(
         session_factory=session_factory,
         gitstore=git_store,

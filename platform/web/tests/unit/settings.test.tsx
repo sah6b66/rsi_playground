@@ -123,3 +123,22 @@ test('SecurityTab：白名单 8 项 + 冻结域 3 项只读渲染', async () => 
   // 只读：激活面板内无任何按钮型写操作
   expect(within(screen.getByRole('tabpanel')).queryAllByRole('button')).toEqual([]);
 });
+
+// ④ UsersTab 重置密码：操作列按钮 → Modal（Input.Password ≥8 位）→ POST body
+test('UsersTab：重置密码 Modal + POST body', async () => {
+  renderSettings();
+  await userEvent.click(screen.getByRole('tab', { name: '用户管理' }));
+  await screen.findByText('u-admin');
+  // 每行操作列都有"重置密码"按钮
+  const eng1Row = screen.getByText('u-eng-1').closest('tr') as HTMLElement;
+  await userEvent.click(within(eng1Row).getByRole('button', { name: '重置密码' }));
+  // Modal：新密码 Input.Password（extra 至少 8 位）
+  expect(screen.getByText(/至少 8 位/)).toBeInTheDocument();
+  await userEvent.type(screen.getByLabelText(/新密码/), 'new-pass-9');
+  await userEvent.click(screen.getByRole('button', { name: /^重\s*置$/ }));
+  await waitFor(() => expect(t7Requests.userResetPassword.length).toBe(1));
+  expect(t7Requests.userResetPassword[0]).toEqual({
+    id: 'u-eng-1',
+    password: 'new-pass-9',
+  });
+}, 20_000);

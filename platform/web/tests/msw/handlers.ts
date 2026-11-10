@@ -690,6 +690,7 @@ export const t7Requests: Record<string, unknown[]> = {
   settingPut: [],
   userCreate: [],
   userUpdate: [],
+  userResetPassword: [],
   credCreate: [],
   credRotate: [],
   sutCreate: [],
@@ -877,6 +878,36 @@ export const settingsHandlers = [
     if (u) {
       if (body.disabled !== undefined) u.disabled = body.disabled;
       if (body.role !== undefined) u.role = body.role;
+    }
+    return new HttpResponse(null, { status: 204 });
+  }),
+  // users.py：POST /users/{user_id}:reset-password（admin，≥8 位，204）
+  http.post(/\/api\/v1\/users\/[^/]+:reset-password$/, async ({ request }) => {
+    const id =
+      new URL(request.url).pathname.split('/').pop()?.replace(':reset-password', '') ?? '';
+    const body = (await request.json()) as { password?: string };
+    t7Requests.userResetPassword.push({ id, password: body.password });
+    if (!usersData.some((u) => u.id === id)) {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: 'NOT_FOUND',
+            message: `user '${id}' not found`,
+          },
+        },
+        { status: 404 },
+      );
+    }
+    if ((body.password ?? '').length < 8) {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: 'VALIDATION',
+            message: 'password must be at least 8 characters',
+          },
+        },
+        { status: 422 },
+      );
     }
     return new HttpResponse(null, { status: 204 });
   }),

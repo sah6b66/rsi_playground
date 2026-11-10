@@ -787,6 +787,22 @@ export function useUpdateUser() {
   });
 }
 
+// users.py：POST /users/{user_id}:reset-password（admin，密码 ≥8 位，204）
+export function useResetPassword() {
+  return useMutation({
+    mutationFn: ({ id, password }: { id: string; password: string }) =>
+      apiFetch<void>(
+        'POST',
+        `/users/${encodeURIComponent(id)}:reset-password`,
+        { password },
+      ),
+    onSuccess: () => {
+      void message.success('密码已重置');
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
 // ── T7 SUT 管理页 ──────────────────────────────────────────────────────────
 
 export function useSut(id: string | undefined): UseQueryResult<Sut, Error> {

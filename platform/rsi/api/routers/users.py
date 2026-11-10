@@ -32,6 +32,10 @@ class UserUpdate(BaseModel):
     disabled: bool | None = None
 
 
+class PasswordReset(BaseModel):
+    password: str = Field(min_length=8)
+
+
 class UserOut(BaseModel):
     id: str
     username: str
@@ -105,6 +109,50 @@ async def update_user(
                 rec["role"] = body.role
             if body.disabled is not None:
                 rec["disabled"] = body.disabled
+            return Response(status_code=204)
+    raise NotFoundError(
+        f"user {user_id!r} not found", context={"user_id": user_id}
+    )
+
+
+@router.post("/{user_id}:reset-password", status_code=204)
+@audit.audited("user.reset_password", object_type="user")
+async def reset_password(
+    user_id: str,
+    body: PasswordReset,
+    request: Request,
+    user: Claims = Depends(require_perms("user:manage")),
+) -> Response:
+    """Admin-reset a user's password (argon2 hash, never echoed).
+
+    Updates the in-memory users store and, when a session factory is
+    registered, the ``users`` DB row (best effort — an absent row only
+    logs). Disabled users may be reset too: the admin can re-enable the
+    account afterwards with a known password.
+    """
+    services = request.app.state.services
+    users: dict = services.get("users", {})
+    for username, rec in users.items():
+        if isinstance(rec, dict) and rec.get("user_id") == user_id:
+            new_hash = services["auth_service"].hash_password(body.password)
+            rec["password_hash"] = new_hash
+            session_factory = services.get("session_factory")
+            if session_factory is not None:
+                try:
+                    from sqlalchemy import select as _sa_select
+
+                    from rsi.db.tables import User
+
+                    with session_factory() as session:
+                        row = session.exec(
+                            _sa_select(User).where(User.username == username)
+                        ).first()
+                        if row is not None:
+                            row.password_hash = new_hash
+                            session.add(row)
+                            session.commit()
+                except Exception:  # noqa: BLE001 - DB是持久化尽力而为
+                    pass
             return Response(status_code=204)
     raise NotFoundError(
         f"user {user_id!r} not found", context={"user_id": user_id}
