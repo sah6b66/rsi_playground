@@ -10,7 +10,8 @@ import { QueryErrorResult } from '../../components/QueryErrorResult';
 import { can } from '../../utils/permissions';
 import { useUiStore } from '../../stores/ui';
 
-export function ImagesPage() {
+// embedded：作为「网络Agent」页镜像库 Tab 嵌入渲染（U1 合并）
+export function ImagesPage({ embedded = false }: { embedded?: boolean }) {
   const { data, isLoading, error } = useImages();
   const user = useUiStore((s) => s.user);
   const canManage = can(user?.role, 'image:manage');
@@ -92,7 +93,7 @@ export function ImagesPage() {
                   </a>
                 );
                 return disabled ? (
-                  <Tooltip title={`被 SUT 引用：${rec.used_by.join('、')}，不可删除`}>
+                  <Tooltip title={`被 Agent 引用：${rec.used_by.join('、')}，不可删除`}>
                     {btn}
                   </Tooltip>
                 ) : (
@@ -104,7 +105,7 @@ export function ImagesPage() {
                         navigate(`/suts?image_ref=${encodeURIComponent(rec.ref)}`)
                       }
                     >
-                      创建 SUT
+                      创建 Agent
                     </a>
                   </Space>
                 );
@@ -128,9 +129,11 @@ export function ImagesPage() {
             路径导入
           </a>
         )}
-        <a role="button" onClick={() => navigate('/suts')}>
-          创建 SUT
-        </a>
+        {!embedded && (
+          <a role="button" onClick={() => navigate('/suts')}>
+            创建 Agent
+          </a>
+        )}
       </Space>
       {data && data.offline_hosts.length > 0 && (
         <p style={{ color: 'rgba(0,0,0,0.45)' }}>

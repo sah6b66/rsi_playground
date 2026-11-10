@@ -1,6 +1,7 @@
-// SUT 列表页（DD-14 §5.6/§5.8，T7）：列表 + 创建 Modal（G5 镜像接入）+
-// 验证镜像（GET /suts/{id}/verify-image）+ 删除确认；?image_ref= 预填。
-import { Button, Form, Input, Modal, Radio, Space, Table, Tag } from 'antd';
+// 网络Agent 管理页（DD-14 §5.6/§5.8，T7；U1 合并镜像库）：
+// Tab1「Agent 列表」= 原 SUT 列表（创建 Modal/验证镜像/删除，?image_ref= 预填）；
+// Tab2「镜像库」= 原 /images 页整体迁入（权限 image:manage，无权显示 403）。
+import { Button, Form, Input, Modal, Radio, Result, Space, Table, Tabs, Tag, Typography } from 'antd';
 import type { TableProps } from 'antd';
 import type { Sut } from '../../api/hooks';
 import { useEffect, useState } from 'react';
@@ -14,6 +15,9 @@ import {
 } from '../../api/hooks';
 import { DangerConfirm } from '../../components/DangerConfirm';
 import { FieldWithHints } from '../../components/FieldWithHints';
+import { ImagesPage } from '../images/ImagesPage';
+import { can } from '../../utils/permissions';
+import { useUiStore } from '../../stores/ui';
 
 interface SutForm {
   name: string;
@@ -22,21 +26,18 @@ interface SutForm {
   description?: string;
 }
 
-export function SutListPage() {
+function SutListTab({ presetImageRef }: { presetImageRef: string }) {
   const { data, isLoading } = useSuts();
   const createMut = useCreateSut();
   const delMut = useDeleteSut();
   const verifyMut = useVerifyImage();
   const navigate = useNavigate();
-  const [params] = useSearchParams();
   const [createOpen, setCreateOpen] = useState(false);
   const [delTarget, setDelTarget] = useState<{ id: string; name: string } | null>(null);
   const [verifyResult, setVerifyResult] = useState<ImageCheckResult | null>(null);
   // 验证状态仅存前端会话内存（SutOut 无 verify 字段）——刷新后回"未验证"
   const [verified, setVerified] = useState<Record<string, boolean>>({});
   const [form] = Form.useForm<SutForm>();
-
-  const presetImageRef = params.get('image_ref') ?? '';
 
   useEffect(() => {
     if (presetImageRef) setCreateOpen(true);
@@ -67,7 +68,7 @@ export function SutListPage() {
         ),
       },
       {
-        title: '镜像',
+        title: '镜像引用',
         render: (_, r) => (
           <Space>
             <code>{r.image_ref}</code>
@@ -114,7 +115,7 @@ export function SutListPage() {
           setCreateOpen(true);
         }}
       >
-        创建 SUT
+        创建 Agent
       </Button>
       <Table
         rowKey="id"
@@ -127,7 +128,7 @@ export function SutListPage() {
 
       <Modal
         open={createOpen}
-        title="创建 SUT"
+        title="创建 Agent"
         okText="创建"
         cancelText="取消"
         onOk={() => form.submit()}
@@ -184,7 +185,7 @@ export function SutListPage() {
 
       <DangerConfirm
         open={!!delTarget}
-        title="删除 SUT"
+        title="删除 Agent"
         name={delTarget?.name ?? ''}
         description="删除后其 staging 文件与版本引用将不可恢复。"
         loading={delMut.isPending}
@@ -228,6 +229,54 @@ export function SutListPage() {
           </div>
         )}
       </Modal>
+    </Space>
+  );
+}
+
+export function SutListPage() {
+  const [params, setSearchParams] = useSearchParams();
+  const user = useUiStore((s) => s.user);
+  const canManageImages = can(user?.role, 'image:manage');
+  const presetImageRef = params.get('image_ref') ?? '';
+  // ?tab=images（/images 重定向入口）→ 镜像库；?image_ref= → Agent 列表（预填创建）
+  const activeKey =
+    params.get('tab') === 'images' && canManageImages && !presetImageRef
+      ? 'images'
+      : 'agents';
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <Typography.Title level={4} style={{ margin: 0 }}>
+        网络Agent 管理
+      </Typography.Title>
+      <Tabs
+        activeKey={activeKey}
+        onChange={(key) =>
+          setSearchParams(key === 'images' ? { tab: 'images' } : {}, {
+            replace: true,
+          })
+        }
+        items={[
+          {
+            key: 'agents',
+            label: 'Agent 列表',
+            children: <SutListTab presetImageRef={presetImageRef} />,
+          },
+          {
+            key: 'images',
+            label: '镜像库',
+            children: canManageImages ? (
+              <ImagesPage embedded />
+            ) : (
+              <Result
+                status="403"
+                title="无权访问"
+                subTitle="镜像库需要镜像管理权限（image:manage）。"
+              />
+            ),
+          },
+        ]}
+      />
     </Space>
   );
 }

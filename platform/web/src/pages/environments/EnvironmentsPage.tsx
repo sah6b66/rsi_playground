@@ -76,7 +76,7 @@ export function EnvironmentsPage() {
                 <Tag color="green">本地</Tag>
               ),
           },
-          { title: 'Endpoint', dataIndex: 'endpoint' },
+          { title: '访问端点', dataIndex: 'endpoint' },
           {
             title: '状态',
             dataIndex: 'online',
@@ -153,7 +153,7 @@ export function EnvironmentsPage() {
             <Input />
           </FieldWithHints>
           <FieldWithHints
-            label="Endpoint"
+            label="访问端点"
             name="endpoint"
             example="ssh://user@192.168.1.50"
             extra="远端 SSH；本地留空或 docker 默认（缺省 local）"
@@ -165,7 +165,7 @@ export function EnvironmentsPage() {
             label="实例上限"
             name="max_instances"
             extra="缺省 2，范围 1–64"
-            tooltip="该主机可同时承载的 SUT 容器数上限"
+            tooltip="该主机可同时承载的 Agent 容器数上限"
           >
             <InputNumber min={1} max={64} style={{ width: '100%' }} />
           </FieldWithHints>

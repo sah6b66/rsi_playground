@@ -45,11 +45,13 @@ export interface MenuGroup {
   items: MenuItem[];
 }
 
-// 菜单树（DD-14 §4 信息架构）：总览 / RSI 优化 / 资源管理 / 系统
+// 菜单树（DD-14 §4 信息架构，U1 调整）：总览 / RSI 优化 / 资源管理 / 系统。
+// U1：SUT 与 Docker 镜像合并为「网络Agent」（/suts 页内 Tab，镜像 Tab 需
+// image:manage，无权显示 403）；强相关资源相邻（网络Agent→运行环境→网络仿真）。
 export const MENU: MenuGroup[] = [
   {
     title: '总览',
-    items: [{ key: '/', label: 'Dashboard', icon: 'dashboard', perm: 'view:read' }],
+    items: [{ key: '/', label: '运行总览', icon: 'dashboard', perm: 'view:read' }],
   },
   {
     title: 'RSI 优化',
@@ -58,15 +60,12 @@ export const MENU: MenuGroup[] = [
   {
     title: '资源管理',
     items: [
-      { key: '/evalsets', label: '评测集', icon: 'database', perm: 'view:read' },
-      { key: '/suts', label: 'SUT 管理', icon: 'code', perm: 'view:read' },
-      // GET /docker/images 需 image:manage（后端 images.py）→ 菜单用高权限，
-      // researcher 等低权限角色不显示入口（M1 权限投影）。
-      { key: '/images', label: 'Docker 镜像', icon: 'appstore', perm: 'image:manage' },
+      { key: '/suts', label: '网络Agent', icon: 'code', perm: 'view:read' },
+      { key: '/environments', label: '运行环境', icon: 'desktop', perm: 'view:read' },
       // GET /sandbox/backends 仅需登录、GET /carrier/hosts 仅 view:read（低权限只读）
       // → 菜单留 view:read，写按钮在页内以对应 manage 权限门控。
-      { key: '/sandboxes', label: '仿真沙箱', icon: 'cloud-server', perm: 'view:read' },
-      { key: '/environments', label: '运行环境', icon: 'desktop', perm: 'view:read' },
+      { key: '/sandboxes', label: '网络仿真', icon: 'cloud-server', perm: 'view:read' },
+      { key: '/evalsets', label: '评测集', icon: 'database', perm: 'view:read' },
     ],
   },
   {

@@ -63,7 +63,7 @@ test('向导全流程：公式预览 + 权重和警告 + 提交请求体 + 列�
   await waitFor(() =>
     expect(screen.getByText('下一步')).toBeInTheDocument(),
   );
-  await userEvent.click(screen.getByRole('combobox', { name: 'SUT' }));
+  await userEvent.click(screen.getByRole('combobox', { name: '网络Agent' }));
   await userEvent.click(await screen.findByText('ipops-agent-1'));
   await userEvent.click(screen.getByRole('combobox', { name: '运行环境' }));
   await userEvent.click(
@@ -123,7 +123,7 @@ test('提交 409（同 SUT 活跃）→ 表单 alert 显示后端 detail', async
   renderApp('/sessions/new');
   await waitFor(() => expect(screen.getByText('下一步')).toBeInTheDocument());
   // sut-2 已有活跃会话（fixture iter-bbbb2222）
-  await userEvent.click(screen.getByRole('combobox', { name: 'SUT' }));
+  await userEvent.click(screen.getByRole('combobox', { name: '网络Agent' }));
   await userEvent.click(await screen.findByText('ipops-agent-2'));
   await userEvent.click(screen.getByRole('combobox', { name: '运行环境' }));
   await userEvent.click(

@@ -9,6 +9,7 @@ import {
   useRotateCredential,
 } from '../../../api/hooks';
 import { FieldWithHints } from '../../../components/FieldWithHints';
+import { credKindLabel } from '../../../utils/labels';
 
 interface CredForm {
   name: string;
@@ -122,7 +123,7 @@ export function CredsTab() {
             title: '类型',
             dataIndex: 'kind',
             width: 140,
-            render: (v: string) => <Tag>{v}</Tag>,
+            render: (v: string) => <Tag>{credKindLabel(v)}</Tag>,
           },
           {
             title: '密钥库引用',
@@ -183,7 +184,12 @@ export function CredsTab() {
             name="kind"
             tooltip="device_ssh=设备 SSH / nms_api=网管 API / llm_api=模型 API / backend_ssh=后端 SSH"
           >
-            <Select options={CREDENTIAL_KINDS.map((k) => ({ value: k, label: k }))} />
+            <Select
+              options={CREDENTIAL_KINDS.map((k) => ({
+                value: k,
+                label: credKindLabel(k),
+              }))}
+            />
           </FieldWithHints>
           <FieldWithHints
             label="值"

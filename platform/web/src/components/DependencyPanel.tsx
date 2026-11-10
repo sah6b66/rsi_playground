@@ -1,6 +1,7 @@
 // 外部依赖面板（DD-14 §5.2）：状态灯 + 名称 + 延迟/失败原因。
 import { Empty, List, Spin } from 'antd';
 import { useDependencies, type Dependency } from '../api/hooks';
+import { depLabel } from '../utils/labels';
 
 const DOT: Record<string, string> = {
   ok: '#52c41a',
@@ -34,7 +35,7 @@ export function DependencyPanel() {
               marginRight: 8,
             }}
           />
-          <span style={{ flex: 1 }}>{dep.name}</span>
+          <span style={{ flex: 1 }}>{depLabel(dep.name)}</span>
           <span style={{ color: '#8c8c8c', fontSize: 12 }}>
             {dep.status !== 'ok' && dep.detail
               ? dep.detail

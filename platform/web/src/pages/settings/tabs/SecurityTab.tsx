@@ -9,12 +9,12 @@ import { apiFetch } from '../../../api/client';
 
 // 代码级常量（TARGET_PATHS 8 项 —— DD-11 §3）
 const TARGET_WHITELIST = [
-  { key: 'system_prompt', path: 'suts/{id}/system-prompt(.md)?', desc: 'SUT 系统提示词' },
-  { key: 'skills', path: 'suts/{id}/skills/.*', desc: 'SUT 技能包' },
-  { key: 'scripts', path: 'suts/{id}/scripts/.*', desc: 'SUT 辅助脚本' },
+  { key: 'system_prompt', path: 'suts/{id}/system-prompt(.md)?', desc: 'Agent 系统提示词' },
+  { key: 'skills', path: 'suts/{id}/skills/.*', desc: 'Agent 技能包' },
+  { key: 'scripts', path: 'suts/{id}/scripts/.*', desc: 'Agent 辅助脚本' },
   { key: 'mcp_config', path: 'suts/{id}/mcp\\.json', desc: 'MCP 服务器配置' },
   { key: 'mcp_src', path: 'suts/{id}/mcp-src/.*', desc: 'MCP 服务器源码' },
-  { key: 'memory', path: 'suts/{id}/memory/.*', desc: 'SUT 记忆文件' },
+  { key: 'memory', path: 'suts/{id}/memory/.*', desc: 'Agent 记忆文件' },
   { key: 'knowledge', path: 'suts/{id}/knowledge/.*', desc: '知识库文件' },
   { key: 'model_config', path: 'suts/{id}/model\\.json', desc: '模型调用配置' },
 ];

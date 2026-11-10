@@ -79,11 +79,11 @@ export function CreateSessionWizard() {
         {step === 0 && (
           <Space direction="vertical" size="middle" style={{ width: 360 }}>
             <Select
-              placeholder="SUT *"
+              placeholder="网络Agent *"
               value={basics.sut_id ?? undefined}
               options={sutOptions}
               onChange={(v) => setBasics({ ...basics, sut_id: v })}
-              aria-label="SUT"
+              aria-label="网络Agent"
             />
             {basics.sut_id && (
               <span style={{ color: '#8c8c8c' }}>
@@ -110,7 +110,7 @@ export function CreateSessionWizard() {
         {step === 1 && <ProfileForm value={profile} onChange={setProfile} />}
         {step === 2 && (
           <Descriptions bordered size="small" column={1}>
-            <Descriptions.Item label="SUT">{sutName}</Descriptions.Item>
+            <Descriptions.Item label="网络Agent">{sutName}</Descriptions.Item>
             <Descriptions.Item label="运行环境">
               {basics.environment}
             </Descriptions.Item>

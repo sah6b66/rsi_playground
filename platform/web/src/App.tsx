@@ -1,6 +1,6 @@
 // 应用根：QueryClientProvider + 路由表（DD-14 §4）+ 全局 SSE 失效
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { AuthGuard, RequirePerm } from './components/AuthGuard';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -11,7 +11,6 @@ import { SessionListPage } from './pages/sessions/SessionListPage';
 import { CreateSessionWizard } from './pages/sessions/CreateSessionWizard';
 import { SessionDetailPage } from './pages/sessions/detail/SessionDetailPage';
 import { EvalsetListPage } from './pages/evalsets/EvalsetListPage';
-import { ImagesPage } from './pages/images/ImagesPage';
 import { SandboxesPage } from './pages/sandboxes/SandboxesPage';
 import { EnvironmentsPage } from './pages/environments/EnvironmentsPage';
 import { SutListPage } from './pages/suts/SutListPage';
@@ -37,7 +36,8 @@ function Shell() {
           <Route path="/evalsets" element={<EvalsetListPage />} />
           <Route path="/suts" element={<SutListPage />} />
           <Route path="/suts/:id" element={<SutDetailPage />} />
-          <Route path="/images" element={<ImagesPage />} />
+          {/* U1：镜像库合并进「网络Agent」页 Tab，旧路由重定向 */}
+          <Route path="/images" element={<Navigate to="/suts?tab=images" replace />} />
           <Route path="/sandboxes" element={<SandboxesPage />} />
           <Route path="/environments" element={<EnvironmentsPage />} />
           <Route

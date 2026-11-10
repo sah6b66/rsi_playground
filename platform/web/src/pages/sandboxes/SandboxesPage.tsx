@@ -16,6 +16,8 @@ import {
   Tag,
   Typography,
   message,
+  Row,
+  Col,
 } from 'antd';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -76,6 +78,9 @@ export function SandboxesPage() {
 
   return (
     <div>
+      <Typography.Title level={4} style={{ marginTop: 0 }}>
+        网络仿真平台
+      </Typography.Title>
       <Space style={{ marginBottom: 16 }}>
         {canManage && (
           <a role="button" onClick={() => openEdit()}>
@@ -103,7 +108,7 @@ export function SandboxesPage() {
           style={{ marginBottom: 16 }}
         />
       )}
-      <Space wrap size={16} align="start">
+      <Space direction="vertical" size={16} style={{ width: '100%' }}>
         {(data?.items ?? []).map((b) => {
           const related = (evalsets?.items ?? []).filter((e) =>
             backendKeyMatches(b.name, e.env?.backend),
@@ -118,69 +123,69 @@ export function SandboxesPage() {
                   {b.kind === 'fake' && <Tag>离线开发用</Tag>}
                 </Space>
               }
-              style={{ width: 460 }}
+              style={{ width: '100%' }}
               extra={
-                <Badge
-                  status={b.available ? 'success' : 'error'}
-                  text={b.available ? '在线' : '离线'}
-                />
-              }
-              actions={
-                canManage
-                  ? [
-                      <a
-                        key="edit"
-                        role="button"
-                        onClick={() => openEdit(b.name, b.kind, undefined)}
-                      >
-                        编辑
-                      </a>,
-                    ]
-                  : []
+                <Space>
+                  <Badge
+                    status={b.available ? 'success' : 'error'}
+                    text={b.available ? '在线' : '离线'}
+                  />
+                  {canManage && (
+                    <a role="button" onClick={() => openEdit(b.name, b.kind, undefined)}>
+                      编辑
+                    </a>
+                  )}
+                </Space>
               }
             >
-              <Descriptions column={1} size="small">
-                <Descriptions.Item label="类型">
-                  {KIND_LABEL[b.kind] ?? b.kind}
-                </Descriptions.Item>
-                <Descriptions.Item label="状态详情">
-                  {b.detail ?? (b.available ? '探活正常' : '不可用')}
-                </Descriptions.Item>
-                <Descriptions.Item label="活跃实验室">
-                  {b.active_labs}
-                </Descriptions.Item>
-              </Descriptions>
-              <Collapse
-                ghost
-                items={[
-                  {
-                    key: 'endpoints',
-                    label: `设备端点（关联评测集 ${related.length}）`,
-                    children: related.length ? (
-                      related.map((e) => (
-                        <div key={e.id} style={{ marginBottom: 8 }}>
-                          <Typography.Text strong>{e.name}</Typography.Text>{' '}
-                          <Link to="/evalsets">去编辑凭证</Link>
-                          <div style={{ paddingLeft: 12 }}>
-                            {Object.entries(e.env?.ssh_access ?? {}).map(
-                              ([dev, sa]) => (
-                                <div key={dev} data-testid="device-endpoint">
-                                  {dev}: {sa.ip}:{sa.port}
-                                </div>
-                              ),
-                            )}
-                          </div>
-                        </div>
-                      ))
-                    ) : (
-                      <Empty
-                        image={Empty.PRESENTED_IMAGE_SIMPLE}
-                        description="暂无评测集使用该平台"
-                      />
-                    ),
-                  },
-                ]}
-              />
+              <Row gutter={16}>
+                <Col span={10}>
+                  <Descriptions column={1} size="small">
+                    <Descriptions.Item label="类型">
+                      {KIND_LABEL[b.kind] ?? b.kind}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="状态详情">
+                      {b.detail ?? (b.available ? '探活正常' : '不可用')}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="活跃实验室">
+                      {b.active_labs}
+                    </Descriptions.Item>
+                  </Descriptions>
+                </Col>
+                <Col span={14}>
+                  <Collapse
+                    ghost
+                    items={[
+                      {
+                        key: 'endpoints',
+                        label: `设备端点（关联评测集 ${related.length}）`,
+                        children: related.length ? (
+                          related.map((e) => (
+                            <div key={e.id} style={{ marginBottom: 8 }}>
+                              <Typography.Text strong>{e.name}</Typography.Text>{' '}
+                              <Link to="/evalsets">去编辑凭证</Link>
+                              <div style={{ paddingLeft: 12 }}>
+                                {Object.entries(e.env?.ssh_access ?? {}).map(
+                                  ([dev, sa]) => (
+                                    <div key={dev} data-testid="device-endpoint">
+                                      {dev}: {sa.ip}:{sa.port}
+                                    </div>
+                                  ),
+                                )}
+                              </div>
+                            </div>
+                          ))
+                        ) : (
+                          <Empty
+                            image={Empty.PRESENTED_IMAGE_SIMPLE}
+                            description="暂无评测集使用该平台"
+                          />
+                        ),
+                      },
+                    ]}
+                  />
+                </Col>
+              </Row>
             </Card>
           );
         })}

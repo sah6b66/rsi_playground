@@ -67,7 +67,7 @@ test('PAUSED 详情页：横幅文案 + Steps 高亮"假设" + 门② 可操作/
   // 概要
   expect(screen.getByText(detailId)).toBeInTheDocument();
   expect(screen.getByText('已暂停待审批')).toBeInTheDocument();
-  expect(screen.getByText('210,000 tokens')).toBeInTheDocument();
+  expect(screen.getByText('210,000 Token')).toBeInTheDocument();
   // Steps：当前 process 步为"假设"
   const steps = await screen.findByTestId('steps-panel');
   const current = steps.querySelector('.ant-steps-item-process');

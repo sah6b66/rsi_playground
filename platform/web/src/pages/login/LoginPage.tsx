@@ -54,7 +54,7 @@ export function LoginPage() {
     >
       <Card style={{ width: 380 }}>
         <Typography.Title level={3} style={{ textAlign: 'center' }}>
-          RSI Playground
+          网络Agent RSI演练场
         </Typography.Title>
         {error && <Alert type="error" message={error} showIcon style={{ marginBottom: 16 }} />}
         <Form layout="vertical" onFinish={onFinish}>

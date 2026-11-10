@@ -10,6 +10,7 @@ import {
   type Iteration,
 } from '../../api/hooks';
 import { DangerConfirm } from '../../components/DangerConfirm';
+import { modeLabel } from '../../utils/labels';
 import { StatusBadge } from '../../components/StatusBadge';
 import { useUiStore } from '../../stores/ui';
 import { can } from '../../utils/permissions';
@@ -130,13 +131,15 @@ export function SessionListPage() {
             render: (id: string) => <Link to={`/sessions/${id}`}>{id}</Link>,
           },
           { title: '开始时间', dataIndex: 'created_at' },
-          { title: 'SUT', dataIndex: 'sut_id', render: (v: string) => sutName(v) },
+          { title: '网络Agent', dataIndex: 'sut_id', render: (v: string) => sutName(v) },
           {
             title: '评测集',
             dataIndex: 'evalset_id',
             render: (v: string | null) => evalName(v),
           },
-          { title: '模式', dataIndex: 'mode', render: (m: string) => <span>{m}</span> },
+          { title: '运行模式',
+          dataIndex: 'mode',
+          render: (m: string) => <span>{modeLabel(m)}</span> },
           {
             title: '状态',
             dataIndex: 'state',

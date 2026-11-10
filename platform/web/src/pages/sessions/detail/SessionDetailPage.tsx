@@ -5,6 +5,7 @@ import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useSession, useSuts, type Iteration } from '../../../api/hooks';
 import { StatusBadge } from '../../../components/StatusBadge';
+import { modeLabel } from '../../../utils/labels';
 import { ProgressTab } from '../tabs/ProgressTab';
 import { EffectTab } from '../tabs/EffectTab';
 import { DiffTab } from '../tabs/DiffTab';
@@ -57,17 +58,17 @@ export function SessionDetailPage() {
       <Card style={{ marginBottom: 12 }}>
         <Descriptions size="small" column={3}>
           <Descriptions.Item label="会话 ID">{it.id}</Descriptions.Item>
-          <Descriptions.Item label="SUT">{sutName}</Descriptions.Item>
+          <Descriptions.Item label="网络Agent">{sutName}</Descriptions.Item>
           <Descriptions.Item label="评测集">
             {it.evalset_id ?? '—'}
           </Descriptions.Item>
-          <Descriptions.Item label="模式">{it.mode}</Descriptions.Item>
+          <Descriptions.Item label="运行模式">{modeLabel(it.mode)}</Descriptions.Item>
           <Descriptions.Item label="状态">
             <StatusBadge value={it.state} />
           </Descriptions.Item>
           <Descriptions.Item label="预算消耗">
             {typeof it.budget_used?.tokens === 'number'
-              ? `${it.budget_used.tokens.toLocaleString()} tokens`
+              ? `${it.budget_used.tokens.toLocaleString()} Token`
               : '—'}
           </Descriptions.Item>
         </Descriptions>

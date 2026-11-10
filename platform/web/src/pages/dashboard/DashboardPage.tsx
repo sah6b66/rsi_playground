@@ -1,4 +1,5 @@
-// Dashboard 运行总览（DD-14 §5.2）：指标卡行 + 依赖/系统面板 + 最近会话迷你表。
+// Dashboard 运行总览（DD-14 §5.2，U1 布局规范化）：
+// 指标卡统一栅格（span=6 一行 4 张）+ 依赖/系统面板并列同高 + 最近会话独占一行。
 import { Card, Col, Empty, Progress, Row, Table } from 'antd';
 import { Link } from 'react-router-dom';
 import {
@@ -40,7 +41,7 @@ export function DashboardPage() {
   const awaiting = items.filter((it) => AWAITING_STATES.has(it.state)).length;
   const done = items.filter((it) => DONE_STATES.has(it.state)).length;
 
-  const imageCount = suts.data?.items.length ?? 0;
+  const agentCount = suts.data?.items.length ?? 0;
 
   // 运行环境：T6 前无 /carrier/hosts —— 用 dependencies 中
   // platform:*（执行主机探活项）计数替代。
@@ -72,62 +73,64 @@ export function DashboardPage() {
   return (
     <div>
       <Row gutter={[12, 12]}>
-        <Col xs={12} md={8} lg={4}>
-          <MetricCard
-            title="运行中"
-            value={running}
-            status="running"
-            sub={`待审批 ${awaiting} · 已完成 ${done}`}
-          />
+        <Col span={6}>
+          <MetricCard title="运行中会话" value={running} status="running" />
         </Col>
-        <Col xs={12} md={8} lg={4}>
+        <Col span={6}>
           <MetricCard
-            title="待审批"
+            title="待审批会话"
             value={awaiting}
             status={awaiting > 0 ? 'paused_awaiting' : undefined}
           />
         </Col>
-        <Col xs={12} md={8} lg={4}>
-          <MetricCard title="已完成" value={done} status="finalized" />
+        <Col span={6}>
+          <MetricCard title="已完成会话" value={done} status="finalized" />
         </Col>
-        <Col xs={12} md={8} lg={4}>
-          <MetricCard title="SUT 镜像" value={imageCount} />
+        <Col span={6}>
+          <MetricCard title="网络Agent 数" value={agentCount} sub="已登记 Agent" />
         </Col>
-        <Col xs={12} md={8} lg={4}>
+        <Col span={6}>
           <MetricCard
-            title="运行环境"
+            title="运行环境（在线）"
             value={`${hostOk}/${hostChecks.length}`}
-            sub="执行主机"
+            sub="执行主机在线 / 总数"
           />
         </Col>
-        <Col xs={12} md={8} lg={4}>
+        <Col span={6}>
           <MetricCard
-            title="仿真沙箱"
+            title="网络仿真平台（在线）"
             value={`${backendOnline}/${backendItems.length}`}
-            sub={
-              backendItems.length > 0
-                ? `共 ${backendItems.length}（${backendOnline} 在线）`
-                : undefined
-            }
+            sub={`共 ${backendItems.length} 个平台`}
           />
         </Col>
-        <Col xs={12} md={8} lg={4}>
-          <MetricCard title="SUT 实例运行数" value={runningInstances} />
+        <Col span={6}>
+          <MetricCard
+            title="Agent 实例（运行中）"
+            value={runningInstances}
+            sub="运行中的 Agent 实例数"
+          />
+        </Col>
+        <Col span={6}>
+          <MetricCard
+            title="Token 预算消耗"
+            value={tokensUsed}
+            sub={`占缺省上限 ${budgetPct}%`}
+          />
         </Col>
       </Row>
 
       <Row gutter={[12, 12]} style={{ marginTop: 12 }}>
-        <Col xs={24} lg={12}>
-          <Card size="small" title="外部依赖">
+        <Col span={12}>
+          <Card size="small" title="外部依赖状态" style={{ height: '100%' }}>
             <DependencyPanel />
           </Card>
         </Col>
-        <Col xs={24} lg={12}>
-          <Card size="small" title="系统状态">
+        <Col span={12}>
+          <Card size="small" title="系统状态" style={{ height: '100%' }}>
             服务状态：
             {health.data ? health.data.status : '…'}
             <div style={{ marginTop: 8 }}>
-              预算消耗（tokens）
+              预算消耗（Token）
               <Progress
                 percent={budgetPct}
                 status={budgetPct >= 100 ? 'exception' : 'normal'}
@@ -160,7 +163,10 @@ export function DashboardPage() {
                 dataIndex: 'id',
                 render: (id: string) => <Link to={`/sessions/${id}`}>{id}</Link>,
               },
-              { title: 'SUT', dataIndex: 'sut_id' },
+              {
+                title: '网络Agent',
+                dataIndex: 'sut_id',
+              },
               {
                 title: '状态',
                 dataIndex: 'state',

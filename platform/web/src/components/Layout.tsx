@@ -73,7 +73,7 @@ export function Layout() {
             fontWeight: 600,
           }}
         >
-          RSI Playground
+          网络Agent RSI演练场
         </div>
         <Menu
           theme="dark"

@@ -162,7 +162,7 @@ export function DiffTab({ id, sutId }: { id: string; sutId: string }) {
                 ),
             },
             {
-              title: 'git ref',
+              title: 'Git 版本',
               key: 'ref',
               render: () => (toV != null ? <code>v{toV}</code> : '—'),
             },

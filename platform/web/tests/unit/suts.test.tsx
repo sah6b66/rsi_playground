@@ -37,7 +37,7 @@ beforeEach(() => {
 test('SUT 列表：创建 Modal 提交 body', async () => {
   renderApp('/suts');
   await screen.findByText('ipops-agent-1'); // dashboardHandlers 列表 fixture
-  await userEvent.click(screen.getByRole('button', { name: /创建 SUT/ }));
+  await userEvent.click(screen.getByRole('button', { name: /创建 Agent/ }));
   // 镜像引用四件套：placeholder 样例 + docker load 提示
   const imageInput = screen.getByRole('textbox', { name: /镜像引用/ });
   expect(imageInput).toHaveAttribute('placeholder', 'ipops-agent:v1.2');

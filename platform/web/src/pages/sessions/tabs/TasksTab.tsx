@@ -56,26 +56,26 @@ export function TasksTab({
       render: (v: string | null) => (v ? <StatusBadge value={v} /> : '—'),
     },
     {
-      title: 'tokens',
+      title: 'Token 数',
       dataIndex: 'tokens',
       key: 'tokens',
       render: (v: number | null) => (v != null ? v.toLocaleString() : '—'),
     },
     {
-      title: '时延 (ms)',
+      title: '时延（ms）',
       dataIndex: 'latency_ms',
       key: 'latency_ms',
       render: (v: number | null) => (v != null ? v.toLocaleString() : '—'),
     },
     {
-      title: 'root_cause 命中',
+      title: '根因命中',
       dataIndex: 'root_cause_match',
       key: 'root_cause_match',
       render: (v: boolean | null) =>
         v == null ? '—' : v ? <Tag color="success">✓</Tag> : <Tag color="error">✗</Tag>,
     },
     {
-      title: 'run',
+      title: '运行 ID',
       dataIndex: 'run_id',
       key: 'run_id',
       render: (v: string) => <code>{v}</code>,

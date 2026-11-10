@@ -92,7 +92,7 @@ test('环境页：模式徽章 + 在线灯 + 编辑 PUT + 重启提示', async (
   // 编辑 remote-1 → 保存 → PUT carrier/hosts → restart Alert
   const row = screen.getByText('remote-1').closest('tr')!;
   await userEvent.click(within(row).getByRole('button', { name: /编\s*辑/ }));
-  const endpointInput = await screen.findByRole('textbox', { name: /Endpoint/ });
+  const endpointInput = await screen.findByRole('textbox', { name: /访问端点/ });
   expect(endpointInput).toHaveValue('ssh://user@192.168.1.50');
   await userEvent.click(screen.getByRole('button', { name: /保\s*存/ }));
   await waitFor(() =>
@@ -188,18 +188,17 @@ import { http, HttpResponse } from 'msw';
 import { server } from '../setup';
 import { MENU, can } from '../../src/utils/permissions';
 
-test('菜单权限投影：researcher 不可见 /images（image:manage），可见沙箱/环境', () => {
+test('菜单权限投影（U1 合并后）：菜单无 /images 项，镜像入口收敛到 /suts 页内 Tab', () => {
   const visible = MENU.flatMap((g) => g.items)
     .filter((i) => can('researcher', i.perm ?? 'view:read'))
     .map((i) => i.key);
-  expect(visible).not.toContain('/images');
+  expect(visible).not.toContain('/images'); // 菜单不再有独立镜像项（任何角色）
   expect(visible).toContain('/sandboxes'); // GET 仅需登录 → view:read
   expect(visible).toContain('/environments'); // GET 仅 view:read
-  // admin 全量可见
   const adminVisible = MENU.flatMap((g) => g.items)
     .filter((i) => can('admin', i.perm ?? 'view:read'))
     .map((i) => i.key);
-  expect(adminVisible).toContain('/images');
+  expect(adminVisible).not.toContain('/images');
 });
 
 test('镜像页 403：无权列表渲染 403 Result 而非空白', async () => {

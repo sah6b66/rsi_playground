@@ -18,8 +18,8 @@ test('golden path: login → dashboard → create → paused session gates → t
 
   // ── Dashboard：指标卡 + 依赖面板 ────────────────────────────────────
   await expect(page).toHaveURL(/\/$/);
-  await expect(page.getByText('运行中', { exact: true })).toBeVisible();
-  await expect(page.getByText('待审批', { exact: true })).toBeVisible();
+  await expect(page.getByText('运行中会话', { exact: true })).toBeVisible();
+  await expect(page.getByText('待审批会话', { exact: true })).toBeVisible();
   await expect(page.getByText('外部依赖')).toBeVisible();
   await expect(page.getByText('系统状态')).toBeVisible();
 
@@ -45,7 +45,7 @@ test('golden path: login → dashboard → create → paused session gates → t
         `.ant-select-dropdown:visible .ant-select-item-option[title="${title}"]`,
       )
       .last();
-  await page.getByRole('combobox', { name: 'SUT' }).click();
+  await page.getByRole('combobox', { name: '网络Agent' }).click();
   await openOption('e2e-agent-2').click();
   await page.getByRole('combobox', { name: '运行环境' }).click();
   await openOption('main').click();
