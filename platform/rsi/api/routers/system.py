@@ -20,6 +20,8 @@ class DependencyStatus(BaseModel):
     name: str
     status: str
     latency_ms: float | None = None
+    # T3：down 项携带原因摘要（HealthMonitor checker 填充；fallback 恒空）
+    detail: str = ""
 
 
 class DependencyPage(BaseModel):
@@ -110,6 +112,7 @@ async def dependencies(
                 name=d["name"],
                 status=d["status"],
                 latency_ms=d.get("latency_ms"),
+                detail=str(d.get("detail") or ""),
             )
             for d in items
         ],

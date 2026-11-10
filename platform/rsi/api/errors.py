@@ -20,6 +20,7 @@ from rsi.core.errors import (
     NotFoundError,
     RsiError,
     TargetViolationError,
+    UpstreamError,
     ValidationError,
 )
 
@@ -49,6 +50,7 @@ EXCEPTION_MAP: dict[type[Exception], tuple[int, str]] = {
     # request itself is valid, the deployment is not — 503, not 500.
     ConfigError: (503, "SERVICE_UNAVAILABLE"),
     LLMOutputInvalid: (502, "LLM_INVALID"),
+    UpstreamError: (502, "UPSTREAM_ERROR"),
     RsiError: (500, "INTERNAL"),  # fallback
 }
 

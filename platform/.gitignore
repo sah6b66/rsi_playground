@@ -19,3 +19,9 @@ platform.db-wal
 .review-*.diff
 .f*-report.md
 .r*-report.md
+
+# web frontend
+web/node_modules/
+web/dist/
+web/playwright-report/
+web/test-results/

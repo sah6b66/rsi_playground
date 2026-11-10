@@ -7,10 +7,12 @@ import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
 
+from rsi.api.db_reads import db_verdict, list_runs_for_batch
 from rsi.api.deps import audit, get_current_user, get_store, require_perms
+from rsi.api.pagination import DEFAULT_LIMIT, paginate
 from rsi.core.enums import IterationState
 from rsi.core.errors import (
     ConflictError,
@@ -44,11 +46,21 @@ _GATE_NEXT_STEP: dict[str, str] = {
 
 
 class IterationCreate(BaseModel):
-    """§9.12：``mode ∈ p1|p2``；p2 在 P2 阶段开放（此前 409）。"""
+    """§9.12：``mode ∈ p1|p2``；p2 在 P2 阶段开放（此前 409）。
+
+    T3 web 向导形态：可携带 ``evalset_id`` 与内嵌 ``profile``（goals/guards/
+    budget）；此时 ``profile_id`` 可省略，由 API 自动铸号。
+    """
 
     sut_id: str = Field(json_schema_extra={"example": "sut-1a2b3c4d"})
-    profile_id: str = Field(json_schema_extra={"example": "prof-9f8e7d6c"})
+    profile_id: str | None = Field(
+        default=None, json_schema_extra={"example": "prof-9f8e7d6c"}
+    )
     mode: str = Field(default="p1", json_schema_extra={"example": "p1"})
+    evalset_id: str | None = Field(
+        default=None, json_schema_extra={"example": "eval-0001"}
+    )
+    profile: dict[str, Any] | None = None
 
 
 class IterationOut(BaseModel):
@@ -63,6 +75,14 @@ class IterationOut(BaseModel):
     budget_used: dict[str, Any]
     archived: bool
     created_at: str
+    evalset_id: str | None = None
+    profile: dict[str, Any] | None = None
+
+
+class IterationPage(BaseModel):
+    items: list[IterationOut]
+    next_cursor: str | None = None
+    has_more: bool = False
 
 
 class GateBody(BaseModel):
@@ -105,6 +125,7 @@ def _out(it: dict) -> IterationOut:
         round=it["round"], experiments=it["experiments"],
         budget_used=it["budget_used"], archived=it["archived"],
         created_at=it["created_at"],
+        evalset_id=it.get("evalset_id"), profile=it.get("profile"),
     )
 
 
@@ -116,15 +137,16 @@ async def create_iteration(
     store: dict = Depends(get_store("iterations")),
     suts: dict = Depends(get_store("suts")),
 ) -> dict:
-    # mode 校验（§9.12 / T2-7）：p2 未开放 → 409；非法值 → 422
+    # mode 校验（§9.12 / ADR-21 / T4）：p0 人工模式与 p1 均为一等模式；
+    # p2 未开放 → 409；其他值 → 422
     if body.mode == "p2":
         raise ConflictError(
             "P2 未开放：全自动迭代模式于 P2 阶段开放",
             context={"mode": body.mode},
         )
-    if body.mode != "p1":
+    if body.mode not in ("p0", "p1"):
         raise ValidationError(
-            f"invalid mode {body.mode!r}: expected 'p1'",
+            f"invalid mode {body.mode!r}: expected 'p0' or 'p1'",
             context={"mode": body.mode},
         )
     if body.sut_id not in suts:
@@ -146,7 +168,9 @@ async def create_iteration(
     it = {
         "id": f"iter-{uuid.uuid4().hex[:8]}",
         "sut_id": body.sut_id,
-        "profile_id": body.profile_id,
+        "profile_id": body.profile_id or f"prof-{uuid.uuid4().hex[:8]}",
+        "evalset_id": body.evalset_id,
+        "profile": body.profile,
         "mode": body.mode,
         "state": IterationState.ATTRIBUTING.value,
         "current_step": "awaiting_direction",
@@ -162,13 +186,200 @@ async def create_iteration(
     return {"iteration_id": it["id"]}
 
 
+@router.get("", response_model=IterationPage)
+async def list_iterations(
+    response: Response,
+    status: str | None = None,
+    sut_id: str | None = None,
+    cursor: str | None = None,
+    limit: int = DEFAULT_LIMIT,
+    user: Claims = Depends(get_current_user),
+    store: dict = Depends(get_store("iterations")),
+) -> IterationPage:
+    """会话列表（T3 web）。``status`` 匹配 IterationState 值；``sut_id`` 过滤。"""
+    items = list(store.values())
+    if status is not None:
+        items = [it for it in items if it["state"] == status]
+    if sut_id is not None:
+        items = [it for it in items if it["sut_id"] == sut_id]
+    # 最新创建在前（会话列表惯例）
+    items.sort(key=lambda it: it["created_at"], reverse=True)
+    window, page = paginate(items, cursor, limit)
+    response.headers["x-pagination"] = json.dumps(page)
+    return IterationPage(
+        items=[_out(it) for it in window],
+        next_cursor=page["next_cursor"],
+        has_more=page["has_more"],
+    )
+
+
 @router.get("/{iteration_id}", response_model=IterationOut)
 async def get_iteration(
     iteration_id: str,
+    request: Request,
     user: Claims = Depends(get_current_user),
     store: dict = Depends(get_store("iterations")),
+    batches: dict = Depends(get_store("batches")),
+    runs: dict = Depends(get_store("runs")),
 ) -> IterationOut:
-    return _out(_get(store, iteration_id))
+    it = _get(store, iteration_id)
+    # T4：budget_used.tokens 尚未累计（0）时，由该迭代关联 runs 兜底聚合
+    if not it["budget_used"].get("tokens"):
+        out = _out(it)
+        out.budget_used = {**it["budget_used"],
+                           "tokens": _tokens_used(request, batches, runs,
+                                                  iteration_id)}
+        return out
+    return _out(it)
+
+
+def _tokens_used(request: Request, batches: dict, runs: dict,
+                 iteration_id: str) -> int:
+    """Sum run tokens across all batches bound to the iteration."""
+    total = 0
+    for batch in batches.values():
+        if batch.get("iteration_id") != iteration_id:
+            continue
+        for run in list_runs_for_batch(request, runs, batch["id"]):
+            result = run.get("result")
+            tokens = (
+                result.get("tokens")
+                if isinstance(result, dict)
+                else run.get("tokens")
+            )
+            if isinstance(tokens, (int, float)):
+                total += int(tokens)
+    return total
+
+
+def _normalize_files(files: Any) -> list[dict]:
+    """files_changed entries → [{path, target}]（str 项 target=None）。"""
+    out: list[dict] = []
+    for f in files or []:
+        if isinstance(f, dict):
+            out.append({"path": f.get("path"), "target": f.get("target")})
+        else:
+            out.append({"path": f, "target": None})
+    return out
+
+
+@router.get("/{iteration_id}/timeline")
+async def get_iteration_timeline(
+    iteration_id: str,
+    request: Request,
+    user: Claims = Depends(get_current_user),
+    store: dict = Depends(get_store("iterations")),
+    batches: dict = Depends(get_store("batches")),
+    runs: dict = Depends(get_store("runs")),
+    experiments: dict = Depends(get_store("experiments")),
+) -> dict:
+    """会话时间线（T4 web / DD-14 §5.4 进展+效果图数据源）。
+
+    内存 stores 聚合（DB 回退走 db_reads）；缺失字段 None/[] —— 诚实空。
+    """
+    it = _get(store, iteration_id)
+
+    # 本迭代的 batches 按 round 分组（round 缺失按出现顺序编号）
+    own = sorted(
+        (b for b in batches.values()
+         if b.get("iteration_id") == iteration_id),
+        key=lambda b: (b.get("round") or 0, b.get("created_at", "")),
+    )
+    groups: list[tuple[int, list[dict]]] = []
+    index_of: dict[int, int] = {}
+    for pos, batch in enumerate(own, start=1):
+        rnd = batch.get("round")
+        if rnd is None:
+            rnd = pos
+        if rnd not in index_of:
+            index_of[rnd] = len(groups)
+            groups.append((rnd, []))
+        groups[index_of[rnd]][1].append(batch)
+
+    # 本迭代的 experiments（按 id 引用或 iteration_id 归属）
+    exp_ids = set(it.get("experiments") or [])
+    own_exps = [
+        e for e in experiments.values()
+        if e["id"] in exp_ids or e.get("iteration_id") == iteration_id
+    ]
+
+    rounds = []
+    for pos, (rnd, batch_list) in enumerate(groups):
+        tasks: list[dict] = []
+        judged = passed = 0
+        tokens_sum: list[int] = []
+        latencies: list[int] = []
+        for batch in batch_list:
+            for run in list_runs_for_batch(request, runs, batch["id"]):
+                verdict = run.get("verdict") or db_verdict(
+                    request, run["id"]
+                ) or {}
+                result = run.get("result")
+                result = result if isinstance(result, dict) else {}
+                tokens = result.get("tokens", run.get("tokens"))
+                latency = result.get("latency_ms", run.get("latency_ms"))
+                rcm = verdict.get("root_cause_match")
+                if rcm is None:
+                    rcm = (verdict.get("dimensions") or {}).get(
+                        "root_cause_match"
+                    )
+                tasks.append({
+                    "task_id": run.get("task_id"),
+                    "batch_id": batch["id"],
+                    "run_id": run["id"],
+                    "status": run.get("status"),
+                    "tokens": tokens if isinstance(tokens, int) else None,
+                    "latency_ms": (
+                        latency if isinstance(latency, (int, float))
+                        else None
+                    ),
+                    "root_cause_match": rcm,
+                })
+                if isinstance(tokens, int):
+                    tokens_sum.append(tokens)
+                if isinstance(latency, (int, float)):
+                    latencies.append(int(latency))
+                if verdict.get("verdict") in ("pass", "reject"):
+                    judged += 1
+                    passed += verdict["verdict"] == "pass"
+        exp = own_exps[pos] if pos < len(own_exps) else None
+        versions = (exp or {}).get("versions") or {}
+        band = versions.get("b", {}).get("noise_band") or [None, None]
+        rounds.append({
+            "round": rnd,
+            "status": batch_list[-1].get("status"),
+            "batch_ids": [b["id"] for b in batch_list],
+            "config_version_before": versions.get("a", {}).get("version"),
+            "config_version_after": versions.get("b", {}).get("version"),
+            "files_changed": _normalize_files(
+                (exp or {}).get("files_changed")
+            ),
+            "tasks": tasks,
+            "scores": {
+                "accuracy": (passed / judged) if judged else None,
+                "noise_band": list(band),
+            },
+        })
+
+    summary = {
+        "accuracy_series": [
+            {"round": r["round"], "value": r["scores"]["accuracy"]}
+            for r in rounds if r["scores"]["accuracy"] is not None
+        ],
+        "tokens_series": [
+            {"round": r["round"], "value": sum(
+                t["tokens"] or 0 for t in r["tasks"])}
+            for r in rounds
+        ],
+        "latency_series": [
+            {"round": r["round"], "value": (
+                sum(t["latency_ms"] or 0 for t in r["tasks"]) / len(r["tasks"])
+                if r["tasks"] else None
+            )}
+            for r in rounds
+        ],
+    }
+    return {"iteration_id": iteration_id, "rounds": rounds, "summary": summary}
 
 
 def _transition(it: dict, action: str) -> None:
