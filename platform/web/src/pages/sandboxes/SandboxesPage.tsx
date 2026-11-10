@@ -9,6 +9,7 @@ import {
   Empty,
   Form,
   Input,
+  InputNumber,
   Modal,
   Select,
   Space,
@@ -24,6 +25,8 @@ import {
   CloudServerOutlined,
   ExperimentOutlined,
   HddOutlined,
+  MinusCircleOutlined,
+  PlusOutlined,
 } from '@ant-design/icons';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
@@ -33,6 +36,7 @@ import {
   useBackends,
   useEvalsets,
   useSaveBackend,
+  type BackendStatus,
 } from '../../api/hooks';
 import { FieldWithHints } from '../../components/FieldWithHints';
 import { QueryErrorResult } from '../../components/QueryErrorResult';
@@ -60,6 +64,31 @@ function backendKeyMatches(key: string, envBackend?: string | null): boolean {
   return key === envBackend || key.startsWith(`${envBackend}-`);
 }
 
+// 设备清单行（表单态）↔ 提交态（name → {ip, port}）
+interface DeviceRow {
+  name?: string;
+  ip?: string;
+  port?: number;
+}
+
+function devicesToRows(
+  devices?: Record<string, { ip: string; port: number }>,
+): DeviceRow[] {
+  return Object.entries(devices ?? {}).map(([name, ep]) => ({
+    name,
+    ip: ep.ip,
+    port: ep.port,
+  }));
+}
+
+function rowsToDevices(rows: DeviceRow[] | undefined) {
+  const out: Record<string, { ip: string; port: number }> = {};
+  for (const r of rows ?? []) {
+    if (r.name && r.ip) out[r.name] = { ip: r.ip, port: r.port ?? 22 };
+  }
+  return out;
+}
+
 export function SandboxesPage() {
   const { data, error } = useBackends();
   const user = useUiStore((s) => s.user);
@@ -75,17 +104,22 @@ export function SandboxesPage() {
     url: string;
     verify_tls: boolean;
     subnets: string[];
+    devices: DeviceRow[];
   }>();
   // physical 类型隐藏 URL 输入（在线判定=设备 SSH 可达，无需平台地址）
   const formKind = Form.useWatch('kind', form);
+  const formUrl = Form.useWatch('url', form);
+  // 设备清单编辑器：物理网络类型必显；其他类型仅在 URL 为空时显示
+  const showDevices = formKind === 'physical' || !formUrl;
 
-  const openEdit = (name?: string, kind?: string, url?: string) => {
+  const openEdit = (b?: BackendStatus) => {
     form.setFieldsValue({
-      key: name ?? '',
-      kind: kind ?? 'fake',
-      url: url ?? '',
+      key: b?.name ?? '',
+      kind: b?.kind ?? 'fake',
+      url: '', // GET 不回传 URL（静态配置隐私面），编辑时留空重填
       verify_tls: false,
       subnets: [],
+      devices: devicesToRows(b?.devices),
     });
     setOpen(true);
   };
@@ -154,7 +188,7 @@ export function SandboxesPage() {
                     text={b.available ? '在线' : '离线'}
                   />
                   {canManage && (
-                    <a role="button" onClick={() => openEdit(b.name, b.kind, undefined)}>
+                    <a role="button" onClick={() => openEdit(b)}>
                       编辑
                     </a>
                   )}
@@ -170,6 +204,13 @@ export function SandboxesPage() {
                     <Descriptions.Item label="状态详情">
                       {b.detail ?? (b.available ? '探活正常' : '不可用')}
                     </Descriptions.Item>
+                    {(b.device_count ?? 0) > 0 && (
+                      <Descriptions.Item label="设备清单">
+                        <span data-testid="device-count">
+                          设备 {b.device_count} 台
+                        </span>
+                      </Descriptions.Item>
+                    )}
                     <Descriptions.Item label="活跃实验室">
                       {b.active_labs}
                     </Descriptions.Item>
@@ -226,9 +267,10 @@ export function SandboxesPage() {
             await saveMut.mutateAsync({
               key: v.key,
               kind: v.kind,
-              url: v.url,
+              url: v.url ?? '',
               verify_tls: v.verify_tls,
               subnets: v.subnets ?? [],
+              devices: rowsToDevices(v.devices),
             });
           } catch {
             return;
@@ -325,6 +367,60 @@ export function SandboxesPage() {
           >
             <Select mode="tags" open={false} suffixIcon={null} />
           </FieldWithHints>
+          {showDevices && (
+            <div data-testid="device-editor" style={{ marginBottom: 8 }}>
+              <Typography.Text strong>设备清单</Typography.Text>
+              <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+                平台在线判定：任一设备 SSH 可达即在线（与在用实验室无关）。
+                设备名需与评测集中的设备名一致；登录凭证仍在评测集中配置。
+              </Typography.Paragraph>
+              <Form.List name="devices">
+                {(fields, { add, remove }) => (
+                  <>
+                    {fields.map(({ key, name, ...restField }) => (
+                      <Space
+                        key={key}
+                        style={{ display: 'flex', marginBottom: 4 }}
+                        align="baseline"
+                      >
+                        <Form.Item
+                          {...restField}
+                          name={[name, 'name']}
+                          style={{ marginBottom: 4 }}
+                        >
+                          <Input placeholder="R1" style={{ width: 100 }} />
+                        </Form.Item>
+                        <Form.Item
+                          {...restField}
+                          name={[name, 'ip']}
+                          style={{ marginBottom: 4 }}
+                        >
+                          <Input placeholder="192.168.56.10" style={{ width: 160 }} />
+                        </Form.Item>
+                        <Form.Item
+                          {...restField}
+                          name={[name, 'port']}
+                          initialValue={22}
+                          style={{ marginBottom: 4 }}
+                        >
+                          <InputNumber min={1} max={65535} placeholder="22" />
+                        </Form.Item>
+                        <MinusCircleOutlined onClick={() => remove(name)} />
+                      </Space>
+                    ))}
+                    <Button
+                      type="dashed"
+                      size="small"
+                      icon={<PlusOutlined />}
+                      onClick={() => add({ port: 22 })}
+                    >
+                      添加设备
+                    </Button>
+                  </>
+                )}
+              </Form.List>
+            </div>
+          )}
         </Form>
       </Modal>
     </div>

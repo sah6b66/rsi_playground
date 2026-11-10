@@ -29,6 +29,7 @@ from rsi.sandbox.readiness import ReadyReport
 from rsi.sandbox.service import _run_sync
 from rsi.sandbox.sshpool import SessionKey, SshPool
 from rsi.sandbox.vendor import VENDOR_MAP
+from rsi.settings import DeviceEndpoint
 
 __all__ = ["PrebuiltBackend"]
 
@@ -46,12 +47,18 @@ class PrebuiltBackend(SandboxBackend):
         ssh_pool: SshPool | None,
         readiness,
         reset_cmds: dict[str, list[str]] | None = None,
+        devices: dict[str, DeviceEndpoint] | None = None,
     ) -> None:
         self._key = key
         self.kind = kind
         self._probe = probe
         self._pool = ssh_pool
         self._readiness = readiness
+        # 平台级设备清单（settings ``sandbox.backends.<key>.devices``）：
+        # 仅监控寻址（ip/port）；凭证属评测集 env.yaml（ADR-25 职责划分）。
+        # 物理网络平台（无 URL）的在线判定与在用 lab 无关——任一设备
+        # SSH 可达即平台在线。
+        self._devices = dict(devices or {})
         # optional per-vendor override of the reset command table; defaults
         # to the VendorProfile SSOT (same source as SandboxService B-6).
         self._reset_cmds = reset_cmds or {}
@@ -202,8 +209,10 @@ class PrebuiltBackend(SandboxBackend):
 
     def status(self) -> BackendStatus:
         # ADR-25 增补：配置了 URL → URL 探活；未配置 URL（物理网络）→
-        # 任一在用设备 SSH 可达即在线（同步 TCP 探测，3s 超时，语义同
-        # readiness 的 ssh_reachable）。
+        # ① 平台级设备清单（settings devices，与在用 lab 无关）任一设备
+        #    SSH 可达即在线；② 平台级为空 → 回退任一在用 lab 设备端点
+        #    可达即在线（同步 TCP 探测，3s 超时，语义同 readiness 的
+        #    ssh_reachable）。
         if self._probe.url:
             result = self._probe.probe_cached()
             return BackendStatus(
@@ -213,6 +222,15 @@ class PrebuiltBackend(SandboxBackend):
                 available=result.ok,
                 detail=result.detail,
             )
+        for ep in self._devices.values():
+            if tcp_reachable(ep.ip, ep.port):
+                return BackendStatus(
+                    key=self._key,
+                    kind=self.kind,
+                    active_labs=len(self._envs),
+                    available=True,
+                    detail="设备 SSH 可达（平台配置）",
+                )
         for env in self._envs.values():
             for access in env.ssh_access.values():
                 if tcp_reachable(access.ip, access.port):
@@ -228,7 +246,7 @@ class PrebuiltBackend(SandboxBackend):
             kind=self.kind,
             active_labs=len(self._envs),
             available=False,
-            detail="未配置 URL 且无在用设备",
+            detail="未配置 URL 且无设备信息",
         )
 
     # -- internals ----------------------------------------------------------------

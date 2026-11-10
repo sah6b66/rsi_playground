@@ -275,7 +275,12 @@ export const dashboardHandlers = [  http.get('/api/v1/iterations', () =>
           status: 'ready',
           available: true,
           active_labs: 0,
-          detail: '设备 SSH 可达',
+          detail: '设备 SSH 可达（平台配置）',
+          device_count: 2,
+          devices: {
+            R1: { ip: '192.168.56.10', port: 22 },
+            SW2: { ip: '192.168.56.11', port: 2222 },
+          },
         },
       ],
     }),

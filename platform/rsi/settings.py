@@ -185,6 +185,18 @@ class LoggingSettings(BaseModel):
 # ════════ ② sandbox (config doc §2 ②) ════════
 
 
+class DeviceEndpoint(BaseModel):
+    """平台级设备端点（仅监控寻址用：``ip:port``）。
+
+    凭证（username/password）仍属各评测集 ``env.yaml`` ``ssh_access``
+    （ADR-25 职责划分：平台注册信息只管"设备在哪"，评测集管"怎么登录"）。
+    """
+
+    model_config = _C
+    ip: str
+    port: int = 22
+
+
 class SandboxBackend(BaseModel):
     """§2 sandbox.backends.* — simulation-platform (Web) backend def.
 
@@ -200,6 +212,9 @@ class SandboxBackend(BaseModel):
     verify_tls: bool = False  # self-signed certs off by default
     api: Optional[str] = None  # reserved for S11 Web-API orchestration
     subnets: list[str] = Field(default_factory=list)
+    # 平台级设备清单（ADR-25 增补）：未配 URL（物理网络）时平台在线判定
+    # 优先探测这些端点（任一 SSH 可达即在线），与在用 lab 无关。
+    devices: dict[str, DeviceEndpoint] = Field(default_factory=dict)
 
 
 class SandboxSettings(BaseModel):

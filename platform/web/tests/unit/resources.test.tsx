@@ -165,6 +165,46 @@ test('沙箱页：kind 四值选项 + physical 隐藏 URL 输入 + 物理网络�
   ).not.toBeInTheDocument();
 }, 60000);
 
+// ③c 平台级设备清单（U6/ADR-25 增补）：物理类型设备编辑器 + 提交 devices + 卡片"设备 N 台"
+test('沙箱页：平台级设备清单编辑器 + 提交 devices + 卡片设备计数', async () => {
+  renderApp('/sandboxes');
+  // phys-1 卡片：设备 2 台 + 平台配置探测文案
+  await waitFor(() =>
+    expect(screen.getByTestId('device-count').textContent).toContain('设备 2 台'),
+  );
+  expect(screen.getByText('设备 SSH 可达（平台配置）')).toBeInTheDocument();
+  // 新增平台 → 选物理网络 → 出现设备清单编辑器
+  await userEvent.click(screen.getByRole('button', { name: '新增平台' }));
+  const kindSelect = await screen.findByRole('combobox', { name: '类型' });
+  await userEvent.click(kindSelect);
+  const optionEls = await waitFor(() => {
+    const els = document.querySelectorAll('.ant-select-item-option-content');
+    expect(els.length).toBe(4);
+    return els;
+  }, { timeout: 10_000 });
+  await userEvent.click(optionEls[2]!); // 物理网络
+  await waitFor(() =>
+    expect(screen.getByTestId('device-editor')).toBeInTheDocument(),
+  );
+  // 填平台标识 + 两个设备行 → 提交 body 含 devices
+  await userEvent.type(screen.getByRole('textbox', { name: /平台标识/ }), 'phys-2');
+  await userEvent.click(screen.getByRole('button', { name: /添加设备/ }));
+  await userEvent.type(screen.getByPlaceholderText('R1'), 'R1');
+  await userEvent.type(screen.getByPlaceholderText('192.168.56.10'), '192.168.56.11');
+  await userEvent.click(screen.getByRole('button', { name: '保 存' }));
+  await waitFor(() =>
+    expect(resourceRequests.sandboxBackend.length).toBe(1),
+  );
+  const req = resourceRequests.sandboxBackend[0] as {
+    key: string;
+    body: Record<string, unknown>;
+  };
+  expect(req.key).toBe('phys-2');
+  const body = req.body;
+  expect(body.kind).toBe('physical');
+  expect(body.devices).toEqual({ R1: { ip: '192.168.56.11', port: 22 } });
+}, 60000);
+
 // ④ 克隆向导：设备 ip/port 动态行（源 ssh_access 预填）→ 提交 201 → 列表出现新名
 test('评测集克隆：设备端点预填 + 覆盖提交 + 重名 409', async () => {
   renderApp('/evalsets');

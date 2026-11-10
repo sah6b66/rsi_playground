@@ -67,6 +67,9 @@ export interface BackendStatus {
   available: boolean;
   active_labs: number;
   detail: string | null;
+  // 平台级设备清单（ADR-25 增补：监控寻址，与在用 lab 无关）
+  device_count?: number;
+  devices?: Record<string, { ip: string; port: number }>;
 }
 
 export interface BackendPage {
@@ -517,6 +520,7 @@ export interface BackendSaveBody {
   url: string;
   verify_tls: boolean;
   subnets: string[];
+  devices?: Record<string, { ip: string; port: number }>;
 }
 
 export function useSaveBackend() {

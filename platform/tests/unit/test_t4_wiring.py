@@ -33,6 +33,7 @@ from rsi.security.audit import AuditLog
 from rsi.security.auth import AuthService
 from rsi.settings import (
     DatabaseSettings,
+    DeviceEndpoint,
     SandboxBackend as SandboxBackendSettings,
     SandboxSettings,
     Settings,
@@ -247,6 +248,32 @@ class TestBackendsEndpoint:
             assert items["ensp-pro-1"]["status"] == "offline"
             assert items["fake"]["available"] is True
             assert items["fake"]["status"] == "ready"
+
+    async def test_returns_device_count_from_settings(self, client_factory, tmp_path):
+        # 平台级设备清单计数（ADR-25 增补：GET /sandbox/backends）
+        stub = StubSandboxService(
+            [
+                BackendStatus(key="phys-1", kind="physical", available=True,
+                              detail="设备 SSH 可达（平台配置）"),
+                BackendStatus(key="fake", kind="fake", available=True),
+            ]
+        )
+        services = make_services(sandbox_service=stub)
+        services["settings"] = _settings(tmp_path, {
+            "phys-1": SandboxBackendSettings(
+                kind="physical",
+                devices={"R1": DeviceEndpoint(ip="192.168.56.10"),
+                         "R2": DeviceEndpoint(ip="192.168.56.11", port=2222)},
+            ),
+            "fake": SandboxBackendSettings(kind="fake"),
+        })
+        async with await client_factory(services) as client:
+            h = await self._login(client)
+            resp = await client.get("/api/v1/sandbox/backends", headers=h)
+            assert resp.status_code == 200, resp.text
+            items = {i["name"]: i for i in resp.json()["items"]}
+            assert items["phys-1"]["device_count"] == 2
+            assert items["fake"]["device_count"] == 0
 
     async def test_falls_back_without_service(self, client_factory):
         async with await client_factory(make_services()) as client:

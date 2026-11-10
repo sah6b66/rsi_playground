@@ -339,6 +339,47 @@ class TestSandboxBackendPut:
         doc = yaml.safe_load(yml.read_text(encoding="utf-8"))
         assert doc["sandbox"]["backends"]["phys-1"]["kind"] == "physical"
 
+    async def test_put_writes_platform_devices(self, client, tmp_path):
+        # 平台级设备清单（ADR-25 增补）：写入 settings 段；空 dict = 清除
+        yml = tmp_path / "settings.yaml"
+        yml.write_text(
+            "sandbox:\n  backends:\n    phys-1:\n"
+            "      kind: physical\n      devices:\n"
+            "        R1: {ip: 192.168.56.10, port: 22}\n",
+            encoding="utf-8",
+        )
+        h = await admin_headers(client)
+        resp = await client.put(
+            "/api/v1/sandbox/backends/phys-1",
+            json={
+                "kind": "physical",
+                "url": "",
+                "verify_tls": False,
+                "subnets": [],
+                "devices": {
+                    "R1": {"ip": "192.168.56.10", "port": 22},
+                    "SW2": {"ip": "192.168.56.11", "port": 2222},
+                },
+            },
+            headers=h,
+        )
+        assert resp.status_code == 200, resp.text
+        doc = yaml.safe_load(yml.read_text(encoding="utf-8"))
+        assert doc["sandbox"]["backends"]["phys-1"]["devices"] == {
+            "R1": {"ip": "192.168.56.10", "port": 22},
+            "SW2": {"ip": "192.168.56.11", "port": 2222},
+        }
+        # 空 devices → section 整体替换，旧清单被清除
+        resp = await client.put(
+            "/api/v1/sandbox/backends/phys-1",
+            json={"kind": "physical", "url": "", "verify_tls": False,
+                  "subnets": [], "devices": {}},
+            headers=h,
+        )
+        assert resp.status_code == 200, resp.text
+        doc = yaml.safe_load(yml.read_text(encoding="utf-8"))
+        assert "devices" not in doc["sandbox"]["backends"]["phys-1"]
+
 
 # ── POST /evalsets/{id}:clone ───────────────────────────────────────────────
 
@@ -438,6 +479,21 @@ class TestSandboxBackendPutValidation:
         resp = await client.put(
             "/api/v1/sandbox/backends/bogus-1",
             json={"kind": "gns3", "url": "", "verify_tls": False, "subnets": []},
+            headers=h,
+        )
+        assert resp.status_code == 422, resp.text
+
+    async def test_put_invalid_device_port_422(self, client):
+        h = await admin_headers(client)
+        resp = await client.put(
+            "/api/v1/sandbox/backends/phys-1",
+            json={
+                "kind": "physical",
+                "url": "",
+                "verify_tls": False,
+                "subnets": [],
+                "devices": {"R1": {"ip": "192.168.56.10", "port": 70000}},
+            },
             headers=h,
         )
         assert resp.status_code == 422, resp.text
