@@ -239,3 +239,24 @@ class TestModeP0:
             headers=h,
         )
         assert resp.status_code == 409
+
+
+class TestTimelineDefensiveVerdict:
+    async def test_verdict_without_dimensions_200(self, client):
+        """残缺 verdict（无 dimensions / dimensions=None）不 500（L4 守卫）。"""
+        h = await admin_headers(client)
+        it_id = await _seed_iteration_with_two_rounds(client, h)
+        stores = client._app.state.stores  # type: ignore[attr-defined]
+        stores["runs"]["run-1"]["verdict"] = {"verdict": "pass", "score": 1.0}
+        stores["runs"]["run-2"]["verdict"] = {
+            "verdict": "reject",
+            "score": 0.0,
+            "dimensions": None,
+        }
+        resp = await client.get(
+            f"/api/v1/iterations/{it_id}/timeline", headers=h
+        )
+        assert resp.status_code == 200, resp.text
+        tasks = {t["run_id"]: t for t in resp.json()["rounds"][0]["tasks"]}
+        assert tasks["run-1"]["root_cause_match"] is None
+        assert tasks["run-2"]["root_cause_match"] is None

@@ -60,7 +60,11 @@ export const MENU: MenuGroup[] = [
     items: [
       { key: '/evalsets', label: '评测集', icon: 'database', perm: 'view:read' },
       { key: '/suts', label: 'SUT 管理', icon: 'code', perm: 'view:read' },
-      { key: '/images', label: 'Docker 镜像', icon: 'appstore', perm: 'view:read' },
+      // GET /docker/images 需 image:manage（后端 images.py）→ 菜单用高权限，
+      // researcher 等低权限角色不显示入口（M1 权限投影）。
+      { key: '/images', label: 'Docker 镜像', icon: 'appstore', perm: 'image:manage' },
+      // GET /sandbox/backends 仅需登录、GET /carrier/hosts 仅 view:read（低权限只读）
+      // → 菜单留 view:read，写按钮在页内以对应 manage 权限门控。
       { key: '/sandboxes', label: '仿真沙箱', icon: 'cloud-server', perm: 'view:read' },
       { key: '/environments', label: '运行环境', icon: 'desktop', perm: 'view:read' },
     ],

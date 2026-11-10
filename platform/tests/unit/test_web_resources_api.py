@@ -416,3 +416,14 @@ class TestEvalsetClone:
             headers=h,
         )
         assert resp.status_code == 404
+
+
+class TestSandboxBackendPutValidation:
+    async def test_put_invalid_kind_422(self, client):
+        h = await admin_headers(client)
+        resp = await client.put(
+            "/api/v1/sandbox/backends/bogus-1",
+            json={"kind": "gns3", "url": "", "verify_tls": False, "subnets": []},
+            headers=h,
+        )
+        assert resp.status_code == 422, resp.text

@@ -7,9 +7,14 @@ import {
   type EnvironmentHost,
 } from '../../api/hooks';
 import { FieldWithHints } from '../../components/FieldWithHints';
+import { QueryErrorResult } from '../../components/QueryErrorResult';
+import { can } from '../../utils/permissions';
+import { useUiStore } from '../../stores/ui';
 
 export function EnvironmentsPage() {
-  const { data, isLoading } = useEnvironments();
+  const { data, isLoading, error } = useEnvironments();
+  const user = useUiStore((s) => s.user);
+  const canManage = can(user?.role, 'env:manage');
   const saveMut = useSaveHosts();
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -30,12 +35,18 @@ export function EnvironmentsPage() {
     setOpen(true);
   };
 
+  if (error) {
+    return <QueryErrorResult error={error} needPerm="view:read" />;
+  }
+
   return (
     <div>
       <Space style={{ marginBottom: 16 }}>
-        <a role="button" onClick={() => openEdit()}>
-          新增主机
-        </a>
+        {canManage && (
+          <a role="button" onClick={() => openEdit()}>
+            新增主机
+          </a>
+        )}
       </Space>
       {saved && (
         <Alert
@@ -96,11 +107,12 @@ export function EnvironmentsPage() {
           },
           {
             title: '操作',
-            render: (_, rec) => (
-              <a role="button" onClick={() => openEdit(rec)}>
-                编辑
-              </a>
-            ),
+            render: (_, rec) =>
+              canManage ? (
+                <a role="button" onClick={() => openEdit(rec)}>
+                  编辑
+                </a>
+              ) : null,
           },
         ]}
       />

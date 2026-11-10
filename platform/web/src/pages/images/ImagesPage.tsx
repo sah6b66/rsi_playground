@@ -6,9 +6,14 @@ import { useNavigate } from 'react-router-dom';
 import { useDeleteImage, useImages, useLoadImage } from '../../api/hooks';
 import { DangerConfirm } from '../../components/DangerConfirm';
 import { FieldWithHints } from '../../components/FieldWithHints';
+import { QueryErrorResult } from '../../components/QueryErrorResult';
+import { can } from '../../utils/permissions';
+import { useUiStore } from '../../stores/ui';
 
 export function ImagesPage() {
-  const { data, isLoading } = useImages();
+  const { data, isLoading, error } = useImages();
+  const user = useUiStore((s) => s.user);
+  const canManage = can(user?.role, 'image:manage');
   const loadMut = useLoadImage();
   const delMut = useDeleteImage();
   const navigate = useNavigate();
@@ -70,7 +75,7 @@ export function ImagesPage() {
             {
               title: '操作',
               render: (_, rec: { ref: string; used_by: string[] }) => {
-                const disabled = rec.used_by.length > 0;
+                const disabled = rec.used_by.length > 0 || !canManage;
                 const btn = (
                   <a
                     role="button"
@@ -111,12 +116,18 @@ export function ImagesPage() {
     };
   });
 
+  if (error) {
+    return <QueryErrorResult error={error} needPerm="image:manage" />;
+  }
+
   return (
     <div>
       <Space style={{ marginBottom: 16 }}>
-        <a role="button" onClick={() => setImportOpen(true)}>
-          路径导入
-        </a>
+        {canManage && (
+          <a role="button" onClick={() => setImportOpen(true)}>
+            路径导入
+          </a>
+        )}
         <a role="button" onClick={() => navigate('/suts')}>
           创建 SUT
         </a>

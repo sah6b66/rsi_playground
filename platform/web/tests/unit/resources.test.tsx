@@ -182,3 +182,57 @@ test('评测集克隆：设备端点预填 + 覆盖提交 + 重名 409', async (
     expect(screen.getAllByText(/already exists/).length).toBeGreaterThanOrEqual(1),
   );
 }, 60000);
+
+// ⑤ M1 权限投影：菜单权限位 + 无权列表 403 + 写按钮门控
+import { http, HttpResponse } from 'msw';
+import { server } from '../setup';
+import { MENU, can } from '../../src/utils/permissions';
+
+test('菜单权限投影：researcher 不可见 /images（image:manage），可见沙箱/环境', () => {
+  const visible = MENU.flatMap((g) => g.items)
+    .filter((i) => can('researcher', i.perm ?? 'view:read'))
+    .map((i) => i.key);
+  expect(visible).not.toContain('/images');
+  expect(visible).toContain('/sandboxes'); // GET 仅需登录 → view:read
+  expect(visible).toContain('/environments'); // GET 仅 view:read
+  // admin 全量可见
+  const adminVisible = MENU.flatMap((g) => g.items)
+    .filter((i) => can('admin', i.perm ?? 'view:read'))
+    .map((i) => i.key);
+  expect(adminVisible).toContain('/images');
+});
+
+test('镜像页 403：无权列表渲染 403 Result 而非空白', async () => {
+  server.use(
+    http.get('/api/v1/docker/images', () =>
+      HttpResponse.json({ detail: 'forbidden' }, { status: 403 }),
+    ),
+  );
+  renderApp('/images');
+  expect(await screen.findByText('403 无权访问')).toBeInTheDocument();
+  expect(screen.getByText(/image:manage/)).toBeInTheDocument();
+});
+
+test('镜像页写按钮门控：researcher 无路径导入且删除禁用', async () => {
+  useUiStore.getState().setUser({ username: 'researcher', role: 'researcher' });
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 0 } },
+  });
+  render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={['/images']}>
+        <Routes>
+          <Route path="/images" element={<ImagesPage />} />
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+  await waitFor(() =>
+    expect(screen.getByText('ipops-agent:v1.2')).toBeInTheDocument(),
+  );
+  expect(screen.queryByRole('button', { name: '路径导入' })).not.toBeInTheDocument();
+  // 删除按钮禁用（无 image:manage）
+  expect(
+    screen.getByRole('button', { name: '删除 busybox:latest' }),
+  ).toHaveStyle({ cursor: 'not-allowed' });
+});

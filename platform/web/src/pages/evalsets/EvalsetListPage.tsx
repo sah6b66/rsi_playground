@@ -25,11 +25,16 @@ import {
 import { getToken } from '../../api/client';
 import { DangerConfirm } from '../../components/DangerConfirm';
 import { FieldWithHints } from '../../components/FieldWithHints';
+import { QueryErrorResult } from '../../components/QueryErrorResult';
+import { can } from '../../utils/permissions';
+import { useUiStore } from '../../stores/ui';
 
 type EndpointRow = { dev: string; ip?: string; port?: number };
 
 export function EvalsetListPage() {
-  const { data, isLoading } = useEvalsets();
+  const { data, isLoading, error } = useEvalsets();
+  const user = useUiStore((s) => s.user);
+  const canManage = can(user?.role, 'evalset:manage');
   const delMut = useDeleteEvalset();
   const cloneMut = useCloneEvalset();
   const importMut = useImportEvalset();
@@ -88,12 +93,18 @@ export function EvalsetListPage() {
     };
   }, [imported]);
 
+  if (error) {
+    return <QueryErrorResult error={error} needPerm="view:read" />;
+  }
+
   return (
     <div>
       <Space style={{ marginBottom: 16 }}>
-        <Button type="primary" onClick={() => setImportOpen(true)}>
-          导入评测集
-        </Button>
+        {canManage && (
+          <Button type="primary" onClick={() => setImportOpen(true)}>
+            导入评测集
+          </Button>
+        )}
       </Space>
       <Table
         rowKey="id"
@@ -121,19 +132,23 @@ export function EvalsetListPage() {
             title: '操作',
             render: (_, rec: Evalset) => (
               <Space>
-                <a role="button" onClick={() => openClone(rec)}>
-                  克隆
-                </a>
+                {canManage && (
+                  <a role="button" onClick={() => openClone(rec)}>
+                    克隆
+                  </a>
+                )}
                 <a role="button" onClick={() => void exportEvalset(rec)}>
                   导出
                 </a>
-                <a
-                  role="button"
-                  style={{ color: '#cf1322' }}
-                  onClick={() => setDelTarget(rec)}
-                >
-                  删除
-                </a>
+                {canManage && (
+                  <a
+                    role="button"
+                    style={{ color: '#cf1322' }}
+                    onClick={() => setDelTarget(rec)}
+                  >
+                    删除
+                  </a>
+                )}
               </Space>
             ),
           },

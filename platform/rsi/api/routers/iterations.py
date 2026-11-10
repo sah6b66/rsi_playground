@@ -320,7 +320,7 @@ async def get_iteration_timeline(
                 latency = result.get("latency_ms", run.get("latency_ms"))
                 rcm = verdict.get("root_cause_match")
                 if rcm is None:
-                    rcm = verdict.get("dimensions", {}).get(
+                    rcm = (verdict.get("dimensions") or {}).get(
                         "root_cause_match"
                     )
                 tasks.append({

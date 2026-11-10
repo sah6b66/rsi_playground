@@ -26,6 +26,9 @@ import {
   useSaveBackend,
 } from '../../api/hooks';
 import { FieldWithHints } from '../../components/FieldWithHints';
+import { QueryErrorResult } from '../../components/QueryErrorResult';
+import { can } from '../../utils/permissions';
+import { useUiStore } from '../../stores/ui';
 
 const KIND_LABEL: Record<string, string> = {
   'ensp-pro': 'eNSP Pro',
@@ -40,7 +43,9 @@ function backendKeyMatches(key: string, envBackend?: string | null): boolean {
 }
 
 export function SandboxesPage() {
-  const { data } = useBackends();
+  const { data, error } = useBackends();
+  const user = useUiStore((s) => s.user);
+  const canManage = can(user?.role, 'sandbox:manage');
   const { data: evalsets } = useEvalsets();
   const saveMut = useSaveBackend();
   const qc = useQueryClient();
@@ -65,12 +70,18 @@ export function SandboxesPage() {
     setOpen(true);
   };
 
+  if (error) {
+    return <QueryErrorResult error={error} needPerm="view:read" />;
+  }
+
   return (
     <div>
       <Space style={{ marginBottom: 16 }}>
-        <a role="button" onClick={() => openEdit()}>
-          新增平台
-        </a>
+        {canManage && (
+          <a role="button" onClick={() => openEdit()}>
+            新增平台
+          </a>
+        )}
         <Button
           size="small"
           onClick={() => {
@@ -114,15 +125,19 @@ export function SandboxesPage() {
                   text={b.available ? '在线' : '离线'}
                 />
               }
-              actions={[
-                <a
-                  key="edit"
-                  role="button"
-                  onClick={() => openEdit(b.name, b.kind, undefined)}
-                >
-                  编辑
-                </a>,
-              ]}
+              actions={
+                canManage
+                  ? [
+                      <a
+                        key="edit"
+                        role="button"
+                        onClick={() => openEdit(b.name, b.kind, undefined)}
+                      >
+                        编辑
+                      </a>,
+                    ]
+                  : []
+              }
             >
               <Descriptions column={1} size="small">
                 <Descriptions.Item label="类型">

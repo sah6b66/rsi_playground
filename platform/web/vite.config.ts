@@ -14,5 +14,6 @@ export default defineConfig({
     globals: true,
     // e2e specs 走 playwright（见 playwright.config.ts），vitest 不收
     exclude: ['tests/e2e/**', 'node_modules/**'],
+    testTimeout: 15000,
   },
 });

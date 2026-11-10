@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
@@ -188,7 +188,7 @@ async def list_backends(
 class BackendPutBody(BaseModel):
     """PUT /sandbox/backends/{key}：写 settings.yaml 静态段（DD-14 §5.8）。"""
 
-    kind: str  # ensp-pro | pnetlab | fake
+    kind: Literal["ensp-pro", "pnetlab", "fake"]
     url: str = ""
     verify_tls: bool = False
     subnets: list[str] = []
