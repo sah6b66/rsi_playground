@@ -5,20 +5,12 @@ import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useSession, useSuts, type Iteration } from '../../../api/hooks';
 import { StatusBadge } from '../../../components/StatusBadge';
-import { modeLabel } from '../../../utils/labels';
+import { gateStepLabel, modeLabel } from '../../../utils/labels';
 import { ProgressTab } from '../tabs/ProgressTab';
 import { EffectTab } from '../tabs/EffectTab';
 import { DiffTab } from '../tabs/DiffTab';
 import { TasksTab } from '../tabs/TasksTab';
 import { TraceTab } from '../tabs/TraceTab';
-
-// awaiting_* → 门中文名（横幅/Steps 高亮共用）
-export const AWAITING_LABEL: Record<string, string> = {
-  awaiting_direction: '方向确认',
-  awaiting_hypothesis: '假设提交',
-  awaiting_review: '预审裁决',
-  awaiting_decision: '决策执行',
-};
 
 // 任务明细行点击提升到页级：选中 run + 切到轨迹 Tab（T5）
 export interface SelectedTask {
@@ -42,7 +34,7 @@ export function SessionDetailPage() {
   const it = session.data as Iteration;
   const sutName =
     suts.data?.items.find((s) => s.id === it.sut_id)?.name ?? it.sut_id;
-  const awaiting = AWAITING_LABEL[it.current_step ?? ''];
+  const awaiting = gateStepLabel(it.current_step);
 
   return (
     <div>

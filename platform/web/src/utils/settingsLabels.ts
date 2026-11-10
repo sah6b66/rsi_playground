@@ -3,10 +3,26 @@
 // settings.py Settings 各字段（含 dict 段的 * 通配键，如 carrier.hosts.*.docker）。
 // def 为与代码缺省一致的静态快照（rsi/settings.py 各字段 default），
 // 后端将来补充缺省值接口后可替换。
+export type SettingScope = 'system' | 'agent' | 'session';
+
 export interface SettingLabel {
   name: string;
   desc?: string;
   def?: string | number | boolean | null | unknown[];
+  // 适用层级（用户第 4 轮反馈第 4 条）：
+  // system=平台级；agent=面向优化对象（网络Agent）的缺省；session=RSS 会话级缺省
+  scope?: SettingScope;
+}
+
+// 按前缀推导适用层级：优化相关（optimizer/插桩策略/归因/假设）面向优化对象
+// → agent；裁判相关（judge）→ session；其余 → system。
+export function settingScope(path: string): SettingScope {
+  if (path.startsWith('optimizer.') || path.startsWith('instrumentor.policy') ||
+      path.startsWith('attribution.') || path.startsWith('hypothesis.')) {
+    return 'agent';
+  }
+  if (path.startsWith('judge.') || path.startsWith('eval.')) return 'session';
+  return 'system';
 }
 
 export const SETTINGS_LABELS: Record<string, SettingLabel> = {
@@ -36,6 +52,7 @@ export const SETTINGS_LABELS: Record<string, SettingLabel> = {
   'sandbox.backends.*.url': { name: '平台入口地址', desc: '仿真平台网页管理入口，用于在线探活', def: '' },
   'sandbox.backends.*.verify_tls': { name: '校验平台证书', desc: '自签名证书平台应保持关闭', def: false },
   'sandbox.backends.*.subnets': { name: '平台网段池', desc: '该平台实验室使用的子网池', def: [] },
+  'sandbox.backends.*.api': { name: '平台 API 地址', desc: '预留的平台 Web-API 编排入口，暂未启用', def: null },
   // ── Agent 承载（carrier） ──
   'carrier.task_timeout_s': { name: '单任务超时（秒）', desc: 'Agent 单个任务的最长执行时间', def: 1800 },
   'carrier.max_instances_per_host': { name: '每主机实例上限', desc: '未单独配置的主机使用的缺省上限', def: 10 },
@@ -91,7 +108,7 @@ export const SETTINGS_LABELS: Record<string, SettingLabel> = {
   'security.jwt_expire_hours': { name: '登录有效期（小时）', desc: '登录令牌的过期时间', def: 12 },
   'scheduler.kind': { name: '调度器类型', desc: 'asyncio 进程内调度 / rq 队列调度', def: 'asyncio' },
   'scheduler.redis_url': { name: 'Redis 地址', desc: '队列调度时使用的 Redis 连接串', def: null },
-  'seed.master': { name: '全局随机种子', desc: '三段式种子推导的主种子', def: 20261102 },
+  'seed.master': { name: '随机种子', desc: '保证评测可复现：相同种子与相同输入得到相同的采样与裁决顺序', def: 20261102 },
   // ── 运行时键（default_stores 暴露，无 Settings 字段） ──
   'budget.llm.daily': { name: '每日模型调用上限', desc: '单日模型调用量预算（仅运行时生效，不落盘）', def: 100 },
   'platform.static_item': { name: '静态配置示例项', desc: '不可在线修改的静态项示例' },
@@ -114,8 +131,8 @@ export const GROUP_LABELS: Record<string, string> = {
   orchestrator: '编排',
   llm: '模型服务',
   security: '安全',
-  scheduler: '调度',
-  seed: '种子与平台',
+  scheduler: '调度与随机种子',
+  seed: '调度与随机种子',
   other: '其他',
 };
 

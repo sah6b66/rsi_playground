@@ -8,7 +8,12 @@ import {
   useUpdateSetting,
   type SettingItem,
 } from '../../../api/hooks';
-import { GROUP_LABELS, settingLabel } from '../../../utils/settingsLabels';
+import {
+  GROUP_LABELS,
+  settingLabel,
+  settingScope,
+  type SettingScope,
+} from '../../../utils/settingsLabels';
 
 // 分组映射：按配置章节前缀归组（前端常量；未匹配 → 其他）
 const SETTINGS_GROUPS: [string, string[]][] = [
@@ -27,8 +32,7 @@ const SETTINGS_GROUPS: [string, string[]][] = [
   ['orchestrator', ['orchestrator.', 'iteration.', 'session.', 'budget.']],
   ['llm', ['llm.', 'model.']],
   ['security', ['security.', 'auth.', 'audit.']],
-  ['scheduler', ['scheduler.', 'queue.']],
-  ['seed', ['seed.', 'platform.']],
+  ['scheduler', ['scheduler.', 'queue.', 'seed.', 'platform.']],
 ];
 
 function groupOf(path: string): string {
@@ -37,6 +41,25 @@ function groupOf(path: string): string {
   }
   return 'other';
 }
+
+// 值类型中文（用户第 4 轮反馈第 3 条）；未覆盖类型回落原文
+const TYPE_LABELS: Record<string, string> = {
+  number: '数值',
+  string: '字符串',
+  boolean: '布尔',
+  list: '列表',
+  array: '列表',
+  dict: '字典',
+  object: '字典',
+  null: '空值',
+};
+
+// 适用层级 → Tag 配置（第 4 条 b）；agent/session 行描述加缺省值后缀
+const SCOPE_TAGS: Record<SettingScope, { label: string; color?: string; suffix: string }> = {
+  system: { label: '系统级', color: 'blue', suffix: '' },
+  agent: { label: '网络Agent 缺省', color: 'cyan', suffix: '（作为未单独配置时的缺省值）' },
+  session: { label: 'RSI 会话缺省', color: 'purple', suffix: '（作为未单独配置时的缺省值）' },
+};
 
 const typeOf = (v: unknown): string =>
   v === null
@@ -159,6 +182,7 @@ export function ParamsTab() {
                   }}
                 >
                   {label.desc}
+                  {SCOPE_TAGS[settingScope(r.path)].suffix}
                 </span>
               )}
             </span>
@@ -188,7 +212,21 @@ export function ParamsTab() {
     {
       title: '值类型',
       width: 80,
-      render: (_, r) => typeOf(r.value),
+      render: (_, r) => TYPE_LABELS[typeOf(r.value)] ?? typeOf(r.value),
+    },
+    {
+      title: '适用层级',
+      width: 140,
+      render: (_, r) => {
+        const meta = SCOPE_TAGS[settingScope(r.path)];
+        return (
+          <Tooltip title={meta.suffix || '平台全局配置，对所有会话与 Agent 生效'}>
+            <Tag color={meta.color} data-testid={`scope-${r.path}`}>
+              {meta.label}
+            </Tag>
+          </Tooltip>
+        );
+      },
     },
     {
       title: '缺省值',

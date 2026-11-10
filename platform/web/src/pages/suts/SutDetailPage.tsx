@@ -1,11 +1,12 @@
 // SUT 详情页（DD-14 §5.6，T7）：Descriptions 头 + lineage 版本链（列表呈现，
 // DAG 可视化留后续）+ 配置文件（FileEditor）+ 版本（选两版本 DiffViewer）。
-import { Card, Descriptions, Empty, Select, Space, Spin, Table, Tabs, Tag } from 'antd';
+import { Alert, Card, Descriptions, Empty, Select, Space, Spin, Table, Tabs, Tag } from 'antd';
 import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useSut, useSutLineage, useVersionDiff } from '../../api/hooks';
 import { DiffViewer } from '../../components/DiffViewer';
 import { FileEditorTab } from './FileEditorTab';
+import { TARGET_PATHS } from '../../utils/targets';
 
 function LineagePanel({ sutId }: { sutId: string }) {
   const { data, isLoading } = useSutLineage(sutId);
@@ -100,6 +101,35 @@ function LineagePanel({ sutId }: { sutId: string }) {
   );
 }
 
+// 优化范围 Tab（用户第 4 轮反馈第 4d 条）：只读呈现该 Agent 的可优化项。
+// P0 不实现 per-agent 编辑——后端无逐 Agent 范围数据模型，
+// 范围由系统安全策略统一约束（诚实呈现）。
+function ScopeTab() {
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Alert
+        type="info"
+        showIcon
+        message="每个 Agent 可优化的内容范围由系统安全策略统一约束"
+        description="当前为全局策略（见 系统设置 → 安全边界），暂不支持按 Agent 单独调整；优化产生的任何变更仍需通过白名单校验与门审批。"
+      />
+      <Card size="small" title={<b>本 Agent 可优化项（8 项，只读）</b>}>
+        <Table
+          rowKey="key"
+          size="small"
+          pagination={false}
+          dataSource={TARGET_PATHS}
+          columns={[
+            { title: '优化项', dataIndex: 'key', width: 140 },
+            { title: '路径规则', dataIndex: 'path', render: (v: string) => <code>{v}</code> },
+            { title: '说明', dataIndex: 'desc' },
+          ]}
+        />
+      </Card>
+    </Space>
+  );
+}
+
 export function SutDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { data: sut, isLoading } = useSut(id);
@@ -127,6 +157,7 @@ export function SutDetailPage() {
         items={[
           { key: 'files', label: '配置文件', children: <FileEditorTab sutId={sut.id} /> },
           { key: 'versions', label: '版本', children: <LineagePanel sutId={sut.id} /> },
+          { key: 'scope', label: '优化范围', children: <ScopeTab /> },
         ]}
       />
     </Space>

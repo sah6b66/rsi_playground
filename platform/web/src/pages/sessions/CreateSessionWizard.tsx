@@ -10,6 +10,7 @@ import {
   useSuts,
 } from '../../api/hooks';
 import { ProfileForm, defaultProfile, type ProfileDraft } from '../../components/ProfileForm';
+import { modeLabel } from '../../utils/labels';
 import { scoreFormula } from '../../components/WeightEditor';
 
 interface Basics {
@@ -61,6 +62,7 @@ export function CreateSessionWizard() {
           guards: profile.guards,
           budget_tokens: profile.budget_tokens,
           evalsets: profile.evalsets,
+          judge_model: profile.judge_model ?? undefined,
         },
       });
       navigate('/sessions');
@@ -118,7 +120,10 @@ export function CreateSessionWizard() {
               {basics.evalset_id}
             </Descriptions.Item>
             <Descriptions.Item label="模式">
-              <Tag>{profile.mode}</Tag>
+              <Tag>{modeLabel(profile.mode)}</Tag>
+            </Descriptions.Item>
+            <Descriptions.Item label="裁判模型">
+              {profile.judge_model ?? '系统缺省'}
             </Descriptions.Item>
             <Descriptions.Item label="目标公式">
               {scoreFormula(profile.goals)}

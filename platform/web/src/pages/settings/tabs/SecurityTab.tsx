@@ -6,25 +6,11 @@ import { Alert, Card, Space, Table, Tag } from 'antd';
 import { LockOutlined, SafetyOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { apiFetch } from '../../../api/client';
+import { FROZEN_PATHS, TARGET_PATHS } from '../../../utils/targets';
 
-// 代码级常量（TARGET_PATHS 8 项 —— DD-11 §3）
-const TARGET_WHITELIST = [
-  { key: 'system_prompt', path: 'suts/{id}/system-prompt(.md)?', desc: 'Agent 系统提示词' },
-  { key: 'skills', path: 'suts/{id}/skills/.*', desc: 'Agent 技能包' },
-  { key: 'scripts', path: 'suts/{id}/scripts/.*', desc: 'Agent 辅助脚本' },
-  { key: 'mcp_config', path: 'suts/{id}/mcp\\.json', desc: 'MCP 服务器配置' },
-  { key: 'mcp_src', path: 'suts/{id}/mcp-src/.*', desc: 'MCP 服务器源码' },
-  { key: 'memory', path: 'suts/{id}/memory/.*', desc: 'Agent 记忆文件' },
-  { key: 'knowledge', path: 'suts/{id}/knowledge/.*', desc: '知识库文件' },
-  { key: 'model_config', path: 'suts/{id}/model\\.json', desc: '模型调用配置' },
-];
-
-// 代码级常量（FROZEN_PATHS 3 项）：评审/评测基础设施任何 changeset 不可触碰
-const FROZEN_DOMAINS = [
-  { path: 'judge/.*', desc: '评审器定义（裁判中立性保障）' },
-  { path: 'prompts/.*', desc: '评审提示词（防提示注入自改）' },
-  { path: 'evalsets/.*', desc: '评测集（跨轮可比性锚点）' },
-];
+// 代码级常量（TARGET_PATHS 8 项 / FROZEN_PATHS 3 项）→ 共享常量
+const TARGET_WHITELIST = TARGET_PATHS;
+const FROZEN_DOMAINS = FROZEN_PATHS;
 
 export function SecurityTab() {
   const { data } = useQuery({

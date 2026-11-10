@@ -10,7 +10,7 @@ import {
   type Iteration,
 } from '../../api/hooks';
 import { DangerConfirm } from '../../components/DangerConfirm';
-import { modeLabel } from '../../utils/labels';
+import { modeLabel, stepLabel } from '../../utils/labels';
 import { StatusBadge } from '../../components/StatusBadge';
 import { useUiStore } from '../../stores/ui';
 import { can } from '../../utils/permissions';
@@ -153,7 +153,7 @@ export function SessionListPage() {
           {
             title: '当前阶段',
             dataIndex: 'current_step',
-            render: (v: string | null) => v ?? '—',
+            render: (v: string | null) => stepLabel(v) ?? '—',
           },
           {
             title: 'Token 消耗',

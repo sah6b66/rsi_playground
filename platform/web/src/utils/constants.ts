@@ -1,5 +1,7 @@
 // 状态色/文案单源（DD-14 §6）——运行=processing 蓝 / 待审批=warning 橙 /
 // 成功=success 绿 / 失败=error 红 / env_failed=purple / 未知=default 灰
+import { stepLabel } from './labels';
+
 export interface StatusMeta {
   label: string;
   color: string;
@@ -22,9 +24,9 @@ export const STATUS_META: Record<string, StatusMeta> = {
 // 回落到 STATUS_META 保持兼容。
 export const ITER_STATE_META: Record<string, StatusMeta> = {
   attributing: { label: '归因中', color: 'processing' },
-  hypothesizing: { label: '假设中', color: 'processing' },
+  hypothesizing: { label: '假设生成中', color: 'processing' },
   reviewing: { label: '预审中', color: 'processing' },
-  applying: { label: '应用中', color: 'processing' },
+  applying: { label: '应用变更中', color: 'processing' },
   verifying: { label: '验证中', color: 'processing' },
   deciding: { label: '决策中', color: 'processing' },
   paused: { label: '已暂停待审批', color: 'warning' },
@@ -33,7 +35,12 @@ export const ITER_STATE_META: Record<string, StatusMeta> = {
 };
 
 export const statusMeta = (value: string): StatusMeta =>
-  ITER_STATE_META[value] ?? STATUS_META[value] ?? { label: value, color: 'default' };
+  ITER_STATE_META[value] ??
+  STATUS_META[value] ?? {
+    // 与 utils/labels 的阶段映射同源，保证未知/阶段值全站中文一致
+    label: stepLabel(value) ?? value,
+    color: 'default',
+  };
 
 export const TOKEN_KEY = 'rsi_token';
 export const USER_KEY = 'rsi_user'; // {username, role} JSON，随 token 一起清除

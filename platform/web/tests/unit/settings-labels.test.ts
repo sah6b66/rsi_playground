@@ -7,6 +7,7 @@ import {
   SETTINGS_LABELS,
   GROUP_LABELS,
   settingLabel,
+  settingScope,
 } from '../../src/utils/settingsLabels';
 import { LEVEL_LABELS } from '../../src/pages/settings/tabs/LogsTab';
 
@@ -78,4 +79,44 @@ test('全部页面源码非注释区无 DD-/ADR-/§ 残留', () => {
     if (DOC_REF.test(code)) offenders.push(file);
   }
   expect(offenders, `以下文件字符串中残留文档编号：${offenders.join(', ')}`).toEqual([]);
+});
+
+// ── U4：settings.yaml.example 全字段覆盖抽样 + 适用层级 ──
+test('SETTINGS_LABELS 覆盖 settings.yaml.example 关键键（抽样）', () => {
+  [
+    'llm.providers.*.api_key_env',
+    'llm.providers.*.base_url_env',
+    'llm.defaults.*.model',
+    'llm.defaults.*.temperature',
+    'llm.cassette_mode',
+    'llm.max_concurrent_calls',
+    'database.url',
+    'git.repo.path',
+    'git.worktrees',
+    'storage.labs_dir',
+    'storage.artifacts_dir',
+    'security.jwt_secret_env',
+    'security.master_key_env',
+    'scheduler.kind',
+    'seed.master',
+    'sandbox.backends.*.api',
+  ].forEach((k) =>
+    expect(SETTINGS_LABELS[k], `缺少键 ${k}`).toBeDefined(),
+  );
+});
+
+test('seed 键名与组名符合第 4 轮反馈', () => {
+  expect(SETTINGS_LABELS['seed.master']!.name).toBe('随机种子');
+  expect(SETTINGS_LABELS['seed.master']!.desc).toContain('可复现');
+  expect(GROUP_LABELS.scheduler).toBe('调度与随机种子');
+  expect(GROUP_LABELS.seed).toBe('调度与随机种子');
+});
+
+test('settingScope：judge=session / optimizer、instrumentor.policy=agent / 其余 system', () => {
+  expect(settingScope('judge.llm.model')).toBe('session');
+  expect(settingScope('judge.llm_retry')).toBe('session');
+  expect(settingScope('optimizer.sft.min_samples')).toBe('agent');
+  expect(settingScope('instrumentor.policy.prefer')).toBe('agent');
+  expect(settingScope('server.port')).toBe('system');
+  expect(settingScope('llm.max_concurrent_calls')).toBe('system');
 });

@@ -134,12 +134,52 @@ export function auditActionLabel(v: string): string {
   return AUDIT_ACTIONS[v] ?? v;
 }
 
-// 会话运行模式中文名（SessionDetail Descriptions）
+// RSI 迭代模式中文名（用户第 4 轮反馈第 2 条）：
+// p0/p1/p2 为创建向导与 Iteration.mode 的真实值域；local/remote 为
+// 历史值域保留。
 const MODE_LABELS: Record<string, string> = {
+  p0: '人工模式',
+  p1: '半自动模式',
+  p2: '全自动模式（未开放）',
   local: '本地',
   remote: '远程',
 };
 
 export function modeLabel(v: string): string {
   return MODE_LABELS[v] ?? v;
+}
+
+// 会话当前阶段中文名（current_step 值域）：门等待态 awaiting_* +
+// 非门运行态。单源供列表「当前阶段」列、详情页审批横幅、
+// StatusBadge 消费，确保全站一致。
+export const ITER_STEP_LABELS: Record<string, string> = {
+  awaiting_direction: '等待方向确认',
+  awaiting_hypothesis: '等待假设提交',
+  awaiting_review: '等待预审裁决',
+  awaiting_decision: '等待决策执行',
+  attributing: '归因中',
+  hypothesizing: '假设生成中',
+  reviewing: '预审中',
+  applying: '应用变更中',
+  verifying: '验证中',
+  deciding: '决策中',
+  idle: '未开始',
+};
+
+export function stepLabel(v: string | null | undefined): string | null {
+  if (!v) return null;
+  return ITER_STEP_LABELS[v] ?? v;
+}
+
+// 门等待态 → 门中文名（详情页审批横幅用，短版）
+export const GATE_STEP_LABELS: Record<string, string> = {
+  awaiting_direction: '方向确认',
+  awaiting_hypothesis: '假设提交',
+  awaiting_review: '预审裁决',
+  awaiting_decision: '决策执行',
+};
+
+export function gateStepLabel(v: string | null | undefined): string | null {
+  if (!v) return null;
+  return GATE_STEP_LABELS[v] ?? null;
 }
