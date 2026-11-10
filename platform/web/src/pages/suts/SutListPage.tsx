@@ -1,7 +1,7 @@
 // 网络Agent 管理页（DD-14 §5.6/§5.8，T7；U1 合并镜像库）：
 // Tab1「Agent 列表」= 原 SUT 列表（创建 Modal/验证镜像/删除，?image_ref= 预填）；
 // Tab2「镜像库」= 原 /images 页整体迁入（权限 image:manage，无权显示 403）。
-import { Button, Form, Input, Modal, Result, Space, Table, Tabs, Tag, Tooltip, Typography } from 'antd';
+import { Button, Form, Input, Modal, Radio, Result, Space, Table, Tabs, Tag, Tooltip, Typography } from 'antd';
 import type { TableProps } from 'antd';
 import type { Sut } from '../../api/hooks';
 import { useEffect, useState } from 'react';
@@ -16,9 +16,12 @@ import {
 import { QuestionCircleOutlined } from '@ant-design/icons';
 import { DangerConfirm } from '../../components/DangerConfirm';
 import { FieldWithHints } from '../../components/FieldWithHints';
+import { ScopeEditor } from '../../components/ScopeEditor';
 import { ImagesPage } from '../images/ImagesPage';
 import { can } from '../../utils/permissions';
 import { useUiStore } from '../../stores/ui';
+import { scopeFromSelection } from '../../utils/targets';
+import type { ScopeSelection } from '../../utils/targets';
 
 interface SutForm {
   name: string;
@@ -38,6 +41,9 @@ function SutListTab({ presetImageRef }: { presetImageRef: string }) {
   const [verifyResult, setVerifyResult] = useState<ImageCheckResult | null>(null);
   // 验证状态仅存前端会话内存（SutOut 无 verify 字段）——刷新后回"未验证"
   const [verified, setVerified] = useState<Record<string, boolean>>({});
+  // U7b 可优化范围：自动（默认）/明确定义 + 域选择
+  const [scopeMode, setScopeMode] = useState<'auto' | 'explicit'>('auto');
+  const [scopeSel, setScopeSel] = useState<ScopeSelection>({});
   const [form] = Form.useForm<SutForm>();
 
   useEffect(() => {
@@ -145,12 +151,21 @@ function SutListTab({ presetImageRef }: { presetImageRef: string }) {
           layout="vertical"
           initialValues={{ carrier: 'opencode' }}
           onFinish={(v) => {
-            createMut.mutate(v, {
-              onSuccess: () => {
-                setCreateOpen(false);
-                form.resetFields();
+            // U7b：自动模式不提交 optimization_scope（后端默认自动）；
+            // 明确定义但未勾选任何域同样按自动处理（避免空范围锁死优化）
+            const scope =
+              scopeMode === 'explicit' ? scopeFromSelection(scopeSel) : [];
+            createMut.mutate(
+              scope.length ? { ...v, optimization_scope: scope } : v,
+              {
+                onSuccess: () => {
+                  setCreateOpen(false);
+                  form.resetFields();
+                  setScopeMode('auto');
+                  setScopeSel({});
+                },
               },
-            });
+            );
           }}
         >
           <FieldWithHints
@@ -193,6 +208,31 @@ function SutListTab({ presetImageRef }: { presetImageRef: string }) {
           <FieldWithHints label="描述" name="description">
             <Input.TextArea rows={2} />
           </FieldWithHints>
+          {/* U7b 可优化范围：自动（平台扫描后自行决定=现状）/明确定义（RSI 只碰定义项） */}
+          <Form.Item
+            label={
+              <span>
+                可优化范围&nbsp;
+                <Tooltip title="自动=平台扫描 Agent 文件系统后自行决定优化哪些 skill/工具/脚本；明确定义=RSI 自动优化仅限勾选项（人工编辑不受此限制，仍受全局安全边界约束）">
+                  <QuestionCircleOutlined style={{ color: 'rgba(0,0,0,0.45)' }} />
+                </Tooltip>
+              </span>
+            }
+          >
+            <Radio.Group
+              value={scopeMode}
+              onChange={(e) => setScopeMode(e.target.value)}
+              data-testid="scope-mode"
+            >
+              <Radio value="auto">自动（由平台扫描后决定）</Radio>
+              <Radio value="explicit">明确定义</Radio>
+            </Radio.Group>
+            {scopeMode === 'explicit' && (
+              <div style={{ marginTop: 8 }}>
+                <ScopeEditor value={scopeSel} onChange={setScopeSel} />
+              </div>
+            )}
+          </Form.Item>
         </Form>
       </Modal>
 

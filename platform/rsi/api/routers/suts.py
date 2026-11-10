@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from rsi.api.deps import audit, get_current_user, get_store, require_perms
 from rsi.api.pagination import DEFAULT_LIMIT, paginate
-from rsi.core.errors import ConflictError, NotFoundError
+from rsi.core.errors import ConflictError, NotFoundError, ValidationError
 from rsi.optimizer.targets import TARGET_PATHS, TargetRegistry
 from rsi.security.auth import Claims
 
@@ -26,6 +26,13 @@ class SutCreate(BaseModel):
     image_ref: str = Field(json_schema_extra={"example": "ipops-agent:v1.2"})
     description: str = Field(
         default="", json_schema_extra={"example": "Network ops SUT for BGP triage"}
+    )
+    # U7b per-agent optimization scope: SUT-tree-relative path patterns
+    # (e.g. "skills/bgp-diag/", "mcp.json", "scripts/"). None/empty =
+    # automatic mode (platform scans the agent tree and decides).
+    optimization_scope: list[str] | None = Field(
+        default=None,
+        json_schema_extra={"example": ["skills/bgp-diag/", "mcp.json"]},
     )
 
 
@@ -40,6 +47,10 @@ class SutUpdate(BaseModel):
     )
 
 
+class SutScopeUpdate(BaseModel):
+    optimization_scope: list[str] | None = None
+
+
 class SutOut(BaseModel):
     id: str
     name: str
@@ -47,6 +58,7 @@ class SutOut(BaseModel):
     image_ref: str
     description: str
     created_at: str
+    optimization_scope: list[str] | None = None
 
 
 class SutPage(BaseModel):
@@ -64,6 +76,32 @@ def _get(store: dict, sut_id: str) -> dict:
         return store[sut_id]
     except KeyError:
         raise NotFoundError(f"sut {sut_id!r} not found", context={"sut_id": sut_id}) from None
+
+
+def _validate_scope(sut_id: str, scope: list[str] | None) -> list[str] | None:
+    """U7b: each scope item must sit inside one of the 8 global whitelist
+    domains (checked with the same TargetRegistry the executor layer uses —
+    the scope can only *narrow* the global whitelist, never widen it).
+
+    Returns the normalized scope (empty list normalized to None = automatic
+    mode); raises ValidationError (422) listing the offending items.
+    """
+    if not scope:
+        return None
+    invalid: list[str] = []
+    for item in scope:
+        rel = str(item)
+        try:
+            _target_registry.validate(f"suts/{sut_id}/{rel}", _ALL_TARGETS)
+        except Exception:  # noqa: BLE001 - any rejection marks the item invalid
+            invalid.append(rel)
+    if invalid:
+        raise ValidationError(
+            "optimization_scope 项超出全局优化白名单域: "
+            + ", ".join(repr(i) for i in invalid),
+            context={"sut_id": sut_id, "invalid": invalid},
+        )
+    return list(scope)
 
 
 @router.get("", response_model=SutPage)
@@ -94,13 +132,16 @@ async def create_sut(
         raise ConflictError(
             f"sut name {body.name!r} already exists", context={"name": body.name}
         )
+    sut_id = f"sut-{uuid.uuid4().hex[:8]}"
     sut = {
-        "id": f"sut-{uuid.uuid4().hex[:8]}",
+        "id": sut_id,
         "name": body.name,
         "carrier": body.carrier,
         "image_ref": body.image_ref,
         "description": body.description,
         "created_at": _now(),
+        # U7b: explicit per-agent RSI-optimizable paths (None = automatic).
+        "optimization_scope": _validate_scope(sut_id, body.optimization_scope),
     }
     store[sut["id"]] = sut
     return SutOut(**sut)
@@ -126,6 +167,26 @@ async def update_sut(
     sut = _get(store, sut_id)
     updates = body.model_dump(exclude_unset=True)
     sut.update(updates)
+    return SutOut(**sut)
+
+
+@router.put("/{sut_id}/optimization-scope", response_model=SutOut)
+@audit.audited("sut.update", object_type="sut")
+async def update_sut_scope(
+    sut_id: str,
+    body: SutScopeUpdate,
+    user: Claims = Depends(require_perms("sut:manage")),
+    store: dict = Depends(get_store("suts")),
+) -> SutOut:
+    """U7b: 更新该 Agent 的 RSI 可优化范围 → 200。
+
+    ``optimization_scope=null/[]`` 恢复自动模式（平台扫描后自行决定）。
+    非法项（不落在全局白名单 8 域内）→ 422 列出非法项。该范围仅约束
+    RSI 自动优化（Critic/applier 强制收窄）；人工文件编辑仍只受全局
+    安全边界约束。
+    """
+    sut = _get(store, sut_id)
+    sut["optimization_scope"] = _validate_scope(sut_id, body.optimization_scope)
     return SutOut(**sut)
 
 

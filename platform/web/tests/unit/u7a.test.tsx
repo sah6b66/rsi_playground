@@ -115,10 +115,15 @@ test('EvalsetDetailPage：组网环境/设备清单/任务列表，无用户名�
 }, 20_000);
 
 // 5. 载体只读：Tag 展示 + 无 Radio；提交值固定 opencode
-test('SutListPage 创建 Modal：载体只读 Tag，无 Radio', async () => {
+test('SutListPage 创建 Modal：载体只读 Tag，无载体 Radio', async () => {
   renderWith([{ path: '/suts', element: <SutListPage /> }], '/suts');
   await screen.findByRole('button', { name: /创建 Agent/ });
   await userEvent.click(screen.getByRole('button', { name: /创建 Agent/ }));
   expect(screen.getByTestId('carrier-readonly')).toHaveTextContent('OpenCode');
-  expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+  // U7b：Modal 中仅剩「可优化范围」一组 Radio（自动/明确定义）；载体无 Radio
+  const radios = screen.getAllByRole('radio');
+  expect(radios.length).toBe(2);
+  expect(
+    screen.queryByRole('radio', { name: /OpenCode|opencode/i }),
+  ).not.toBeInTheDocument();
 }, 20_000);

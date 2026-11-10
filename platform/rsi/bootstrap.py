@@ -383,6 +383,12 @@ def build_services(
         gitstore=git_store,
         noise_lookup=_noise_lookup,
         state_store=pause_store,
+        # U7b: per-SUT optimization scope (suts store record) narrows RSI
+        # auto-optimization to the explicitly defined paths; missing/empty
+        # = automatic mode (platform scans and decides, previous behaviour).
+        sut_scope_fn=lambda sut_id: stores["suts"]
+        .get(sut_id, {})
+        .get("optimization_scope"),
     )
 
     # -- HealthMonitor (D-1, DD-12 §4.7) -----------------------------------

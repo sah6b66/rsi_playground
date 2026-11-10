@@ -55,6 +55,8 @@ class SutConfigSnapshot(BaseModel):        # v2.10 归因原文输入
     files: dict[str, str]                  # 路径→内容全文（suspected_elements 相关文件）
 ```
 
+**Per-agent optimization scope（U7b，2026-11 追加）**：SUT 记录可携带 `optimization_scope: list[str] | None`——每项为相对该 Agent 配置树根的路径模式（`skills/bgp-diag/`、`mcp.json`、`scripts/`）；项以 `/` 结尾=目录前缀匹配，否则 fnmatch 全局匹配（`rsi/optimizer/targets.py::matches_scope`）。语义：**未定义（null/空）=自动模式**——平台扫描 Agent 文件系统后自行决定优化哪些 skill/工具/脚本（现状行为）；**定义=RSI 自动优化仅限 scope 内**——DeterministicCritic.check / ChangeApplier.apply 增可选 `allowed_paths` 参数，越界变更判 `out_of_scope` 失败（critic 拒绝 + applier 兜底抛 TargetViolationError），scope 只能收窄全局白名单、不能放宽（API 层用同一 TargetRegistry 校验每项落在 8 域之内，非法项 422）。**人工编辑不受限**：FileEditor 仍只受全局白名单+冻结域约束，scope 仅约束 RSI 自动优化。
+
 ## 4. 对外接口
 
 ```python

@@ -30,3 +30,60 @@ export const FROZEN_PATHS: FrozenItem[] = [
   { path: 'prompts/.*', desc: '评审提示词（防提示注入自改）' },
   { path: 'evalsets/.*', desc: '评测集（跨轮可比性锚点）' },
 ];
+
+// ── U7b per-agent 优化范围 ────────────────────────────────────────────────
+// 域根（相对 Agent 配置树根；目录域带 /，文件域为精确文件名）
+export const DOMAIN_ROOTS: Record<string, string> = {
+  system_prompt: 'system-prompt.md',
+  skills: 'skills/',
+  scripts: 'scripts/',
+  mcp_config: 'mcp.json',
+  mcp_src: 'mcp-src/',
+  memory: 'memory/',
+  knowledge: 'knowledge/',
+  model_config: 'model.json',
+};
+
+// 选择状态：undefined=未勾选；[]=整个域可优化；非空=域内细化路径模式
+export type ScopeSelection = Record<string, string[] | undefined>;
+
+// 细化模式 → 提交项：目录域自动补域根前缀与 / 后缀（bgp-diag/ → skills/bgp-diag/）
+export function scopeFromSelection(sel: ScopeSelection): string[] {
+  const items: string[] = [];
+  for (const t of TARGET_PATHS) {
+    const v = sel[t.key];
+    if (v === undefined) continue;
+    const root = DOMAIN_ROOTS[t.key] ?? '';
+    if (!v.length) {
+      items.push(root);
+    } else {
+      for (let p of v.map((s) => s.trim()).filter(Boolean)) {
+        if (root.endsWith('/') && !p.endsWith('/')) p = `${p}/`;
+        items.push(root.endsWith('/') ? `${root}${p}` : p);
+      }
+    }
+  }
+  return items;
+}
+
+// 提交项 → 选择状态（编辑回填）：按域根前缀归位，域根本身=整域勾选
+export function selectionFromScope(
+  scope: string[] | null | undefined,
+): ScopeSelection {
+  const sel: ScopeSelection = {};
+  for (const item of scope ?? []) {
+    for (const t of TARGET_PATHS) {
+      const root = DOMAIN_ROOTS[t.key] ?? '';
+      if (item === root) {
+        sel[t.key] = [];
+        break;
+      }
+      if (root.endsWith('/') && item.startsWith(root)) {
+        const rest = item.slice(root.length);
+        sel[t.key] = [...(sel[t.key] ?? []), rest];
+        break;
+      }
+    }
+  }
+  return sel;
+}

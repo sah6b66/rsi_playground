@@ -39,6 +39,8 @@ export interface Sut {
   image_ref: string;
   description: string;
   created_at: string;
+  // U7b：RSI 可优化范围（SUT 树相对路径模式）；null/undefined=自动模式
+  optimization_scope?: string[] | null;
 }
 
 export interface SutPage {
@@ -847,7 +849,7 @@ export function useSut(id: string | undefined): UseQueryResult<Sut, Error> {
   });
 }
 
-// POST /suts（SutCreate：name/carrier/image_ref/description）
+// POST /suts（SutCreate：name/carrier/image_ref/description/optimization_scope）
 export function useCreateSut() {
   const qc = useQueryClient();
   return useMutation({
@@ -856,6 +858,7 @@ export function useCreateSut() {
       carrier: string;
       image_ref: string;
       description?: string;
+      optimization_scope?: string[];
     }) => apiFetch<Sut>('POST', '/suts', body),
     onSuccess: (out) => {
       void message.success(`SUT ${out.name} 已创建`);
@@ -871,6 +874,25 @@ export function useDeleteSut() {
     mutationFn: (id: string) => apiFetch<void>('DELETE', `/suts/${id}`),
     onSuccess: () => {
       void message.success('SUT 已删除');
+      void qc.invalidateQueries({ queryKey: ['suts'] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+// PUT /suts/{id}/optimization-scope（U7b：编辑 RSI 可优化范围；null/[]=自动模式）
+export function useUpdateSutScope(id: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (optimization_scope: string[] | null) =>
+      apiFetch<Sut>(
+        'PUT',
+        `/suts/${id}/optimization-scope`,
+        { optimization_scope },
+      ),
+    onSuccess: () => {
+      void message.success('优化范围已保存');
+      void qc.invalidateQueries({ queryKey: ['sut', id] });
       void qc.invalidateQueries({ queryKey: ['suts'] });
     },
     onError: (err) => void message.error(err.message),

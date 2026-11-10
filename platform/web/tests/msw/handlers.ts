@@ -763,6 +763,7 @@ export const t7Requests: Record<string, unknown[]> = {
   credCreate: [],
   credRotate: [],
   sutCreate: [],
+  sutScopePut: [],
   filePut: [],
   fileCreate: [],
 };
@@ -1084,6 +1085,36 @@ export const sutsHandlers = [
     return new HttpResponse(null, { status: 201 });
   }),
   http.delete(/\/api\/v1\/suts\/[^/]+$/, () => new HttpResponse(null, { status: 204 })),
+  // U7b PUT optimization-scope：与后端 _validate_scope 同构（越域项 → 422；
+  // fixture 约定 scripts/ 域在本测试环境视为已冻结，用于行内 422 错误断言）
+  http.put(/\/api\/v1\/suts\/[^/]+\/optimization-scope$/, async ({ request }) => {
+    const body = (await request.json()) as { optimization_scope?: string[] | null };
+    const scope = body.optimization_scope ?? null;
+    t7Requests.sutScopePut.push(scope);
+    const invalid = (scope ?? []).filter(
+      (i) =>
+        i.startsWith('scripts/') ||
+        !/^(system-prompt(\.md)?|skills\/.*|scripts\/.*|mcp\.json|mcp-src\/.*|memory\/.*|knowledge\/.*|model\.json)$/.test(i),
+    );
+    if (invalid.length) {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: 'VALIDATION',
+            message: `optimization_scope 项超出全局优化白名单域: ${invalid
+              .map((i) => `'${i}'`)
+              .join(', ')}`,
+            invalid,
+          },
+        },
+        { status: 422 },
+      );
+    }
+    return HttpResponse.json({
+      ...t7Sut(),
+      optimization_scope: scope && scope.length ? scope : null,
+    });
+  }),
 ];
 
 resetT7Settings();

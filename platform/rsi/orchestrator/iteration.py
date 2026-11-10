@@ -274,6 +274,7 @@ class IterationEngine:
         critic_max_repair_rounds: int = 5,
         no_gain_rounds: int = 3,
         noise_lookup: Callable[[str], dict[str, float]] | None = None,
+        sut_scope_fn: Callable[[str], list[str] | None] | None = None,
     ) -> None:
         self.batch_runner = batch_runner
         self.attribution_analyzer = attribution_analyzer
@@ -294,6 +295,12 @@ class IterationEngine:
         # None keeps metric_noise unset in DecisionCtx (rules degrade to
         # delta-0 semantics), so existing stub rigs are unaffected.
         self.noise_lookup = noise_lookup
+        # U7b: optional per-SUT optimization-scope lookup (sut_id -> list of
+        # SUT-tree-relative allowed paths, None/empty = automatic mode). The
+        # engine forwards it to the DeterministicCritic and ChangeApplier so
+        # RSI auto-optimization only touches the explicitly defined scope;
+        # manual file edits are NOT bounded by it (global whitelist only).
+        self.sut_scope_fn = sut_scope_fn
         self.round = 0
         # introspection for tests/ops
         self.last_iteration_id: str | None = None
@@ -687,7 +694,9 @@ class IterationEngine:
         await self._advance(iteration_id, from_, "REVIEWING")
         from_ = "REVIEWING"
         if self.critic is not None:
-            critic_reject = self._critic_repair_loop(hyp, profile)
+            critic_reject = self._critic_repair_loop(
+                hyp, profile, self._sut_scope(sut_id) if self.sut_scope_fn else None
+            )
             if critic_reject is not None:
                 # RepairLoop exhausted -> hypothesis rejected (DD-12 §5.5)
                 hyp["status"] = "rejected"
@@ -781,9 +790,18 @@ class IterationEngine:
         if candidate_config_version_id is not None:
             cand_cfg = candidate_config_version_id
         elif self.change_applier is not None:
-            cand_cfg = self.change_applier.apply(
-                sut_id, hyp, set(profile.enabled_targets or ())
-            )
+            allowed_paths = self._sut_scope(sut_id)
+            if allowed_paths is None:
+                cand_cfg = self.change_applier.apply(
+                    sut_id, hyp, set(profile.enabled_targets or ())
+                )
+            else:
+                cand_cfg = self.change_applier.apply(
+                    sut_id,
+                    hyp,
+                    set(profile.enabled_targets or ()),
+                    allowed_paths=allowed_paths,
+                )
         else:
             cand_cfg = f"{config_version_id}#cand-r{self.round}"
         hyp["status"] = "applied"
@@ -932,7 +950,26 @@ class IterationEngine:
 
     # -- internals ----------------------------------------------------------------
 
-    def _critic_repair_loop(self, hyp: dict[str, Any], profile) -> str | None:
+    def _sut_scope(self, sut_id: str) -> list[str] | None:
+        """U7b: sut_scope_fn(sut_id) -> allowed paths; None/[] = automatic.
+
+        A lookup failure must never kill the iteration — it degrades to the
+        automatic mode with a warning (the global whitelist still applies).
+        """
+        if self.sut_scope_fn is None:
+            return None
+        try:
+            scope = self.sut_scope_fn(sut_id)
+        except Exception as exc:  # noqa: BLE001 - degrade, never block
+            logger.warning(
+                "iteration.sut_scope_lookup_failed", sut_id=sut_id, error=str(exc)
+            )
+            return None
+        return list(scope) if scope else None
+
+    def _critic_repair_loop(
+        self, hyp: dict[str, Any], profile, allowed_paths: list[str] | None = None
+    ) -> str | None:
         """DeterministicCritic + repair retries (DD-12 §5.5 RepairLoop ≤5).
 
         Returns None when the changeset passes; otherwise a rejection reason
@@ -945,9 +982,18 @@ class IterationEngine:
             return None  # nothing deterministic to check
         failures: list = []
         for round_i in range(self.critic_max_repair_rounds):
-            failures = self.critic.check(
-                files, set(profile.enabled_targets or ())
-            )
+            if allowed_paths is None:
+                # backward-compatible call shape (custom critic stubs may
+                # not accept the U7b keyword)
+                failures = self.critic.check(
+                    files, set(profile.enabled_targets or ())
+                )
+            else:
+                failures = self.critic.check(
+                    files,
+                    set(profile.enabled_targets or ()),
+                    allowed_paths=allowed_paths,
+                )
             if not failures:
                 return None
             logger.debug(
