@@ -3,8 +3,8 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DES-002 |
-| 版本 | v2.0（配置三层模型：用户/内部/部署分离，C1-C2 落地） |
-| 日期 | 2026-11-05 |
+| 版本 | v2.1（ADR-27：新增评估集与网络准备 API 用户配置组） |
+| 日期 | 2026-11-10 |
 | 状态 | 待评审 |
 | 上游文档 | 需求 RSI-PG-REQ-001 v0.25；设计 RSI-PG-DES-001 v2.12 |
 | 关联文档 | 接口定义 RSI-PG-DES-003（docs/_rsi_playground_interfaces.md）；测试设计 RSI-PG-DES-004（docs/_rsi_playground_test.md） |
@@ -145,6 +145,16 @@
 |----|------|------|------|
 | seed.master | int | 20261102 | 随机种子：相同种子+相同输入 → 相同采样与裁决顺序（NFR2④） |
 
+**评估集与网络准备 API（v2.1 新增，ADR-27 会话双模式——API 模式会话的两个外部系统 URL）**
+
+| 键 | 类型 | 缺省 | 说明 |
+|----|------|------|------|
+| evalset_api.url | str | "" | 评估集在线 API 基址（API 类评估集按名称获取/在线预览，`GET {url}/evalsets/{name}`）；空=API 模式不可用 |
+| network_prep_api.url | str | "" | 网络准备 API 基址（API 模式环境准备/恢复，prepare/restore/status 三端点，NetworkPrepClient）；空=API 模式不可用 |
+| network_prep_api.timeout_s | int | 120 | NetworkPrepClient 单请求超时（秒）；prepare/restore/status 共用 |
+
+> 注记：本组三键供 API 模式会话使用（ADR-27）；WEB 参数页（settingsLabels）在代码实施时同步纳入本组条目——文档先行描述。CLI 模式会话不依赖本组配置。
+
 ### 2.2 对象页管理（不在参数页呈现）
 
 - `sandbox.backends.*` → 网络仿真平台页（每实例 kind/url/verify_tls/api/subnets，ADR-24/25；独立 GET/PUT 端点，改后 restart_required）
@@ -231,4 +241,4 @@ llm_compare: {candidates: [claude-sonnet-4-6, glm-5]}   # switch_model 假设的
 
 ---
 
-> 修订记录：v2.0 — **配置体系重构三层模型（ADR-26，C1-C2 落地，2026-11-05）**：§2 全量重写——部署环境变量（RSI_JWT_SECRET/RSI_MASTER_KEY/RSI_HOME）/用户 settings.yaml（参数页全键可编辑）/内部 settings-internal.yaml（~15 项，不进 WEB）三层分离；安全密钥仅环境变量；LLM api_key/base_url 内网明文直配（yaml）+ 专用半脱敏 LLM 配置接口；存储路径改由 RSI_HOME 派生（git/、storage/{traces,artifacts,labs,recordings}/、logs/、STOP）；对象注册（sandbox.backends.*/carrier.hosts.*）归对象页；动态键收缩为 4 个，其余标 pending_restart 经 POST /system:restart 统一生效；旧派生/内部键静默忽略，budget.default_iteration→iteration_default。v1.6 — **沙箱连通性模型重构（ADR-25 预建模式，2026-11-09）**：sandbox.backends.* 键形态重写——删 host/ssh_port/ssh_user/agent_cmd/templates_dir，新 kind（ensp-pro|pnetlab|fake）/url（平台 Web 入口，URL 探活）/verify_tls（自签默认关）/api（P1/S11 预留）/subnets（保留）；新增 fake 默认后端；增注记「平台不可 SSH；设备 SSH 凭证在 env.yaml ssh_access 段定义（同 IP 不同端口复用，设备 IP 可与平台 IP 不同）」。v1.5 — v2.18 远端 Docker 主机支持（R1-R6）：carrier.hosts 多主机完整示例（本地 main + 远端 gpu-01/gpu-02 SSH 隧道）；新增 max_instances_per_host（全局默认 + host 级覆盖）；InstanceScheduler least-loaded 选主机。v1.4 — P0 多实例并行联动（ADR-24）：backends 示例键改 ensp-pro-1（多实例键 `<type>-<n>` P0 即用，每实例独立 VM/网络名字空间）；batch_concurrency 默认 1→2（并行可配）+ 新增 max_parallel_labs（含同 lab 任务互斥注记——lab 内共享设备状态）。v1.3 — 二轮交叉审查修复：smoke_verify 冒烟任务来源对齐 FR3.7 P0（P0 即绑定冒烟集，未含时降级首个任务）。v1.2 — 二次交叉审查修复：后端配置键与 env.yaml backend 枚举同名（ensp_pro→ensp-pro）并注明多实例键规则；carrier.hosts.main 补 subnets 字段（FR5.8/Q10）；新增 logging 配置段与 labs_dir/recordings_dir（对齐设计 5.2/2.3）；guards 补 high_risk_worsen（对齐 FR9.3/Selector 规则 2）；smoke_verify 注明 P0 冒烟任务来源；goals 注明加权综合分定义位置。v1.0 — 自主设计文档 v1.5 拆分建档（原设计文档 5.1/5.2 内容整体迁入，内容未变）。
+> 修订记录：v2.1 — **ADR-27 会话双模式联动（2026-11-10）**：§2.1 新增分组「评估集与网络准备 API」——evalset_api.url + network_prep_api.{url, timeout_s}（API 模式会话外部系统 URL；空串=API 模式不可用）；settingsLabels 条目随代码实施同步。v2.0 — **配置体系重构三层模型（ADR-26，C1-C2 落地，2026-11-05）**：§2 全量重写——部署环境变量（RSI_JWT_SECRET/RSI_MASTER_KEY/RSI_HOME）/用户 settings.yaml（参数页全键可编辑）/内部 settings-internal.yaml（~15 项，不进 WEB）三层分离；安全密钥仅环境变量；LLM api_key/base_url 内网明文直配（yaml）+ 专用半脱敏 LLM 配置接口；存储路径改由 RSI_HOME 派生（git/、storage/{traces,artifacts,labs,recordings}/、logs/、STOP）；对象注册（sandbox.backends.*/carrier.hosts.*）归对象页；动态键收缩为 4 个，其余标 pending_restart 经 POST /system:restart 统一生效；旧派生/内部键静默忽略，budget.default_iteration→iteration_default。v1.6 — **沙箱连通性模型重构（ADR-25 预建模式，2026-11-09）**：sandbox.backends.* 键形态重写——删 host/ssh_port/ssh_user/agent_cmd/templates_dir，新 kind（ensp-pro|pnetlab|fake）/url（平台 Web 入口，URL 探活）/verify_tls（自签默认关）/api（P1/S11 预留）/subnets（保留）；新增 fake 默认后端；增注记「平台不可 SSH；设备 SSH 凭证在 env.yaml ssh_access 段定义（同 IP 不同端口复用，设备 IP 可与平台 IP 不同）」。v1.5 — v2.18 远端 Docker 主机支持（R1-R6）：carrier.hosts 多主机完整示例（本地 main + 远端 gpu-01/gpu-02 SSH 隧道）；新增 max_instances_per_host（全局默认 + host 级覆盖）；InstanceScheduler least-loaded 选主机。v1.4 — P0 多实例并行联动（ADR-24）：backends 示例键改 ensp-pro-1（多实例键 `<type>-<n>` P0 即用，每实例独立 VM/网络名字空间）；batch_concurrency 默认 1→2（并行可配）+ 新增 max_parallel_labs（含同 lab 任务互斥注记——lab 内共享设备状态）。v1.3 — 二轮交叉审查修复：smoke_verify 冒烟任务来源对齐 FR3.7 P0（P0 即绑定冒烟集，未含时降级首个任务）。v1.2 — 二次交叉审查修复：后端配置键与 env.yaml backend 枚举同名（ensp_pro→ensp-pro）并注明多实例键规则；carrier.hosts.main 补 subnets 字段（FR5.8/Q10）；新增 logging 配置段与 labs_dir/recordings_dir（对齐设计 5.2/2.3）；guards 补 high_risk_worsen（对齐 FR9.3/Selector 规则 2）；smoke_verify 注明 P0 冒烟任务来源；goals 注明加权综合分定义位置。v1.0 — 自主设计文档 v1.5 拆分建档（原设计文档 5.1/5.2 内容整体迁入，内容未变）。

@@ -3,8 +3,8 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DD-01 |
-| 版本 | v1.1 |
-| 修订 | v1.1（2026-11-09）第四轮审计文档-代码对齐：§3.11 RunStatus 转换表补 env_ready→aborted、collecting→aborted（D-1） |
+| 版本 | v1.2 |
+| 修订 | v1.2（2026-11-10）ADR-27：删除 ConfigApi/EnvSpec.config_apis/CallApiParams/PrepareAction.call_api；新增 ApiEvalsetTask。v1.1（2026-11-09）第四轮审计文档-代码对齐：§3.11 RunStatus 转换表补 env_ready→aborted、collecting→aborted（D-1） |
 | 上游 | 设计 2.4/2.5、接口 §2.1/§2.2；FR 全部（数据基座） |
 | 交付切片 | S1（一切的地基） |
 
@@ -64,11 +64,6 @@ class ReadyCheck(_M):
     cli: str | None = None
     expect: str | None = None        # cli_match 必填
 
-class ConfigApi(_M):                 # 外部配置 API 端点（ADR-20 call_api 手段）
-    base_url: str                    # http(s)://…
-    auth_ref: str | None = None      # CredentialStore 名；None=无鉴权
-    timeout_s: int = 60
-
 class ExternalDep(_M):               # P2 NMS 端点声明
     kind: Literal["nms"]
     base_url: str
@@ -81,8 +76,9 @@ class EnvSpec(_M):
     topology: Topology
     ssh_access: dict[str, SshAccess] # 设备名 → 接入；keys == devices.name（校验器）
     ready_checks: list[ReadyCheck] = []    # 缺省=全部设备 ssh_reachable
-    config_apis: dict[str, ConfigApi] = {}
     external_deps: list[ExternalDep] = []
+    # v1.2（ADR-27）：config_apis 字段已删除（ConfigApi 模型同步废除——外部配置 API
+    #   场景由网络准备 API 整体接管，见 DD-04 §5.8 / 设计 3.13）
     # 站点覆盖合并：apply_site_override(site: EnvSpec) -> EnvSpec
     #   仅允许覆盖 backend 与 ssh_access（其余字段不一致 → SiteOverrideError）
 
@@ -90,16 +86,9 @@ class CliEntry(_M):                  # exec_cli 单设备条目
     device: str
     cli_lines: list[str] = Field(min_length=1)
 
-class CallApiParams(_M):             # call_api 参数（ADR-20）
-    env_name: str                    # 组网名
-    scenario: str                    # 评测场景名
-    devices: list[CliEntry] = Field(min_length=1)
-
 class PrepareAction(_M):
-    action: Literal["exec_cli", "call_api"]
-    entries: list[CliEntry] | None = None      # exec_cli 必填
-    api: str | None = None                      # call_api 必填：env.config_apis 键
-    params: CallApiParams | None = None         # call_api 必填
+    action: Literal["exec_cli"]            # v1.2（ADR-27）：call_api 手段已删除
+    entries: list[CliEntry] = Field(min_length=1)   # exec_cli 必填（多设备多命令）
 
 class TaskSpec(_M):
     prompt: str                      # 任务描述（含 FINAL_JSON 约定文案）
@@ -145,6 +134,19 @@ class TaskRecord(_M):                # tasks.jsonl 一行
     task: TaskSpec
     expected: ExpectedAnswer
     metrics: list[MetricDef] = []
+
+class NetworkEnvRef(_M):             # v1.2（ADR-27）：API 类任务的网络环境引用
+    name: str                        # 环境名（网络准备 API /environments/{name} 路径段）
+    params: dict[str, Any] = {}      # 环境参数（prepare 请求体透传）
+
+class ApiEvalsetTask(_M):            # v1.2（ADR-27）：评估集在线 API 单任务（API 类评估集）
+    task_id: str                     # 评估集在线 API 返回的任务标识（宽松校验，非 TaskRecord 正则）
+    title: str
+    network_env: NetworkEnvRef       # 环境准备交给网络准备 API（替代 CLI 类 prepare 动作）
+    task: TaskSpec                   # 同 CLI 类（prompt/context/tool_constraints）
+    expected: ExpectedAnswer         # 同 CLI 类（root_cause/final_state/critical_steps/checklist）
+    # 来源：GET {evalset_api.url}/evalsets/{name} → tasks[] 逐行转换（设计 3.13 在线客户端）；
+    #   API 模式下 BatchRunner 以 network_env 调 NetworkPrepClient（DD-12 prep_mode 路由）
 ```
 
 ### 3.2 运行时视图与轨迹
@@ -316,9 +318,8 @@ class LabHandle(_M):
                                        # 适配器 (网络名,设备名)→(IP+端口) 映射权威；env.ssh_access 基准+凭证）
 
 class AppliedAction(_M):              # prepare 执行记录（restore_task 输入 / ops.jsonl 行）
-    action: Literal["exec_cli", "call_api"]
-    entries: list[CliEntry] | None = None
-    api: str | None = None; params: CallApiParams | None = None
+    action: Literal["exec_cli"]        # v1.2（ADR-27）：call_api 已删除
+    entries: list[CliEntry] = Field(min_length=1)
     backup_files: dict[str, str] = {} # exec_cli：设备名 → backups/<task>/<dev>.cfg 路径
     applied_at: str
 

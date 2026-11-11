@@ -3,8 +3,8 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DD-12 |
-| 版本 | v1.2（H1-H8 全外部依赖监控：HealthMonitor/8 类检查器/依赖状态 API/SSE 告警） |
-| 上游 | 设计 3.1；FR5、ADR-8/21/24；ADR-14/17/20 关联 |
+| 版本 | v1.3（ADR-27：run_batch 增 prep_mode 路由——API 模式走 NetworkPrepClient、不注入 DEV_* 凭证） |
+| 上游 | 设计 3.1/3.13；FR5、ADR-8/21/24/27；ADR-14/17/20 关联 |
 | 交付切片 | S6（batch+checkpoint+budget）+ S6b（IterationEngine+三级编排） |
 
 ## 1. 追溯与范围
@@ -63,11 +63,16 @@ class BatchRunner:
     def __init__(self, sandbox: SandboxService, carrier: HostService,
                  instrumentor: Instrumentor, collector: TraceCollector,
                  judge: JudgeService, ckpt: CheckpointStore, budget: BudgetController,
-                 stats_agg: StatsAggregator, event_bus: EventBus, settings): ...
+                 stats_agg: StatsAggregator, event_bus: EventBus, settings,
+                 netprep: NetworkPrepClient | None = None): ...
     # Instrumentor = 五阶段门面（DD-06）；collector = TraceCollector（DD-07）
+    # netprep = NetworkPrepClient（DD-04 §5.8，v1.3 ADR-27——prep_mode="api" 必需，None 时
+    #   run_batch(prep_mode="api") 立即 ConfigError）
 
-    async def run_batch(self, batch_id: str) -> BatchStats:
-        """批次主循环（§5.1）"""
+    async def run_batch(self, batch_id: str, prep_mode: Literal["cli", "api"] = "cli") -> BatchStats:
+        """批次主循环（§5.1）。v1.3（ADR-27）：prep_mode 路由——
+        "cli"=现有路径（SandboxService.prepare/restore_task + DEV_* 凭证注入）；
+        "api"=API 模式——NetworkPrepClient.prepare/restore 替代（§5.1 分支说明）"""
 
     async def run_task(self, batch_id: str, task: EvalTask, seq: int) -> RunResult:
         """单任务九步流水线（§5.2）"""
@@ -222,20 +227,26 @@ class DependencyStatus(BaseModel):
 
 ## 5. 内部逻辑
 
-### 5.1 run_batch 主循环（v1.1 含 F1 连续失败熔断）
+### 5.1 run_batch 主循环（v1.1 含 F1 连续失败熔断；v1.3 增 prep_mode 分支，ADR-27）
 
 ```
-async def run_batch(batch_id):
+async def run_batch(batch_id, prep_mode="cli"):
     batch = load_batch(batch_id)
-    if ckpt := resume(batch_id):     # 断点恢复
-        if labs[ckpt.lab_id].status == "ready": reuse_lab = ckpt.lab_id
-        else: rebuild_lab()
-    else:
-        # 首次启动
-        selection = lab_scheduler.select(env, batch.backend_key)
-        lab = sandbox.build_lab(env, selection.backend_key)
-        sandbox.wait_ready(lab)
-        snap0 = sandbox.snapshot(lab, name="snap0")
+    if prep_mode == "cli":
+        # CLI 模式（现有路径）：lab 生命周期经 SandboxService
+        if ckpt := resume(batch_id):     # 断点恢复
+            if labs[ckpt.lab_id].status == "ready": reuse_lab = ckpt.lab_id
+            else: rebuild_lab()
+        else:
+            # 首次启动
+            selection = lab_scheduler.select(env, batch.backend_key)
+            lab = sandbox.build_lab(env, selection.backend_key)
+            sandbox.wait_ready(lab)
+            snap0 = sandbox.snapshot(lab, name="snap0")
+    else:  # prep_mode == "api"（ADR-27 API 模式）
+        # 不走 SandboxService——无 build_lab/wait_ready/snapshot/LabScheduler（无 lab/SSH 池）
+        # 任务级准备/恢复经 NetworkPrepClient（run_task §5.2 第 3/8 步分支）
+        pass
 
     consecutive_env_failures = 0     # F1 连续失败计数器
 
@@ -291,15 +302,28 @@ async def run_task(batch_id, task, seq):
 
     # 2. 数据集级（仅批次首个任务——已在 run_batch 中完成 build/snap0）
 
-    # 3. prepare 评测准备（ADR-20 两种手段）
-    try:
-        applied = sandbox.prepare(lab, task.task_id, task.prepare.prepare)
-    except EnvError:
-        retry ≤2: restore_task → prepare → 仍失败→ env_failed(0 分)→ continue
+    # 3. prepare 评测准备（v1.3 分支，ADR-27）
+    if prep_mode == "cli":
+        # CLI 模式：ADR-20 exec_cli 手段（多设备多命令，先备份）
+        try:
+            applied = sandbox.prepare(lab, task.task_id, task.prepare.prepare)
+        except EnvError:
+            retry ≤2: restore_task → prepare → 仍失败→ env_failed(0 分)→ continue
+    else:
+        # API 模式：经网络准备 API（network_env 名称+params）
+        try:
+            env_id = netprep.prepare(task.network_env.name, task.network_env.params,
+                                     session_id=batch_id)
+            ready = 轮询 netprep.status(task.network_env.name) 至 True 或超时
+        except EnvError:
+            retry ≤2 → 仍失败→ env_failed(0 分)→ continue
 
-    # 4. 创建 SUT 实例（P0 每 run 一实例）
+    # 4. 创建 SUT 实例（P0 每 run 一实例；两模式共用 HostService 容器编排）
+    # v1.3（ADR-27）：API 模式下不注入 DEV_* 设备凭证环境变量、不传 device_creds——
+    #   SUT Agent 设备接入完全由自身 skill/MCP 工具解决；CLI 模式照旧注入（env.ssh_access 解析）
     instance = carrier.create_instance(
         image_ref, config_version_id, lab,
+        device_creds=None if prep_mode == "api" else ssh_access_creds,
         permission=batch.permission, instrument=batch.instrument,
         run_id=run_id)
 
@@ -317,11 +341,17 @@ async def run_task(batch_id, task, seq):
     # 7. 判决（三层，DD-08）
     verdict = await judge.judge_run(run_id)
 
-    # 8. 任务后恢复（ADR-20 L1，判决后——终态断言需故障态在场）
-    try:
-        sandbox.restore_task(lab, applied)
-    except EnvError:
-        retry ≤2 → 仍失败→ L2 环境级恢复（reset+重放 ops.jsonl）
+    # 8. 任务后恢复（判决后——终态断言需故障态在场；v1.3 分支，ADR-27）
+    if prep_mode == "cli":
+        try:
+            sandbox.restore_task(lab, applied)      # ADR-20 L1（exec_cli 备份恢复）
+        except EnvError:
+            retry ≤2 → 仍失败→ L2 环境级恢复（reset+重放 ops.jsonl）
+    else:
+        try:
+            netprep.restore(task.network_env.name, env_id, task.network_env.params)
+        except EnvError:
+            retry ≤2 → 仍失败→ env_failed 标记（API 模式无 L2 环境级恢复——无 lab）
 
     # 9. 断点保存
     ckpt.append_completed(batch_id, task.task_id, run_id, verdict.status)
@@ -426,6 +456,6 @@ async def verifying_phase(sut_id, profile, candidate_version):
 
 ## 7. 测试映射与实施注记
 
-**测试**：TU-001（BatchRunner 状态机全转换+非法转换拒绝+重试矩阵）、TU-027（IterationEngine 状态机全转换）、IN-001（Fake 全链线）、IN-002（断点续跑）、IN-003（缓存/重算）、IN-006（优化迭代 cassette）、IN-012（环境一次构建+任务后恢复）、IN-013（预算/STOP）、IN-019（自优化模式三态）、IN-020（人工门四端点）、IN-022（多实例并行）、EE-002（E2E 全链）。
+**测试**：TU-001（BatchRunner 状态机全转换+非法转换拒绝+重试矩阵）、TU-027（IterationEngine 状态机全转换）、IN-001（Fake 全链线）、IN-002（断点续跑）、IN-003（缓存/重算）、IN-006（优化迭代 cassette）、IN-012（环境一次构建+任务后恢复）、IN-013（预算/STOP）、IN-019（自优化模式三态）、IN-020（人工门四端点）、IN-022（多实例并行）、**IN-023（API 模式会话端到端，v1.3 ADR-27：mock 网络 API→prepare→SUT→restore→判决，不注入 DEV_*/不走 SandboxService）**、EE-002（E2E 全链）。
 
 **实施注记**：① run_task 内 prepare/restore_task 的重试由 BatchRunner 驱动（非 sandbox 内部——sandbox 只做单次操作，重试策略在上层）；② 人工门等待用 asyncio.Event+DB 轮询双保险（进程重启后 Event 丢失，轮询兜底恢复）；③ BudgetController 内存缓存 token 用量（写 DB 有延迟），全局熔断判断基于内存值（最终一致性可接受——差 1-2 秒不超太多）；④ LabScheduler 的"最少活跃 lab"= `SELECT backend, COUNT(*) FROM labs WHERE status IN ('building','ready') GROUP BY backend`——实时查不缓存；⑤ EventBus 有界队列满丢旧：订阅者处理慢时可能漏中间态（但总能收到最新态——语义正确）；⑥ checkpoint_interval_s 合并写：连续任务完成间隔 < 5s 时不写 DB（内存暂存，下个间隔点批量刷）。

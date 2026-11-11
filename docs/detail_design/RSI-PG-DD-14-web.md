@@ -3,8 +3,8 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DD-14 |
-| 版本 | v2.0（用户 9 条需求 + 补充，brainstorming 逐节确认 2026-11-09；取代 v1.x 页面级设计，v1.x 既有组件设计——WeightEditor/SecurityTab/EvalsetImport/SutCreate/GateWorkbench——已并入本文）。v2.0 实施完成（T1-T8，feat/web-frontend） |
-| 上游 | 设计 3.10.2/3.10.3、接口 §9；FR10、NFR8、ADR-9/18/25 |
+| 版本 | v2.1（ADR-27：创建向导第 1 步增工作模式 Radio（CLI/API）；评测集页 API 类在线预览+删 config_apis 展示；Dashboard 依赖面板 +2）。v2.0 实施完成（T1-T8，feat/web-frontend） |
+| 上游 | 设计 3.10.2/3.10.3、接口 §9；FR10、NFR8、ADR-9/18/25/27 |
 | 交付切片 | S9（web 全量：10 页 + 登录 + 全局 UX 规范） |
 | 关联决策 | RSI 会话=iterations 实体；沙箱页聚合展示设备端点（凭证编辑留评测集页）；镜像管理新增后端端点 |
 
@@ -77,15 +77,15 @@ React 18 + TypeScript + Vite；**Ant Design 5**（Table/Form/Steps/Upload/Timeli
 
 ### 5.2 Dashboard `/`（U1）
 - **指标卡片行**（SSE 实时）：会话（运行中/待审批/已完成本周）、SUT 镜像数、运行环境数（●在线/●离线）、仿真沙箱数（在线/总数）、SUT 实例运行数
-- **外部依赖面板**（复用 DD-14 DependencyPanel）：LLM/数据库/Git/Docker（各主机）/`platform:<key>`（探活 detail）/Collector/Config API——逐项状态灯+延迟+失败原因
+- **外部依赖面板**（复用 DD-14 DependencyPanel）：LLM/数据库/Git/Docker（各主机）/`platform:<key>`（探活 detail）/Collector/Config API——逐项状态灯+延迟+失败原因；**v2.1（ADR-27）新增 2 项依赖检查**：「评估集在线 API」（GET {evalset_api.url} 探活；未配置 url 显示灰态"未配置"）与「网络准备 API」（GET {network_prep_api.url} 探活；同上）
 - **系统状态面板**：版本、运行时长、全局预算消耗（进度条+STOP 状态）、最近告警流（点击跳转）
 - **最近会话迷你列表**：状态徽章+待审批高亮
 - 数据：react-query 并行聚合 `/iterations` `/suts` `/labs` `/sandbox/backends` `/instances` `/system/dependencies` `/system/health`——**无新增端点**；SSE 失效映射（DD-14 既有 SSE_INVALIDATION 表）
 
 ### 5.3 会话管理 `/sessions`（U2）
 - **列表**：ID/SUT/评测集/mode/状态（Steps 迷你条：归因→假设→门审→应用→验证→决策）/当前阶段/预算消耗/待审批 Badge/操作（启动·暂停·终止·恢复·归档——按状态启用）
-- **创建向导**（Steps 3 步）：
-  1. 基础：SUT 下拉（含 image_ref+验证状态徽章）→ 运行环境下拉（含在线状态）→ 评测集下拉（含 iterate/smoke/holdout 绑定概要）
+- **创建向导**（Steps 3 步；v2.1 第 1 步增工作模式首字段，ADR-27）：
+  1. 基础：**工作模式 Radio（首字段）**——「CLI 模式」（现有：离线评估集+平台 SSH 到设备执行 CLI） /「API 模式」（在线获取评估集+调网络准备 API；说明文案：SUT 设备接入由其自身 skill/MCP 工具解决，平台不注入设备凭证）。**选 API 模式时评测集选择变为"输入名称 + 在线预览"**：名称输入框 → 调 `GET /evalsets/online/{name}` 展示任务预览卡（task_id/title/network_env/expected 摘要）→ 确认选定（evalset_api.url 未配置→引导跳参数页）；CLI 模式保持 SUT 下拉（含 image_ref+验证状态徽章）→ 运行环境下拉（含在线状态）→ 评测集下拉（含 iterate/smoke/holdout 绑定概要）；所选模式随 `POST /iterations` 提交（→ batches.prep_mode，DD-12）
   2. 目标与策略：ProfileForm（DD-14 WeightEditor 权重编辑器——方向切换+滑块+实时公式预览+总和校验；守卫三开关；预算上限；mode 选择 P0人工/P1半自动，P2 置灰标"未开放"）
   3. 确认：参数摘要卡 → `POST /iterations`；同 SUT 已有活跃会话 → 后端 409 → 表单行内提示
 - 待审批提示：列表行橙色 Badge + 顶部全局横幅（SSE 驱动）
@@ -99,8 +99,8 @@ React 18 + TypeScript + Vite；**Ant Design 5**（Table/Form/Steps/Upload/Timeli
 - **轨迹**：TraceTimeline（虚拟滚动+JSON 树展开，DD-14 既有）+ **跨轮对比**（选两轮同任务→双栏并排）
 - 数据：`GET /iterations/{id}`（budget_used/current_step）、`GET /iterations/{id}/timeline`（**新增**，轮次聚合防 N+1）、`/batches?iteration_id=`、`/experiments`、`/runs`（DB 读已通）、`/traces`
 
-### 5.5 评测集 `/evalsets`（U3）
-列表（名称/厂商/任务数/设备数/冻结徽章/绑定用途）+ 导入（DD-14 拖拽向导保留：Dragger→解析预览卡→确认）+ 删除（确认）+ **克隆/修改**（新增）：选源集→表单只开放环境覆盖项（设备 ip/port、config_apis 端点、站点覆盖参数）→差异预览（变更项高亮）→另存新集。任务集只读引用（保证跨集可比性）。数据：既有 CRUD/`:import`/`:export` + **新增 `POST /evalsets/{id}:clone`**（body=覆盖项；后端基于 env.<site>.yaml 覆盖机制生成新 env）
+### 5.5 评测集 `/evalsets`（U3；v2.1 ADR-27：双类型 + config_apis 展示删除）
+列表（名称/**类型（CLI 类/API 类）**/厂商/任务数/设备数/冻结徽章/绑定用途）。**CLI 类**行为不变：导入（DD-14 拖拽向导保留：Dragger→解析预览卡→确认）+ 删除（确认）+ **克隆/修改**：选源集→表单只开放环境覆盖项（**v2.1：仅设备 ip/port 与站点覆盖参数——config_apis 端点覆盖已随 ADR-27 删除**）→差异预览（变更项高亮）→另存新集；任务集只读引用。**API 类**（v2.1 新增）：输入名称→`GET /evalsets/online/{name}` 在线预览（任务列表卡：task_id/title/network_env.name/expected 摘要；不可导入为离线副本——按名称在线引用）。**评估集详情页 config_apis 展示已删除（ADR-27）**。数据：既有 CRUD/`:import`/`:export` + `POST /evalsets/{id}:clone` + `GET /evalsets/online/{name}`（DD-13 v1.1）
 
 ### 5.6 SUT 管理 `/suts`（DD-14 既有保留）
 列表/创建（G5 镜像接入：image_ref+验证镜像按钮）/详情（版本 lineage+diff+优化项勾选）/FileEditor（Monaco 配置树 CRUD——P0 人工模式核心；冻结路径保存 409 → 行内提示）

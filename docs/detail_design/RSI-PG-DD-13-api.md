@@ -3,8 +3,8 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DD-13 |
-| 版本 | v1.0 |
-| 上游 | 设计 3.10、接口 §9；FR10、I-9；ADR-18/19 |
+| 版本 | v1.1（ADR-27：system settings 响应增 evalset_api.*/network_prep_api.*；预留 GET /evalsets/online/{name}） |
+| 上游 | 设计 3.10/3.13、接口 §9；FR10、I-9、FR3.1（API 类）；ADR-18/19/27 |
 | 交付切片 | S9（api+web 最小版） |
 
 ## 1. 追溯与范围
@@ -179,7 +179,9 @@ async def gate_direction(id: str, body: DirectionConfirm,
 @router.get("/system/settings")
 @require("credential:manage")  # admin only
 async def get_settings(mgr=Depends(get_service("settings_manager"))) -> list[SettingItem]:
-    return mgr.list_all()  # 用户级 45 键子集（三层模型 v2.0：不含内部层/对象页/部署层键）
+    return mgr.list_all()  # 用户级键子集（三层模型 v2.0：不含内部层/对象页/部署层键）
+    # v1.1（ADR-27）：响应键新增 evalset_api.url、network_prep_api.url、network_prep_api.timeout_s
+    #   （配置文档 §2.1「评估集与网络准备 API」组——API 模式会话外部系统 URL）
     # [{path, value, source, mutable, pending_restart, 需求号}]
 
 @router.put("/system/settings/{path:path}")
@@ -203,6 +205,18 @@ async def get_llm(...): ...    # LLM 配置（providers api_key/base_url + judge
 @require("credential:manage")
 @audited("system.llm_update")
 async def put_llm(...): ...    # LLM 配置整体写入（内网明文直配，C1）；写后标 pending_restart
+```
+
+**评估集在线预览端点（v1.1 新增预留，ADR-27，evalsets.py）**：
+
+```python
+@router.get("/evalsets/online/{name}")
+@require("evalset:read")
+async def preview_online_evalset(name: str):
+    """按名称调评估集在线 API（GET {evalset_api.url}/evalsets/{name}，设计 3.13），
+    返回任务列表预览（task_id/title/network_env/expected 摘要，逐条 ApiEvalsetTask）。
+    用途：会话创建向导 API 模式下的"输入名称→在线预览→选定"（DD-14 §5.3）。
+    evalset_api.url 未配置→409 CONFIG；上游非 2xx/超时→502 含 detail。"""
 ```
 
 ## 6. 依赖矩阵

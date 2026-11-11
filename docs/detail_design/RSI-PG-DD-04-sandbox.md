@@ -3,8 +3,8 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DD-04 |
-| 版本 | v1.2（ADR-25 预建模式：平台 URL 探活 + PrebuiltBackend + 设备级 SSH 寻址；ADR-24 多实例并行保留） |
-| 上游 | 设计 3.4、接口 §4；FR3/FR4、ADR-20/24/25；ADR-12/13 |
+| 版本 | v1.3（ADR-27：config_apis/call_api 废除——§5.3/§5.5 删除 call_api 路径；新增 §5.8 NetworkPrepClient） |
+| 上游 | 设计 3.4/3.13、接口 §4；FR3/FR4、ADR-20/24/25/27；ADR-12/13 |
 | 交付切片 | S3（Backend 抽象+Fake+readiness）；S11（真实后端） |
 
 ## 1. 追溯与范围
@@ -17,7 +17,8 @@
 
 ```
 rsi/sandbox/__init__.py
-rsi/sandbox/service.py        # SandboxService + ConfigApiCaller + OpsJournal
+rsi/sandbox/service.py        # SandboxService + OpsJournal（v1.3：ConfigApiCaller 已删除，ADR-27）
+rsi/sandbox/netprep.py        # NetworkPrepClient（网络准备 API 客户端，v1.3 ADR-27，§5.8）
 rsi/sandbox/sshpool.py        # SshPool / DeviceSession / HostSession
 rsi/sandbox/vendor.py         # VENDOR_MAP（device_type/错误模式/恢复模板 SSOT）
 rsi/sandbox/readiness.py      # ReadinessChecker
@@ -78,9 +79,11 @@ class SandboxService:
     async def destroy(self, lab) -> None
         # 预建语义（ADR-25）：不销毁平台侧任何对象——仅 pop 内部登记 + ssh_pool.close_lab(lab_id) 回收设备会话
     async def prepare(self, lab, task_id: str, actions: list[PrepareAction]) -> list[AppliedAction]
-        # 逐动作：exec_cli→先备份再下发（§5.3）；call_api→ConfigApiCaller；写 ops.jsonl；失败抛 EnvError（调用方重试）
+        # 逐动作：exec_cli→先备份再下发（§5.3）；写 ops.jsonl；失败抛 EnvError（调用方重试）
+        # v1.3（ADR-27）：call_api 手段已废除（config_apis 废除）——动作仅 exec_cli
     async def restore_task(self, lab, applied: list[AppliedAction]) -> None
-        # L1：exec_cli→按备份恢复（§5.4）；call_api→undo 重调；后接 ready 快检；失败重试≤2→EnvError（触发 L2）
+        # L1：exec_cli→按备份恢复（§5.4）；后接 ready 快检；失败重试≤2→EnvError（触发 L2）
+        # v1.3（ADR-27）：call_api undo 重调路径已删除
     async def exec_readonly(self, lab, device: str, cli: str) -> str
         # 白名单前缀校验（小写化）→ DeviceSession.exec_cli；越界→DeviceError（TU-035）
     async def backend_status(self) -> list[BackendStatus]         # GET /sandbox/backends 数据源
@@ -128,7 +131,7 @@ ok = (not matched) and "timed out" not in out
 错误模式（vrp）：r"^Error:", r"^Unrecognized command", r"^Invalid input", r"^%.*\^", r"Wrong parameter"
 ```
 
-### 5.3 prepare（exec_cli 备份→下发；ADR-20）
+### 5.3 prepare（exec_cli 备份→下发；ADR-20；v1.3：call_api 路径删除——config_apis 已废除，ADR-27）
 
 ```
 for entry in action.entries:
@@ -150,15 +153,9 @@ s.exec_config(["save","y"])？否——直接逐行重放 backup 全文（配置
 # 等价性快检：capture_config() 与 backup 规范化 diff（去时间戳/序号行）为空→OK；否则重试≤2
 ```
 
-### 5.5 call_api（ConfigApiCaller）
+### 5.5 ~~call_api（ConfigApiCaller）~~ 已废除（v1.3，ADR-27）
 
-```
-cfg = env.config_apis[action.api]
-body = {"env_name": params.env_name, "scenario": params.scenario,
-        "devices": [{device, cli_lines}…], "undo": false}
-r = await httpx.post(cfg.base_url + "/apply", json=body, headers=auth(cfg), timeout=cfg.timeout_s)
-非 2xx→EnvError（含响应体摘要）；undo 路径：body["undo"]=true（restore_task 用，集成契约：API 幂等）
-```
+config_apis 段与 ConfigApiCaller 随 ADR-27 删除——外部配置 API 场景由**网络准备 API**（§5.8 NetworkPrepClient，API 模式会话）整体接管；本模块 prepare/restore_task 仅保留 exec_cli 路径（§5.3/§5.4）。文件清单中 service.py 不再含 ConfigApiCaller。
 
 ### 5.6 FakeSandboxBackend（离线测试基座）
 
@@ -176,6 +173,33 @@ build/wait_ready/snapshot(degraded 标记)/restore=重放（与真实现同语�
 - **status()**：覆盖为探活结果——`BackendStatus.available = probe.probe_cached().ok`（TTL 缓存，默认 15s）；**在线判定增补（ADR-25）**：未配置 URL（空串，含 kind=physical 物理网络）时按序探测——**① 平台级设备清单**（settings `sandbox.backends.<key>.devices`：设备名→{ip,port}，**监控寻址用；凭证仍属评测集 env.yaml，保持 ADR-25 职责划分**）任一端点同步 TCP 探测（3s 超时）可达即 available=True（detail=“设备 SSH 可达（平台配置）”，与在用 lab 无关——未跑评测也可判在线）；**② 平台级清单为空 → 回退**遍历当前 active labs 的 endpoints 做同步 TCP 探测，任一可达即 available=True（detail=“设备 SSH 可达”）；两者皆无 → available=False（detail=“未配置 URL 且无设备信息”）；`backend_status()` 聚合各后端，LabScheduler select 过滤 available=False（全不可用→EnvError）；
 - **两层错误语义**：平台离线（URL 探活失败）→ build 立即 EnvError（含 url 与异常 detail）、BackendStatus.available=False、HealthMonitor `platform:<key>` checker down+system.alert 告警、调度器跳过——**已建 lab 不受影响**（设备 SSH 与平台 Web 无关）；设备 SSH 不可达→wait_ready 轮询超时→EnvError→env_failed、health_check（display clock 登录探测）False，错误定位到设备 (ip,port)。
 
+### 5.8 NetworkPrepClient（网络准备 API 客户端，v1.3 新增，ADR-27）
+
+API 模式会话的环境准备/恢复通道（设计 3.13 的实现；BatchRunner prep_mode="api" 时替代 SandboxService.prepare/restore_task，DD-12）。
+
+```python
+class NetworkPrepClient:
+    """网络准备 API v1 契约客户端（外部系统，契约后续调整时变更收敛于本类）
+    构造：NetworkPrepClient(base_url: str, timeout_s: int = 120)
+      —— base_url=settings.network_prep_api.url；timeout_s=network_prep_api.timeout_s
+      —— 内部持有单个 httpx.AsyncClient（连接池复用，全三端点共享）"""
+
+    async def prepare(self, env_name: str, params: dict, session_id: str) -> str
+        # POST {base_url}/environments/{env_name}/prepare  body={params, session_id}
+        # → 200 {"status": "ready", "env_id": …} → 返回 env_id
+        # 非 2xx / 超时 / 响应缺 env_id → EnvError（含响应体摘要；调用方重试 ≤2）
+
+    async def restore(self, env_name: str, env_id: str, params: dict) -> None
+        # POST {base_url}/environments/{env_name}/restore  body={env_id, params}
+        # → 200 {"status": "restored"}；非 2xx / 超时 → EnvError
+
+    async def status(self, env_name: str) -> bool
+        # GET {base_url}/environments/{env_name}/status → {"ready": bool}
+        # 就绪轮询用（prepare 后 BatchRunner 轮询至 ready 或超时）；网络错误→False（不抛）
+```
+
+**超时与容错**：三方法共用 timeout_s；prepare/restore 失败→EnvError 上抛（BatchRunner 按 CLI 模式同款重试矩阵：重试 ≤2 → 仍失败该任务 env_failed）；status 为探测语义——任何异常（连接拒绝/超时/非 2xx）返回 False 而不抛，避免轮询循环被瞬时故障打断；status 非 2xx 视为未就绪并记录 warning 日志。base_url 为空串时构造即抛 ConfigError（API 模式不可用，早失败）。
+
 ## 6. 依赖矩阵
 
 - imports：netmiko、httpx（平台 URL 探活 + call_api）、rsi/core、rsi/settings；（预建模式无平台侧编排协议——Web API 编排 P1/S11）。
@@ -185,6 +209,6 @@ build/wait_ready/snapshot(degraded 标记)/restore=重放（与真实现同语�
 
 ## 7. 测试映射与实施注记
 
-**测试**：TU-023（PrepareAction 编译展开/call_api 请求组装）、TU-030（L1 备份恢复模板+L2 切换）、TU-035（白名单）、IN-012（build_lab 仅 1 次/判决后恢复/prepare 失败重试）、IN-015（超时销毁）、SIM-001/002（真实后端）、EE-002/EE-009 走 Fake；预建模式单测（Mock 探活/MockDeviceSession/假 tcp_probe）：build 端点透传、平台离线 raise、no-op snapshot/restore、reset 命令、destroy 清 pool、scheduler 过滤（§5.7）。
+**测试**：TU-023（PrepareAction 编译展开；v1.3：call_api 组装部分随 ADR-27 删除）、TU-030（L1 备份恢复模板+L2 切换）、TU-035（白名单）、**TU-038（NetworkPrepClient 三方法 + 超时/异常，v1.3 新增）**、IN-012（build_lab 仅 1 次/判决后恢复/prepare 失败重试）、IN-015（超时销毁）、**IN-023（API 模式会话端到端，v1.3 新增）**、SIM-001/002（真实后端）、EE-002/EE-009 走 Fake；预建模式单测（Mock 探活/MockDeviceSession/假 tcp_probe）：build 端点透传、平台离线 raise、no-op snapshot/restore、reset 命令、destroy 清 pool、scheduler 过滤（§5.7）。
 
 **实施注记**：① 预建模式（ADR-25）——ensp-pro/pnetlab 统一由 PrebuiltBackend 承载（§5.7），无宿主编排 CLI；② PNETLab=同实现 kind=pnetlab（EVE-NG 兼容 REST 编排 P1/S11 评估）；③ 自动确认交互 `[Y/N]` 提示仅限 reset/恢复模板内白名单动作（prepare 命令不自动确认，防误操作）；④ httpx 客户端复用（连接池——探活与 call_api 共用依赖）；⑤ ops.jsonl 行=AppliedAction 序列化（含 applied_at）；⑥ netmiko 同步调用一律 asyncio.to_thread 包裹（§5.1）。
