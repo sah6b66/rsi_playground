@@ -45,11 +45,6 @@ export const SETTINGS_LABELS: Record<string, SettingLabel> = {
   'llm.defaults.hypothesis.temperature': { name: '假设采样温度', desc: '留空使用服务端缺省', def: null },
   'llm.defaults.critic.model': { name: '自动评审模型', desc: '自动评审变更方案的模型', def: '' },
   'llm.defaults.critic.temperature': { name: '评审采样温度', desc: '留空使用服务端缺省', def: null },
-  'llm.cassette_mode': {
-    name: '调用回放模式（高级）',
-    desc: 'LLM 调用录制/回放模式（用于测试可复现）：off=直连真实模型；replay=回放已录制的调用（默认，离线测试）；record=录制真实调用供后续回放',
-    def: 'replay',
-  },
   'llm.max_concurrent_calls': { name: '模型并发上限', desc: '同时进行的模型调用数上限', def: 4 },
   // ── 评估集与网络准备 API（ADR-27）──
   'evalset_api.url': { name: '评估集在线 API 地址', desc: '留空=不启用 API 模式', def: '' },

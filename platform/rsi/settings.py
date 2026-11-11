@@ -53,7 +53,6 @@ USER_CONFIG_PREFIXES: tuple[str, ...] = (
     # llm.providers.* is deliberately NOT user-page-visible: it carries
     # api_key credentials in plaintext — configure via settings.yaml / env.
     "llm.defaults.",
-    "llm.cassette_mode",
     "llm.max_concurrent_calls",
     "judge.",
     "optimizer.",

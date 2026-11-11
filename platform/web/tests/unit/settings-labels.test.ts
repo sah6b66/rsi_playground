@@ -29,7 +29,6 @@ const BACKEND_SETTING_KEYS = [
   'judge.llm.model',
   'judge.llm_retry',
   'judge.pairwise_enabled',
-  'llm.cassette_mode',
   'llm.defaults.attribution.model',
   'llm.defaults.attribution.temperature',
   'llm.defaults.critic.model',
@@ -66,8 +65,8 @@ const BACKEND_SETTING_KEYS = [
   'tracing.redact.enabled',
 ];
 
-test('SETTINGS_LABELS 覆盖后端 default_stores 全部键（48 项快照）', () => {
-  expect(BACKEND_SETTING_KEYS.length).toBe(48);
+test('SETTINGS_LABELS 覆盖后端 default_stores 全部键（47 项快照）', () => {
+  expect(BACKEND_SETTING_KEYS.length).toBe(47);
   BACKEND_SETTING_KEYS.forEach((k) => {
     const label = SETTINGS_LABELS[k];
     expect(label, `缺少键 ${k} 的中文名`).toBeDefined();
@@ -151,7 +150,6 @@ test('SETTINGS_LABELS 覆盖 settings.yaml.example 关键键（抽样）', () =>
     'llm.providers.*.base_url',
     'llm.defaults.*.model',
     'llm.defaults.*.temperature',
-    'llm.cassette_mode',
     'llm.max_concurrent_calls',
     'database.url',
     'orchestrator.budget.iteration_default.max_tokens',
