@@ -1,0 +1,20 @@
+# ════════ 网络Agent RSI演练场 — 内部配置 ════════
+# 内部配置 — 开发运维用，通常无需修改。不呈现于 WEB 页面。
+# 修改后需重启平台。
+# 注意：本文件的键即使写入用户 settings.yaml 也会被忽略（内部配置只认本文件）。
+instrumentor:
+  policy: {prefer: [hooks, mcp_wrap, kb_proxy, source_marker], source_injection: true, smoke_verify: true}
+tracing:
+  collector: {listen: 0.0.0.0, grpc: 4317, http: 4318}
+  redact: {rules_path: redact-rules.yaml}
+  archive: {codec: zstd, keep_promoted_forever: true}
+scheduler:
+  kind: asyncio
+  redis_url: null
+git:
+  repo: {bare: true}
+  author: {name: rsi-platform, email: rsi-platform@local}
+carrier:
+  adapters:
+    claude_code: {image_base: "rsi/claude-code-runtime:1.x"}
+    opencode: {image_base: "rsi/opencode-runtime:1.x"}

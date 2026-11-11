@@ -51,6 +51,108 @@ class SettingUpdate(BaseModel):
     value: Any
 
 
+# C2: LLM provider editor — llm.providers.* is excluded from GET
+# /system/settings (plaintext api_key). These dedicated endpoints expose
+# only a half-masked key and accept direct writes.
+class LlmProviderOut(BaseModel):
+    name: str
+    api_key_masked: str
+    base_url: str
+
+
+class LlmConfigOut(BaseModel):
+    providers: list[LlmProviderOut]
+
+
+class LlmProviderUpdate(BaseModel):
+    api_key: str | None = None
+    base_url: str | None = None
+
+
+def _mask_key(key: str) -> str:
+    """Half-mask an api_key: keep the last 3 chars only (sk-***xxx)."""
+    if not key:
+        return ""
+    return f"***{key[-3:]}" if len(key) > 3 else "***"
+
+
+def _llm_config(request: Request) -> tuple[Any, LlmConfigOut]:
+    """Resolve the live Settings object and a masked provider listing."""
+    real = request.app.state.services.get("settings")
+    providers: dict[str, Any] = {}
+    if real is not None:
+        providers = real.llm.providers
+    listing = LlmConfigOut(
+        providers=[
+            LlmProviderOut(
+                name=name,
+                api_key_masked=_mask_key(
+                    getattr(p, "api_key", "") if not isinstance(p, str) else p
+                ),
+                base_url=str(getattr(p, "base_url", "") or ""),
+            )
+            for name, p in providers.items()
+        ]
+    )
+    return providers, listing
+
+
+@router.get("/system/settings/llm", response_model=LlmConfigOut)
+async def get_llm_config(
+    request: Request,
+    user: Claims = Depends(require_perms("credential:manage")),
+) -> LlmConfigOut:
+    """Masked LLM provider listing (C2) — never returns a full api_key."""
+    _, listing = _llm_config(request)
+    return listing
+
+
+@router.put("/system/settings/llm/providers/{name}", response_model=LlmProviderOut)
+@audit.audited("system.llm_provider_update", object_type="llm_provider")
+async def update_llm_provider(
+    name: str,
+    body: LlmProviderUpdate,
+    request: Request,
+    user: Claims = Depends(require_perms("credential:manage")),
+) -> LlmProviderOut:
+    """Update one llm.providers.{name} entry (api_key and/or base_url).
+
+    Writes the live Settings object and persists the whole ``llm.providers``
+    section to settings.yaml (plaintext keys are accepted by design: trusted
+    intranet deployment, config doc §2). The new key takes effect for
+    consumers reading it lazily; a restart is recommended otherwise.
+    """
+    from rsi.settings import LlmProviderSettings, write_settings_section
+
+    providers, listing = _llm_config(request)
+    if name not in providers:
+        raise ConflictError(
+            f"unknown llm provider {name!r}", context={"name": name}
+        )
+    real = request.app.state.services.get("settings")
+    if real is None:
+        raise ConflictError("settings service unavailable", context={"name": name})
+    entry = providers[name]
+    if body.api_key is not None:
+        entry.api_key = body.api_key
+    if body.base_url is not None:
+        entry.base_url = body.base_url
+    write_settings_section(
+        "llm.providers",
+        {
+            pname: LlmProviderSettings(
+                api_key=pval.api_key, base_url=pval.base_url
+            ).model_dump()
+            for pname, pval in providers.items()
+        },
+    )
+    return LlmProviderOut(
+        name=name,
+        api_key_masked=_mask_key(entry.api_key),
+        base_url=entry.base_url,
+    )
+
+
 class StopState(BaseModel):
     stopped: bool
 

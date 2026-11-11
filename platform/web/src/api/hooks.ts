@@ -641,6 +641,8 @@ export interface SettingItem {
   value: unknown;
   source: string;
   mutable: boolean;
+  // C2：静态键自启动后被改过 → 需重启平台才生效
+  pending_restart?: boolean;
 }
 
 export interface SettingsPageDto {
@@ -664,10 +666,63 @@ export function useUpdateSetting() {
         { value },
       ),
     onSuccess: (out) => {
-      void message.success(`已热生效：${out.path}`);
+      void message.success(
+        out.pending_restart ? `已保存，重启平台后生效：${out.path}` : `已热生效：${out.path}`,
+      );
       void qc.invalidateQueries({ queryKey: ['system-settings'] });
     },
     onError: (err) => void message.error(err.message),
+  });
+}
+
+// ── C2：LLM 提供商直配（半脱敏）+ 平台重启 ────────────────────────────────
+
+// system.py LlmProviderOut（api_key 仅返回掩码 ***尾3位）
+export interface LlmProviderDto {
+  name: string;
+  api_key_masked: string;
+  base_url: string;
+}
+
+export interface LlmConfigDto {
+  providers: LlmProviderDto[];
+}
+
+export function useLlmConfig(): UseQueryResult<LlmConfigDto, Error> {
+  return useQuery({
+    queryKey: ['system-settings-llm'],
+    queryFn: () => apiFetch<LlmConfigDto>('GET', '/system/settings/llm'),
+  });
+}
+
+export function useUpdateLlmProvider() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      name,
+      api_key,
+      base_url,
+    }: {
+      name: string;
+      api_key?: string;
+      base_url?: string;
+    }) =>
+      apiFetch<LlmProviderDto>(
+        'PUT',
+        `/system/settings/llm/providers/${encodeURIComponent(name)}`,
+        { api_key, base_url },
+      ),
+    onSuccess: (out) => {
+      void message.success(`已保存模型服务配置：${out.name}`);
+      void qc.invalidateQueries({ queryKey: ['system-settings-llm'] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+export function useRestartPlatform() {
+  return useMutation({
+    mutationFn: () => apiFetch<{ status: string }>('POST', '/system:restart'),
   });
 }
 

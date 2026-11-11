@@ -1,179 +1,100 @@
-# ============================================================
-# RSI Playground 平台配置文件（样例）
-# ============================================================
+# ════════ 网络Agent RSI演练场 — 用户配置 ════════
+# 本文件仅包含使用者可修改的配置项（用户级 ~40 键）。
+# 部署级环境变量（RSI_JWT_SECRET / RSI_MASTER_KEY / RSI_HOME）见 INSTALL.md。
+# 开发运维内部项见 settings-internal.yaml.example（通常无需修改）。
+#
 # 使用方法：
-#   1. 复制此文件为 settings.yaml 放到部署目录
+#   1. 复制此文件为 settings.yaml 放到 RSI_HOME 目录（默认 ./var）
 #   2. 按注释逐项修改，未修改的项使用默认值
 #   3. 环境变量可覆盖（前缀 RSI_，如 RSI_SERVER__PORT=9000）
-#   4. 密钥类配置（JWT/MasterKey）必须通过环境变量设置，不入文件
-#
-# 路径说明：
-#   相对路径基于 RSI_HOME 环境变量（默认 ./var）
-# ============================================================
+#   4. 未列出的键均由专用页面管理（网络仿真平台 / 载体主机）或属内部项
 
-# ── ① 服务器 ──
+# ── 服务 ──
 server:
   host: 0.0.0.0                 # API 监听地址；0.0.0.0=全部接口，127.0.0.1=仅本机
-  port: 8000                    # API 端口号；取值范围 1-65535；默认 8000
+  port: 8000                    # API 端口号；1-65535；默认 8000
 
-# ── ② 数据库 ──
+# ── 数据库 ──
 database:
   url: sqlite:///var/platform.db
-  # P0 用 SQLite（无需安装数据库）；P1 可切 PostgreSQL：
+  # P0 用 SQLite（无需安装数据库）；P1 升级 PostgreSQL 时改：
   # url: postgresql://user:pass@localhost:5432/rsi_playground
 
-# ── ③ Git 版本库 ──
-git:
-  repo:
-    path: var/git/platform-repo.git    # 裸仓路径；首次启动自动创建
-    bare: true                          # 必须为 true（裸仓承载 pre-receive hook）
-  worktrees: var/git/wt                 # worktree 目录；自动创建
-  author:
-    name: rsi-platform                  # Git 提交身份
-    email: rsi-platform@local
-
-# ── ④ 文件存储 ──
-storage:
-  traces_dir: var/traces               # 轨迹 NDJSON 根目录
-  artifacts_dir: var/artifacts         # 判决/报告/SUT 日志
-  labs_dir: var/labs                   # lab 配置实例化 + 备份
-  recordings_dir: var/recordings       # LLM cassette（开发/测试）
-  stop_file: var/STOP                  # 熔断开关文件（存在即停）
-
-# ── ⑤ 日志 ──
-logging:
-  dir: var/logs
-  level: info                           # debug | info | warning | error
-  retention_days: 30                    # 日志保留天数
-  error_split: true                     # error 单独文件实时写入
-
-# ── ⑥ 仿真后端（预建模式：平台 URL 探活 + 设备级 SSH） ──
-# 注意：eNSP Pro / PNETLab 是网页平台，本身不可 SSH 登录！平台监控走 URL 探活。
-# 设备级 SSH 在评估集 env.yaml 的 ssh_access 中定义：同沙箱多设备可复用同 IP
-# 不同端口；设备 IP 可与平台 URL 的 IP 不同，分别定义。
-sandbox:
-  backends:
-    fake:                              # 离线测试后端（无 url）
-      kind: fake
-    ensp-pro-1:
-      kind: ensp-pro                   # ensp-pro | pnetlab | fake
-      url: https://192.168.56.101:8443 # 平台 Web 入口（eNSP Pro 默认 8443）
-      verify_tls: false                # 自签证书默认关闭校验
-      subnets: [10.101.1.0/24]         # 设备管理网段（全网唯一！）
-    pnetlab:
-      kind: pnetlab
-      url: http://192.168.56.102       # PNETLab 平台 Web 入口
-      subnets: [10.102.1.0/24]
-  build_retry: 2                       # 构建失败重试次数
-  ready_timeout_s: 600                 # 就绪探测超时（秒）
-
-# ── ⑦ SUT 载体主机池（v2.18 多主机支持） ──
-carrier:
-  task_timeout_s: 1800                 # 单任务超时（秒）= 30 分钟
-  adapters:
-    claude_code: {image_base: rsi/claude-code-runtime:1.x}
-    opencode:    {image_base: rsi/opencode-runtime:1.x}
-  hosts:
-    main:
-      docker: local                    # 本机 Docker Desktop（npipe）
-      subnets: [10.100.0.0/16]         # 本机 lab 网段池
-    # ── 远端 Linux 服务器（可选，SSH 隧道 Docker） ──
-    # gpu-01:
-    #   docker: ssh://ops@192.168.1.100       # SSH 连接串
-    #   subnets: [10.101.0.0/16]
-    #   max_instances: 10                       # 本主机 SUT 容器上限
-  max_instances_per_host: 10           # 全局默认每主机上限
-
-# ── ⑧ 插桩流水线 ──
-instrumentor:
-  policy:
-    prefer: [hooks, mcp_wrap, kb_proxy, source]   # 注入方式优先级（低侵入→高侵入）
-    source_injection: true
-    smoke_verify: true                  # 注入后冒烟验证（不可关闭）
-
-# ── ⑨ 轨迹采集 ──
-tracing:
-  collector:
-    listen: 0.0.0.0
-    grpc: 4317                         # OTLP gRPC 端口
-    http: 4318                         # OTLP HTTP 端口
-  redact:
-    enabled: true
-    rules_path: var/redact-rules.yaml
-  archive:
-    codec: zstd
-    hot_days: 90                       # 在线保留天数（之后压缩归档）
-
-# ── ⑩ 裁判 ──
-judge:
-  det_timeout_s: 120                   # 确定性判定单命令超时
-  llm_retry: 2                         # LLM 裁判重试次数
-  pairwise_enabled: true               # pairwise 对比判决
-
-# ── ⑪ 优化引擎 ──
-optimizer:
-  critic_max_repair_rounds: 5          # Critic 拒绝后修复循环上限
-  sft:
-    no_gain_rounds: 5                  # SFT 准入：连续无收益轮数
-    min_samples: 50                    # SFT 准入：失败样本量门槛
-
-# ── ⑫ 迭代决策 ──
-decision:
-  noise:
-    k_repeats: 3                       # 噪声带标定重复次数
-    factor: 1.96                       # 置信系数（95%）
-  alpha: 0.05                          # 显著性检验水平
-  no_gain_rounds_default: 5            # 收敛停机轮数
-
-# ── ⑬ 编排引擎 ──
-orchestrator:
-  max_parallel_batches: 2              # 并行批次上限（同 lab 内固定串行）
-  checkpoint_interval_s: 5             # 断点保存最小间隔
-  budget:
-    default_iteration:
-      max_tokens: 50000000             # 单轮 token 上限（5000 万）
-      max_wall_hours: 8               # 单轮时长上限
-      max_cost_usd: 200               # 单轮费用上限（美元）
-    global:
-      max_tokens: 100000000            # 全局 token 上限
-      max_cost_usd: 400               # 全局费用上限
-
-# ── ⑭ 平台 LLM（仅归因/假设/Critic/裁判 4 个点） ──
+# ── 模型服务（LLM）──
 llm:
   providers:
     anthropic:
-      api_key_env: ANTHROPIC_API_KEY   # 从环境变量读取（不入文件！）
+      api_key: ""               # 直接填入密钥（内网可信环境，明文保存）
+      base_url: ""              # 留空使用官方地址
     openai_compat:
-      api_key_env: OPENAI_COMPAT_API_KEY
-      base_url_env: OPENAI_COMPAT_BASE_URL
+      api_key: ""
+      base_url: ""              # 兼容网关（如 vLLM / one-api）地址
   defaults:
-    judge:       {model: claude-sonnet-4-6, temperature: 0.0}
-    attribution: {model: claude-sonnet-4-6}
-    hypothesis:  {model: claude-sonnet-4-6}
-    critic:      {model: claude-sonnet-4-6}
-  cassette_mode: replay                # replay | record | off
-  max_concurrent_calls: 4              # LLM 全局并发信号量
+    judge:
+      model: ""                 # 裁判模型名称；留空用回放/规则兜底
+      temperature: 0.0          # 采样温度；0 = 尽量确定性
+  cassette_mode: replay         # replay 回放录像 / record 录制 / off 真实调用
+  max_concurrent_calls: 4       # 模型并发调用上限
 
-# ── ⑮ 安全 ──
-security:
-  jwt_secret_env: RSI_JWT_SECRET       # JWT 签名密钥（必须通过环境变量设置！≥32 字节）
-  master_key_env: RSI_MASTER_KEY       # CredentialStore 主密钥（同上）
-  jwt_expire_hours: 12                 # Token 有效期
+# ── 裁判 ──
+judge:
+  det_timeout_s: 120            # 确定性（规则型）评审单次执行超时（秒）
+  llm_retry: 2                  # 模型评审失败重试次数
+  pairwise_enabled: true        # 同轮多方案时启用两两对比评审
 
-# ── ⑯ 调度与种子 ──
-scheduler:
-  kind: asyncio                        # P0/P1=asyncio；P2=rq
+# ── 优化与决策 ──
+optimizer:
+  critic_max_repair_rounds: 5   # 自动评审发现问题后的最大修复轮数
+  sft:
+    no_gain_rounds: 5           # 连续无提升多少轮后允许整理 SFT 训练数据
+    min_samples: 50             # 整理训练数据所需最低有效样本数
+decision:
+  alpha: 0.05                   # 统计检验显著性水平 α；越小越保守
+  no_gain_rounds_default: 5     # 连续无提升多少轮后触发收敛判定
+  noise:
+    k_repeats: 3                # 标定基线噪声的重复测量次数
+    factor: 1.96                # 95% 置信对应的 σ 倍数
+
+# ── 编排 ──
+orchestrator:
+  max_parallel_batches: 2       # 同时运行的评测批次数上限
+  checkpoint_interval_s: 5      # 断点续跑检查点存档间隔（秒）
+  health_monitor_interval_s: 30 # 运行环境健康巡检周期（秒）
+  budget:
+    iteration_default:          # 每个 RSI 会话的缺省预算
+      max_tokens: 50000000      # Token 上限
+      max_wall_hours: 8         # 墙上时长上限（小时）
+      max_cost_usd: 200         # 费用上限（美元）
+    global:                     # 全平台累计预算（yaml 键 global，代码字段 global_）
+      max_tokens: 100000000
+      max_wall_hours: 0         # 0 = 不限制
+      max_cost_usd: 400
+
+# ── 载体缺省 ──
+carrier:
+  task_timeout_s: 1800          # Agent 单任务最长执行时间（秒）；可热更
+  max_instances_per_host: 10    # 未单独配置主机的实例数上限；可热更
+  # 载体主机（carrier.hosts.*）由「网络Agent」页面管理，不入本文件
+
+# ── 网络仿真缺省 ──
+sandbox:
+  build_retry: 2                # 实验环境构建失败重试次数
+  ready_timeout_s: 600          # 等待仿真环境就绪超时（秒）
+  # 仿真平台实例（sandbox.backends.*）由「网络仿真」页面管理，不入本文件
+
+# ── 轨迹 ──
+tracing:
+  redact:
+    enabled: true               # 入库前按规则抹除密钥等敏感内容
+  archive:
+    hot_days: 90                # 热数据保留天数；超期转入冷归档
+
+# ── 日志 ──
+logging:
+  level: info                   # debug / info / warning / error；可热更
+  retention_days: 30            # 超期日志自动清理
+  error_split: true             # 错误级别日志单独落盘便于排查
+
+# ── 可复现 ──
 seed:
-  master: 20261102                    # 全局主种子（三段派生）
-
-# ============================================================
-# 必须设置的环境变量（部署前配置！）
-# ============================================================
-#   RSI_JWT_SECRET=<≥32字节随机字符串>
-#   RSI_MASTER_KEY=<base64 编码 32 字节>
-#   ANTHROPIC_API_KEY=<你的 Anthropic API Key>
-#
-# 生成示例（Linux/Mac）：
-#   export RSI_JWT_SECRET=$(openssl rand -hex 32)
-#   export RSI_MASTER_KEY=$(openssl rand -base64 32)
-# ============================================================
+  master: 20261102              # 随机种子：相同种子+相同输入 → 相同采样与裁决顺序

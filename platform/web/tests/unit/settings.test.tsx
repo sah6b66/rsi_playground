@@ -72,8 +72,8 @@ test('ParamsTab：动态编辑保存热生效 + 静态项锁', async () => {
   expect(screen.queryByText('budget.llm.daily')).not.toBeInTheDocument();
   // 缺省值列来自静态快照
   expect(screen.getByText('100')).toBeInTheDocument(); // budget.llm.daily 缺省
-  // 可热更 / 需重启 Tag
-  expect(screen.getByText('需重启')).toBeInTheDocument();
+  // 可热更 / 需重启生效 Tag（C2：静态键保存后变「待重启」Badge）
+  expect(screen.getAllByText('需重启生效').length).toBeGreaterThanOrEqual(2);
   expect(screen.getAllByText('可热更').length).toBeGreaterThanOrEqual(2);
   // 编辑动态项 budget.llm.daily（数值输入框）：清空 → 输入 200 → 失焦保存
   const num = screen.getByTestId('edit-budget.llm.daily');
@@ -89,8 +89,8 @@ test('ParamsTab：动态编辑保存热生效 + 静态项锁', async () => {
   expect(put.body.value).toBe(200);
   // invalidate 后编辑器重挂载显示新值 200（key=value 强制刷新）
   await waitFor(() => expect(num).toHaveValue('200'));
-  // 数字型动态项共 5 个（4 个 config 重试/超时 + budget.llm.daily），静态项无输入框
-  expect(screen.getAllByRole('spinbutton').length).toBe(5);
+  // 数字型可编辑项共 29 个（C2 全量键 fixture），只读项无输入框
+  expect(screen.getAllByRole('spinbutton').length).toBe(29);
 }, 20_000);
 
 // ② UsersTab：创建 Modal（用户名/角色 5 选/密码 ≥8 位）→ POST body；

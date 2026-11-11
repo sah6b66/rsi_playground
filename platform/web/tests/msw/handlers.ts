@@ -757,6 +757,8 @@ handlers.push(...resourcesHandlers);
 // 请求捕获（settings/suts 测试断言用）
 export const t7Requests: Record<string, unknown[]> = {
   settingPut: [],
+  llmProviderPut: [],
+  restartPost: [],
   userCreate: [],
   userUpdate: [],
   userResetPassword: [],
@@ -768,20 +770,73 @@ export const t7Requests: Record<string, unknown[]> = {
   fileCreate: [],
 };
 
-// system.py SettingItem 形态：{path, value, source, mutable}（静态 → PUT 409）
-type SettingRow = { path: string; value: unknown; source: string; mutable: boolean };
-// 与后端 deps.py default_stores["settings"] 键清单一致（8 项）
+// system.py SettingItem 形态：{path, value, source, mutable, pending_restart}
+type SettingRow = {
+  path: string;
+  value: unknown;
+  source: string;
+  mutable: boolean;
+  pending_restart?: boolean;
+};
+// 与后端 rsi/api/deps.py default_stores 用户级键清单一致（C2 三层模型）
 const baseSettings = (): SettingRow[] => [
+  // 动态热更键（4）+ 运行时键
+  { path: 'carrier.task_timeout_s', value: 1800, source: 'config', mutable: true },
+  { path: 'carrier.max_instances_per_host', value: 10, source: 'config', mutable: true },
+  { path: 'logging.level', value: 'info', source: 'config', mutable: true },
+  { path: 'llm.defaults.judge.model', value: 'claude-sonnet-4-6', source: 'config', mutable: true },
+  { path: 'budget.llm.daily', value: 100, source: 'runtime', mutable: true },
+  // 静态键（保存后标 pending_restart）
   { path: 'sandbox.build_retry', value: 2, source: 'config', mutable: true },
   { path: 'sandbox.ready_timeout_s', value: 600, source: 'config', mutable: true },
   { path: 'judge.det_timeout_s', value: 120, source: 'config', mutable: true },
   { path: 'judge.llm_retry', value: 2, source: 'config', mutable: true },
-  { path: 'logging.level', value: 'info', source: 'config', mutable: true },
-  { path: 'judge.llm.model', value: 'default', source: 'config', mutable: true },
-  { path: 'budget.llm.daily', value: 100, source: 'runtime', mutable: true },
+  { path: 'judge.pairwise_enabled', value: true, source: 'config', mutable: true },
+  { path: 'judge.llm.model', value: 'claude-sonnet-4-6', source: 'config', mutable: true },
+  { path: 'llm.cassette_mode', value: 'replay', source: 'config', mutable: true },
+  { path: 'llm.max_concurrent_calls', value: 4, source: 'config', mutable: true },
+  { path: 'llm.defaults.judge.temperature', value: 0, source: 'config', mutable: true },
+  { path: 'llm.defaults.attribution.model', value: '', source: 'config', mutable: true },
+  { path: 'llm.defaults.attribution.temperature', value: null, source: 'config', mutable: true },
+  { path: 'llm.defaults.hypothesis.model', value: '', source: 'config', mutable: true },
+  { path: 'llm.defaults.hypothesis.temperature', value: null, source: 'config', mutable: true },
+  { path: 'llm.defaults.critic.model', value: '', source: 'config', mutable: true },
+  { path: 'llm.defaults.critic.temperature', value: null, source: 'config', mutable: true },
+  { path: 'logging.retention_days', value: 30, source: 'config', mutable: true },
+  { path: 'logging.error_split', value: true, source: 'config', mutable: true },
+  { path: 'server.host', value: '0.0.0.0', source: 'config', mutable: true },
+  { path: 'server.port', value: 8000, source: 'config', mutable: true },
+  { path: 'database.url', value: 'sqlite:///platform.db', source: 'config', mutable: true },
+  { path: 'seed.master', value: 20261102, source: 'config', mutable: true },
+  { path: 'optimizer.critic_max_repair_rounds', value: 5, source: 'config', mutable: true },
+  { path: 'optimizer.sft.no_gain_rounds', value: 5, source: 'config', mutable: true },
+  { path: 'optimizer.sft.min_samples', value: 50, source: 'config', mutable: true },
+  { path: 'decision.alpha', value: 0.05, source: 'config', mutable: true },
+  { path: 'decision.noise.k_repeats', value: 3, source: 'config', mutable: true },
+  { path: 'decision.noise.factor', value: 1.96, source: 'config', mutable: true },
+  { path: 'decision.no_gain_rounds_default', value: 5, source: 'config', mutable: true },
+  { path: 'orchestrator.max_parallel_batches', value: 2, source: 'config', mutable: true },
+  { path: 'orchestrator.checkpoint_interval_s', value: 5, source: 'config', mutable: true },
+  { path: 'orchestrator.health_monitor_interval_s', value: 30, source: 'config', mutable: true },
+  { path: 'orchestrator.budget.iteration_default.max_tokens', value: 50000000, source: 'config', mutable: true },
+  { path: 'orchestrator.budget.iteration_default.max_wall_hours', value: 8, source: 'config', mutable: true },
+  { path: 'orchestrator.budget.iteration_default.max_cost_usd', value: 200, source: 'config', mutable: true },
+  { path: 'orchestrator.budget.global_.max_tokens', value: 100000000, source: 'config', mutable: true },
+  { path: 'orchestrator.budget.global_.max_wall_hours', value: 0, source: 'config', mutable: true },
+  { path: 'orchestrator.budget.global_.max_cost_usd', value: 400, source: 'config', mutable: true },
+  { path: 'tracing.redact.enabled', value: true, source: 'config', mutable: true },
+  { path: 'tracing.archive.hot_days', value: 90, source: 'config', mutable: true },
   { path: 'platform.static_item', value: 'static', source: 'runtime', mutable: false },
 ];
 let settingsData: SettingRow[];
+// 与前端 ParamsTab HOT_KEYS / 后端 _DYNAMIC_PATHS 同构
+const HOT_SETTING_KEYS = new Set([
+  'carrier.task_timeout_s',
+  'carrier.max_instances_per_host',
+  'logging.level',
+  'llm.defaults.judge.model',
+  'budget.llm.daily',
+]);
 export const resetT7Settings = () => {
   settingsData = baseSettings();
 };
@@ -843,7 +898,8 @@ export const settingsHandlers = [
   http.get('/api/v1/system/settings', () =>
     HttpResponse.json({ items: settingsData }),
   ),
-  http.put(/\/api\/v1\/system\/settings\/.+$/, async ({ request }) => {
+  // 注意负向前瞻：llm/providers/* 走下方专用 handler
+  http.put(/\/api\/v1\/system\/settings\/(?!llm\/providers\/).+$/, async ({ request }) => {
     const path = decodeURIComponent(
       new URL(request.url).pathname.replace('/api/v1/system/settings/', ''),
     );
@@ -868,7 +924,36 @@ export const settingsHandlers = [
       );
     }
     item.value = body.value;
+    // 与后端一致：非热更键保存后标 pending_restart（C2）
+    if (!HOT_SETTING_KEYS.has(path)) item.pending_restart = true;
+    else item.pending_restart = false;
     return HttpResponse.json({ ...item });
+  }),
+  // C2：LLM 提供商半脱敏配置 + 平台重启
+  http.get('/api/v1/system/settings/llm', () =>
+    HttpResponse.json({
+      providers: [
+        { name: 'anthropic', api_key_masked: '***xyz', base_url: '' },
+        { name: 'openai_compat', api_key_masked: '', base_url: 'http://llm-gw:8000/v1' },
+      ],
+    }),
+  ),
+  http.put(/\/api\/v1\/system\/settings\/llm\/providers\/.+$/, async ({ request }) => {
+    const name = decodeURIComponent(
+      new URL(request.url).pathname.split('/').pop() ?? '',
+    );
+    const body = (await request.json()) as { api_key?: string; base_url?: string };
+    t7Requests.llmProviderPut.push({ name, body });
+    const masked = body.api_key ? `***${body.api_key.slice(-3)}` : '***xyz';
+    return HttpResponse.json({
+      name,
+      api_key_masked: masked,
+      base_url: body.base_url ?? '',
+    });
+  }),
+  http.post('/api/v1/system:restart', () => {
+    t7Requests.restartPost.push({});
+    return HttpResponse.json({ status: 'restarting' }, { status: 202 });
   }),
   http.get('/api/v1/system/freeze', () => HttpResponse.json({ frozen: false })),
   http.get('/api/v1/system/logs', ({ request }) => {

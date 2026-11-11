@@ -237,7 +237,57 @@ async def test_restart_requires_admin(client):
     assert resp.status_code == 403
 
 
-# ── 6. budget key rename ─────────────────────────────────────────────────
+# ── 6. C2: LLM provider editor endpoints ─────────────────────────────────
+
+
+async def test_llm_config_masked(client):
+    h = await _admin(client)
+    services = client._services
+    services["settings"].llm.providers["anthropic"].api_key = "sk-abcdef123"
+    resp = await client.get("/api/v1/system/settings/llm", headers=h)
+    assert resp.status_code == 200, resp.text
+    providers = {p["name"]: p for p in resp.json()["providers"]}
+    assert providers["anthropic"]["api_key_masked"] == "***123"
+    # full key never leaves the server
+    assert "sk-abcdef123" not in resp.text
+
+
+async def test_llm_provider_put_persists_and_masks(client, tmp_path):
+    h = await _admin(client)
+    resp = await client.put(
+        "/api/v1/system/settings/llm/providers/openai_compat",
+        json={"api_key": "sk-gw-98765", "base_url": "http://llm-gw:8000/v1"},
+        headers=h,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["api_key_masked"] == "***765"
+    assert body["base_url"] == "http://llm-gw:8000/v1"
+    assert "sk-gw-98765" not in resp.text
+    # live Settings object updated
+    settings = client._services["settings"]
+    assert settings.llm.providers["openai_compat"].api_key == "sk-gw-98765"
+    # whole providers section persisted (other providers preserved)
+    doc = yaml.safe_load((tmp_path / "settings.yaml").read_text(encoding="utf-8"))
+    assert doc["llm"]["providers"]["openai_compat"]["api_key"] == "sk-gw-98765"
+    assert doc["llm"]["providers"]["anthropic"]["api_key"] == ""
+    # masked GET reflects the new value
+    resp = await client.get("/api/v1/system/settings/llm", headers=h)
+    providers = {p["name"]: p for p in resp.json()["providers"]}
+    assert providers["openai_compat"]["api_key_masked"] == "***765"
+
+
+async def test_llm_provider_put_unknown_provider(client):
+    h = await _admin(client)
+    resp = await client.put(
+        "/api/v1/system/settings/llm/providers/nope",
+        json={"base_url": "x"},
+        headers=h,
+    )
+    assert resp.status_code == 409
+
+
+# ── 7. budget key rename ─────────────────────────────────────────────────
 
 
 async def test_budget_key_names(monkeypatch, tmp_path):

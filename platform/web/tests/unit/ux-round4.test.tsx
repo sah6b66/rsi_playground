@@ -112,10 +112,12 @@ test('向导：模式 Radio 中文描述 + 裁判模型提交体', async () => {
   expect(screen.getByText(/半自动模式/)).toBeInTheDocument();
   expect(screen.getByText(/全自动模式（未开放）/)).toBeInTheDocument();
   expect(screen.getByText(/四步均由人工/)).toBeInTheDocument();
-  // 裁判模型：fixture judge.llm.model=default → 选项 default
+  // 裁判模型：fixture judge.llm.model=claude-sonnet-4-6 → 选项同值（C2 fixture 更新）
   await userEvent.click(screen.getByRole('combobox', { name: '裁判模型' }));
   await userEvent.click(
-    await screen.findByText('default', { selector: '.ant-select-item-option-content' }),
+    await screen.findByText('claude-sonnet-4-6', {
+      selector: '.ant-select-item-option-content',
+    }),
   );
   await userEvent.click(screen.getByText('下一步'));
   await userEvent.click(screen.getByRole('button', { name: /提交创建/ }));
@@ -125,7 +127,7 @@ test('向导：模式 Radio 中文描述 + 裁判模型提交体', async () => {
     profile: { judge_model?: string };
   };
   expect(body.mode).toBe('p1');
-  expect(body.profile.judge_model).toBe('default');
+  expect(body.profile.judge_model).toBe('claude-sonnet-4-6');
 }, 60_000);
 
 // ── 5. 参数页：值类型中文 + 适用层级 Tag ──
