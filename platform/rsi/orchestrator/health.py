@@ -1,7 +1,7 @@
 """HealthMonitor — 8-class external dependency monitor (DD-12 §4.7, D-1).
 
 Runs registered checkers (docker/lab/instances/llm/git/db/collector/
-config_api), caches the latest results for ``GET /system/dependencies`` and
+evalset_api/network_prep), caches the latest results for ``GET /system/dependencies`` and
 (optionally) polls them on an interval in a background asyncio task,
 publishing ``system.alert`` events on up<->down state transitions.
 
@@ -347,24 +347,53 @@ def _mk_collector(services: dict) -> Checker:
     return check
 
 
-def _mk_config_api(services: dict) -> Checker:
-    sandbox = services.get("sandbox_service")
-    config_api = getattr(sandbox, "config_api", None) if sandbox else None
+def _probe_url(name: str, base_url: str) -> HealthResult:
+    """Liveness probe for a system-level HTTP API (ADR-27 D5).
+
+    GET ``{url}/health`` first, fall back to ``{url}/``; any HTTP response
+    counts as reachable (ok=True), transport errors count as down.
+    """
+    import httpx
+
+    url = (base_url or "").rstrip("/")
+    for path in ("/health", "/"):
+        try:
+            with httpx.Client(timeout=3.0) as client:
+                resp = client.get(f"{url}{path}")
+        except Exception as exc:  # noqa: BLE001 - offline safety
+            return HealthResult(name, ok=False, detail=type(exc).__name__)
+        # /health non-2xx → try the root; any response from "/" still
+        # proves the service is up
+        if resp.status_code < 400 or path == "/":
+            return HealthResult(
+                name, ok=True, detail=f"HTTP {resp.status_code} ({path})"
+            )
+    return HealthResult(name, ok=False, detail="unreachable")  # pragma: no cover
+    return HealthResult(name, ok=False, detail="unreachable")  # pragma: no cover
+
+
+def _mk_evalset_api(services: dict) -> Checker:
+    """D5: evalset_api — probe ``settings.evalset_api.url`` (ADR-27)."""
+    fetcher = services.get("evalset_fetcher")
+    base_url = (getattr(fetcher, "base_url", "") or "") if fetcher else ""
 
     def check() -> HealthResult:
-        if config_api is None:
-            return _not_configured("config_api")
-        try:
-            endpoints = getattr(config_api, "endpoints", None)
-            if not endpoints:
-                return HealthResult(
-                    "config_api", ok=None, detail="no config APIs declared"
-                )
-            return HealthResult(
-                "config_api", ok=True, detail=f"{len(endpoints)} endpoints"
-            )
-        except Exception as exc:  # noqa: BLE001
-            return HealthResult("config_api", ok=False, detail=type(exc).__name__)
+        if not base_url:
+            return _not_configured("evalset_api")
+        return _probe_url("evalset_api", base_url)
+
+    return check
+
+
+def _mk_network_prep(services: dict) -> Checker:
+    """D5: network_prep — probe ``settings.network_prep_api.url`` (ADR-27)."""
+    netprep = services.get("netprep")
+    base_url = (getattr(netprep, "base_url", "") or "") if netprep else ""
+
+    def check() -> HealthResult:
+        if not base_url:
+            return _not_configured("network_prep")
+        return _probe_url("network_prep", base_url)
 
     return check
 
@@ -414,7 +443,8 @@ def build_checkers(services: dict[str, Any]) -> dict[str, Checker]:
         "git": _mk_git(services),
         "db": _mk_db(services),
         "collector": _mk_collector(services),
-        "config_api": _mk_config_api(services),
+        "evalset_api": _mk_evalset_api(services),
+        "network_prep": _mk_network_prep(services),
     }
     checkers.update(_mk_platform_checkers(services))
     return checkers
