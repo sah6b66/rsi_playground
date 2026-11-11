@@ -5,31 +5,38 @@
 ## 快速开始
 
 ```bash
-# 1. 前置条件：Python 3.12+ / uv / Docker Desktop
-# 2. 克隆并安装
+# 1. 前置条件：uv（Python 3.12 由其托管）/ Git；可选 Node 20+（WEB 前端）、Docker（真实 SUT）
+# 2. 克隆并安装（dev extra 含 pytest，裸 uv sync 会移除它）
 git clone https://github.com/sah6b66/rsi_playground.git
 cd rsi_playground
+cd platform && uv sync --extra dev
 
-# 3. 安装依赖
-cd platform && uv sync
-
-# 4. 复制配置样例并修改（三层配置模型：用户 yaml + 内部 yaml + 环境变量）
-cp ../examples/settings.yaml.example ../var/settings.yaml
-cp ../examples/settings-internal.yaml.example ../var/settings-internal.yaml   # 可选（内部项通常无需修改）
+# 3. 准备配置（三层配置模型：环境变量 > 用户 yaml > 内部 yaml）
+mkdir -p var
+cp ../examples/settings.yaml.example var/settings.yaml
+# 可选：cp ../examples/settings-internal.yaml.example var/settings-internal.yaml
 # 编辑 var/settings.yaml（用户级，WEB 参数页亦可在线编辑）：
 #   llm.providers.anthropic.api_key   → 模型密钥（内网明文直配）
 #   llm.defaults.judge.model          → 裁判模型名称
+# 注意：配置读取 <RSI_HOME>/settings.yaml，RSI_HOME 默认 ./var（相对启动 CWD，
+# 即 platform/var/）。放在仓库根的 settings.yaml 不会生效。
 
-# 5. 设置环境变量（部署级：安全密钥 + 数据根目录）
+# 4. 设置环境变量（部署级安全密钥）
 export RSI_JWT_SECRET=$(openssl rand -hex 32)
 export RSI_MASTER_KEY=$(openssl rand -base64 32)
-export RSI_HOME=/path/to/var   # 数据根目录（默认 ./var；git/storage/logs 均由此派生）
 
-# 6. 启动
+# 5. 首启动初始化（建表 + admin + Git 裸仓，幂等；密码缺省随机生成并打印一次）
+uv run python -m rsi.init
+
+# 6. 构建 WEB 前端（可选；跳过则只有 API）
+cd web && npm install && npm run build && cd ..
+
+# 7. 启动
 uv run uvicorn rsi.api.app:create_app --factory --port 8000
 
-# 7. 访问
-#   API: http://localhost:8000/api/v1/docs (Swagger)
+# 8. 访问
+#   Swagger:  http://localhost:8000/docs
+#   WEB UI:   http://localhost:8000/        （已构建前端时）
 #   健康检查: http://localhost:8000/api/v1/system/health
 ```
 
@@ -68,7 +75,7 @@ rsi_playground/
 │   │   ├── orchestrator/    # 编排引擎（批次/迭代/预算/断点/事件）
 │   │   ├── instrumentor/    # 插桩流水线
 │   │   └── api/             # 19 组 REST Router + SSE/WS
-│   └── tests/               # 655+ 测试（全离线可跑）
+│   └── tests/               # 1350+ 测试（全离线可跑）
 └── open_source/             # 参考实现（DGM/RRSI/OpenEvolve，仅阅读）
 ```
 
