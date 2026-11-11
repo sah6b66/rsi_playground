@@ -56,6 +56,7 @@ from rsi.sandbox.backends.base import SandboxBackend
 from rsi.sandbox.backends.fake import FakeSandboxBackend
 from rsi.sandbox.backends.prebuilt import PrebuiltBackend
 from rsi.sandbox.config_api import ConfigApiCaller
+from rsi.sandbox.evalset_fetcher import EvalsetFetcher
 from rsi.sandbox.platform_probe import PlatformProbe
 from rsi.sandbox.readiness import ReadinessChecker
 from rsi.sandbox.scheduler import LabScheduler
@@ -426,6 +427,9 @@ def build_services(
         "net_policy": net_policy,
         # sandbox
         "sandbox_service": sandbox_service,
+        # ADR-27 D3: online evalset fetcher (empty url still constructed —
+        # fetch fails then; probes/monitoring can reference the instance)
+        "evalset_fetcher": EvalsetFetcher(settings.evalset_api.url, timeout_s=30),
         "ssh_pool": ssh_pool,
         # T4: platform URL probes per backend key (health / doctor share these)
         "platform_probes": platform_probes,

@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 import yaml
-from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from rsi.api.deps import audit, get_current_user, get_store, require_perms
@@ -194,7 +194,51 @@ async def create_evalset(
     return _out(es)
 
 
+# ── /online/{name}（ADR-27 D3：在线评估集预览，TU-039）──────────────────────
+
+
+class OnlineTaskSummary(BaseModel):
+    task_id: str
+    title: str = ""
+    network_env_name: str
+
+
+class OnlineEvalsetPreview(BaseModel):
+    name: str
+    task_count: int
+    tasks: list[OnlineTaskSummary]
+    api_url: str
+
+
+@router.get("/online/{name}", response_model=OnlineEvalsetPreview)
+async def fetch_online_evalset(
+    name: str,
+    request: Request,
+    user: Claims = Depends(get_current_user),
+) -> OnlineEvalsetPreview:
+    """在线获取评估集预览（ADR-27）——任务列表摘要，不含期望答案详情."""
+    fetcher = request.app.state.services.get("evalset_fetcher")
+    if fetcher is None or not getattr(fetcher, "base_url", ""):
+        raise ConflictError(
+            "评估集在线 API 未配置，请先在系统参数中设置 evalset_api.url",
+            context={"name": name},
+        )
+    tasks = await fetcher.fetch(name)
+    return OnlineEvalsetPreview(
+        name=name,
+        task_count=len(tasks),
+        tasks=[
+            OnlineTaskSummary(
+                task_id=t.task_id, title=t.title, network_env_name=t.network_env.name
+            )
+            for t in tasks
+        ],
+        api_url=f"{fetcher.base_url}/evalsets/{name}",
+    )
+
+
 @router.get("/{evalset_id}", response_model=EvalsetOut)
+
 async def get_evalset(
     evalset_id: str,
     user: Claims = Depends(get_current_user),
