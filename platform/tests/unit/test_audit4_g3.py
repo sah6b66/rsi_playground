@@ -203,6 +203,13 @@ class TestRunsReadDbFallback:
         from rsi.orchestrator.batch import BatchRunner
 
         services = build_services()
+        # F1 修复后 database 默认落 <RSI_HOME>/platform.db（全新空文件）；
+        # 生产建表入口是 python -m rsi.init，build_services 不建表——
+        # 测试自足建表，避免依赖 CWD 残留库（曾经的隐性串扰源）。
+        from rsi.db import create_engine, init_db
+        from rsi.settings import Settings
+
+        init_db(create_engine(Settings().database_url), "admin", "")
         auth: AuthService = services["auth_service"]
         token, _ = auth.login(
             "u-admin", "admin", auth.hash_password("pw"), "pw"

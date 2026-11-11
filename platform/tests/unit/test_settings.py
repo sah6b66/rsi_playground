@@ -20,7 +20,8 @@ def test_default_settings(monkeypatch):
     s = Settings()
     assert s.server.port == 8000
     assert s.server.host == "0.0.0.0"
-    assert s.database.url.startswith("sqlite")
+    assert s.database.url == ""
+    assert s.database_url.startswith("sqlite:///")  # <RSI_HOME>/platform.db
     assert s.git.repo.bare is True
     assert s.git.author.name == "rsi-platform"
     # C1: security section removed (deployment env tier); scheduler stays
