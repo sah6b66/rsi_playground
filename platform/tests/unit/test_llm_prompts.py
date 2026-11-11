@@ -29,12 +29,12 @@ class TestPromptLibrary:
     def test_fallback_when_no_template(self):
         lib = PromptLibrary({"unrelated/x.v1": "t"})
         out = lib.render("judge", "score", {"k1": "v1", "k2": 2})
-        assert out.startswith("Component: judge, Task: score")
+        assert out.startswith("组件: judge，任务: score")
         assert "k1: v1" in out and "k2: 2" in out
 
     def test_empty_library_renders_fallback(self):
         lib = PromptLibrary()
-        assert "Component: critic" in lib.render("critic", "review", {"a": 1})
+        assert "组件: critic" in lib.render("critic", "review", {"a": 1})
 
 
 class TestAccountant:

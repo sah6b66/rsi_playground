@@ -34,36 +34,54 @@ class TestFreezeCrlfNormalization:
         against a manifest computed from the LF bytes (Windows autocrlf)."""
         from rsi.judge.rules import freeze_check
 
-        root = tmp_path / "judge"
-        (root / "rules").mkdir(parents=True)
-        (root / "prompts").mkdir(parents=True)
+        rules_root = tmp_path / "judge"
+        prompts_root = tmp_path / "prompts_judge"
+        (rules_root / "rules").mkdir(parents=True)
+        prompts_root.mkdir()
         # write LF versions, hash them into a manifest ...
         lf_files = {
-            "rules/safety_rules.yaml": "a: 1\nb: 2\n",
-            "prompts/root_cause.v1.md": "line1\nline2\n",
+            (rules_root, "rules/safety_rules.yaml"): "a: 1\nb: 2\n",
+            (prompts_root, "root_cause.v1.md"): "line1\nline2\n",
         }
-        for rel, text in lf_files.items():
-            (root / rel).write_bytes(text.encode("utf-8"))
-        manifest = freeze_check.write_manifest(root=root)
+        for (base, rel), text in lf_files.items():
+            (base / rel).write_bytes(text.encode("utf-8"))
+        manifest = freeze_check.write_manifest(
+            rules_root=rules_root, prompts_root=prompts_root
+        )
         assert manifest
-        assert freeze_check.verify(manifest_path=root / "rules" / "freeze.manifest", root=root)
+        assert freeze_check.verify(
+            manifest_path=rules_root / "rules" / "freeze.manifest",
+            rules_root=rules_root,
+            prompts_root=prompts_root,
+        )
         # ... then re-materialize the same content with CRLF: verify must
         # still PASS (hash computed after CRLF->LF normalization).
-        for rel, text in lf_files.items():
-            (root / rel).write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
-        assert freeze_check.verify(manifest_path=root / "rules" / "freeze.manifest", root=root)
+        for (base, rel), text in lf_files.items():
+            (base / rel).write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+        assert freeze_check.verify(
+            manifest_path=rules_root / "rules" / "freeze.manifest",
+            rules_root=rules_root,
+            prompts_root=prompts_root,
+        )
 
     def test_write_manifest_and_verify_share_normalization(self, tmp_path: Path):
         """write_manifest on CRLF files and verify on the same CRLF files
         agree (both go through the same _normalized_sha256)."""
         from rsi.judge.rules import freeze_check
 
-        root = tmp_path
-        (root / "rules").mkdir(parents=True)
-        (root / "prompts").mkdir()
-        (root / "rules" / "safety_rules.yaml").write_bytes(b"x: 1\r\ny: 2\r\n")
-        manifest = freeze_check.write_manifest(root=root)
-        assert freeze_check.verify(manifest_path=root / "rules" / "freeze.manifest", root=root)
+        rules_root = tmp_path / "judge"
+        prompts_root = tmp_path / "prompts_judge"
+        (rules_root / "rules").mkdir(parents=True)
+        prompts_root.mkdir()
+        (rules_root / "rules" / "safety_rules.yaml").write_bytes(b"x: 1\r\ny: 2\r\n")
+        manifest = freeze_check.write_manifest(
+            rules_root=rules_root, prompts_root=prompts_root
+        )
+        assert freeze_check.verify(
+            manifest_path=rules_root / "rules" / "freeze.manifest",
+            rules_root=rules_root,
+            prompts_root=prompts_root,
+        )
 
     def test_repo_manifest_verifies(self):
         from rsi.judge.rules.freeze_check import verify
@@ -73,15 +91,18 @@ class TestFreezeCrlfNormalization:
     def test_content_change_still_fails(self, tmp_path: Path):
         from rsi.judge.rules import freeze_check
 
-        root = tmp_path
-        (root / "rules").mkdir(parents=True)
-        (root / "prompts").mkdir()
-        f = root / "rules" / "safety_rules.yaml"
+        rules_root = tmp_path / "judge"
+        prompts_root = tmp_path / "prompts_judge"
+        (rules_root / "rules").mkdir(parents=True)
+        prompts_root.mkdir()
+        f = rules_root / "rules" / "safety_rules.yaml"
         f.write_bytes(b"a: 1\n")
-        freeze_check.write_manifest(root=root)
+        freeze_check.write_manifest(rules_root=rules_root, prompts_root=prompts_root)
         f.write_bytes(b"a: 2\n")  # real tamper, not just line endings
         assert not freeze_check.verify(
-            manifest_path=root / "rules" / "freeze.manifest", root=root
+            manifest_path=rules_root / "rules" / "freeze.manifest",
+            rules_root=rules_root,
+            prompts_root=prompts_root,
         )
 
 
@@ -156,7 +177,11 @@ class TestBlindJudgePrompt:
         from rsi.llm.prompts import PromptLibrary
 
         lib = PromptLibrary(
-            template_dir=Path(__file__).resolve().parents[2] / "rsi" / "judge" / "prompts",
+            template_dir=Path(__file__).resolve().parents[2]
+            / "rsi"
+            / "llm"
+            / "prompts"
+            / "judge",
             component="judge",
         )
         for name, vars_ in (
