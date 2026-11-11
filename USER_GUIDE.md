@@ -11,8 +11,8 @@
 | 3 | 仿真后端 | ENSP Pro（Windows VM）或 PNETLab（Linux VM）或两者 | [DEPLOYMENT.md](DEPLOYMENT.md) |
 | 4 | SSH 互通 | 主节点 → 各仿真后端/远端 Docker 主机 | [DEPLOYMENT.md](DEPLOYMENT.md) |
 | 5 | 网段规划 | 各节点网段全网唯一 | [DEPLOYMENT.md](DEPLOYMENT.md#网络规划) |
-| 6 | LLM API Key | Anthropic / OpenAI 兼容端点 | [INSTALL.md](INSTALL.md#4-设置环境变量) |
-| 7 | 密钥 | RSI_JWT_SECRET + RSI_MASTER_KEY | [INSTALL.md](INSTALL.md#4-设置环境变量) |
+| 6 | LLM API Key | Anthropic / OpenAI 兼容端点（settings.yaml `llm.providers.*.api_key`） | [INSTALL.md](INSTALL.md) |
+| 7 | 密钥 | RSI_JWT_SECRET + RSI_MASTER_KEY | [INSTALL.md](INSTALL.md) |
 
 ### 文件准备清单
 
@@ -29,11 +29,12 @@
 ### 1. 登录
 
 ```bash
-# 获取 Token
+# 获取 Token（admin 密码来自安装时的 python -m rsi.init：
+# --password 参数、RSI_ADMIN_PASSWORD 或随机生成打印的那一次）
 curl -X POST http://localhost:8000/api/v1/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "admin"}'
-# → {"token": "eyJ...", "expires_at": "2026-11-05T10:00:00Z"}
+  -d '{"username": "admin", "password": "<你的密码>"}'
+# → {"token": "eyJ...", "expires_at": 1762339200, "user_id": "...", "role": "admin"}
 
 # 后续请求携带
 export TOKEN="eyJ..."
@@ -80,12 +81,31 @@ curl -X POST http://localhost:8000/api/v1/evalsets/{evalset_id}:freeze \
 
 ### 5. 创建优化配置方案
 
+`POST /profiles` 接收 JSON body（`examples/profiles/bgp-accuracy-first.yaml`
+是带注释的 YAML 样例，供阅读/复制，不能直接 `-d @` 发送——需按下例转成 JSON，
+或经 WEB 优化页面导入）：
+
 ```bash
-# 导入 examples/profiles/bgp-accuracy-first.yaml 的内容
 curl -X POST http://localhost:8000/api/v1/profiles \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d @examples/profiles/bgp-accuracy-first.yaml
+  -d '{
+    "name": "bgp-accuracy-first",
+    "evalsets": {
+      "iterate": "bgp-faults-iterate",
+      "holdout": "bgp-faults-holdout",
+      "smoke": "core-smoke"
+    },
+    "goals": [
+      {"metric": "root_cause_accuracy", "direction": "max", "weight": 0.7},
+      {"metric": "avg_tokens", "direction": "min", "weight": 0.3}
+    ],
+    "enabled_targets": ["system_prompt", "skills", "knowledge", "model_config"],
+    "guards": {"missed_check_worsen": "reject", "safety_any_worsen": "reject", "high_risk_worsen": "reject"},
+    "stop": {"max_rounds": 20, "no_gain_rounds": 5},
+    "budget": {"max_tokens": 50000000, "max_wall_hours": 8},
+    "llm_compare": {"candidates": ["claude-sonnet-4-6", "glm-5"]}
+  }'
 ```
 
 ### 6. 触发评测批次
@@ -97,10 +117,10 @@ curl -X POST http://localhost:8000/api/v1/batches \
   -d '{
     "evalset_id": "bgp-faults-holdout",
     "sut_id": "sut-...",
-    "purpose": "baseline_eval",
-    "permission": "read-only"
+    "purpose": "iterate"
   }'
-# → 201 {"batch_id": "batch-..."}
+# → 201 {"id": "batch-...", ...}
+# purpose 可选值：iterate（日常迭代）| holdout（主评测）| smoke（冒烟）| compare（对比）
 ```
 
 ### 7. 查看批次进度
@@ -108,7 +128,7 @@ curl -X POST http://localhost:8000/api/v1/batches \
 ```bash
 curl http://localhost:8000/api/v1/batches/{batch_id} \
   -H "Authorization: Bearer $TOKEN"
-# → {"batch": {...}, "progress": {"total": 10, "done": 3, "failed": 0, "cached": 2}}
+# → {"id": "batch-...", "status": "...", "progress": {"total": 10, "done": 3}, ...}
 ```
 
 ### 8. 启动优化迭代
@@ -131,7 +151,7 @@ curl -X POST http://localhost:8000/api/v1/iterations \
 
 P1 模式下，WEB 优化页面会显示四个人工门：
 - **门 ① 方向确认**：查看归因报告 → 勾选要攻克的失败簇
-- **门 ② 假设提交**：编辑改进方案（LLM 已起草草稿）
+- **门 ② 假设提交**：表单人工填写改进假设（单点修改 + 预期收益；LLM 自动起草属 P1 计划能力，当前未接入）
 - **门 ③ 预审裁决**：查看确定性检查结果 + diff → 通过/拒绝
 - **门 ④ 决策执行**：查看 Selector 建议 → 晋升/回退
 
@@ -150,7 +170,7 @@ P1 模式下，WEB 优化页面会显示四个人工门：
 
 ```yaml
 name: my-env-name                    # 环境名（唯一）
-backend: ensp-pro                    # ensp-pro | pnetlab | containerlab | fake
+backend: ensp-pro                    # ensp-pro | pnetlab | physical | containerlab | fake
 devices:
   - name: R1                        # 设备名（全局唯一）
     type: vrp                       # vrp | ce | ios
@@ -189,7 +209,7 @@ ssh_access:
 
 - `task_id` 格式：`<fault|inspection|cutover>/<现象>-<两位序号>`（如 `fault/bgp-peer-down-01`）
 - 任务中设备以**名称**引用（不含 IP）
-- `prepare` 支持 `exec_cli`（直接命令）和 `call_api`（外部 API）两种方式
+- `prepare` 仅支持 `exec_cli`（call_api 已随 ADR-27 删除；API 模式的环境准备走网络准备 API）
 - `root_cause.expected` 是自然语言描述（LLM 语义比对），不是关键词
 - 同一 evalset 的所有任务共享同一个 env.yaml 环境
 
@@ -220,8 +240,8 @@ ssh_access:
 ```dockerfile
 FROM node:20-slim
 
-# 安装 OpenCode CLI
-RUN npm install -g opencode
+# 安装 OpenCode CLI（npm 包名是 opencode-ai，可执行文件叫 opencode）
+RUN npm install -g opencode-ai
 
 # 安装 prompt-logger 插件
 RUN opencode plugin add opencode-prompt-logger
@@ -237,9 +257,10 @@ ENTRYPOINT ["opencode"]
 
 | 问题 | 排查 |
 |------|------|
-| 批次一直 building | 检查仿真后端 SSH 可达：`GET /api/v1/sandbox/backends` |
+| 登录 401 | 未初始化或密码不对：`uv run python -m rsi.init`；已有 admin 不会被覆盖，可在 WEB 参数→用户页改密 |
+| 批次一直 building | 检查仿真后端可达：`GET /api/v1/sandbox/backends`（预建模式为 URL 探活） |
 | SUT 容器启动失败 | 检查 Docker：`GET /api/v1/system/dependencies` 看 docker 状态 |
-| LLM 调用失败 | 检查 API Key 环境变量 + `GET /api/v1/system/dependencies` 看 llm 状态 |
+| LLM 调用失败 | 检查 settings.yaml 的 `llm.providers.*.api_key` + `GET /api/v1/system/dependencies` 看 llm 状态 |
 | 评测结果全 0 | 查看 `GET /api/v1/runs/{id}/judgment` 的 safety.violations |
 | 迭代一直等待 | P1 模式检查四个人工门是否已提交 |
 | 轨迹为空 | 检查 SUT 容器 /trace/ 目录挂载 + collector 4317/4318 端口 |

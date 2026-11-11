@@ -14,9 +14,11 @@ from pydantic import BaseModel, Field
 
 from rsi.api.deps import audit, require_perms
 from rsi.core.errors import ConflictError, NotFoundError
+from rsi.log import get_logger
 from rsi.security.auth import Claims
 
 router = APIRouter(prefix="/users", tags=["users"])
+logger = get_logger(__name__)
 
 Role = Literal["admin", "agent_engineer", "researcher", "approver", "service"]
 
@@ -34,6 +36,47 @@ class UserUpdate(BaseModel):
 
 class PasswordReset(BaseModel):
     password: str = Field(min_length=8)
+
+
+def _persist_user_row(services: dict, username: str, rec: dict) -> None:
+    """Best-effort upsert of the in-memory user record into ``users``.
+
+    F1: 重启后账号由启动水合从该表恢复——不落库则 API 建的号随进程消失。
+    DB 写失败仅告警（与平台"落库尽力而为"约定一致）。
+    """
+    session_factory = services.get("session_factory")
+    if session_factory is None:
+        return
+    try:
+        from datetime import datetime, timezone
+
+        from sqlalchemy import select as _sa_select
+
+        from rsi.db.tables import User
+
+        with session_factory() as session:
+            row = session.exec(
+                _sa_select(User).where(User.username == username)
+            ).first()
+            disabled = int(bool(rec.get("disabled", False)))
+            if row is None:
+                row = User(
+                    id=rec["user_id"],
+                    username=username,
+                    role=rec["role"],
+                    password_hash=rec.get("password_hash", ""),
+                    disabled=disabled,
+                    created_at=datetime.now(timezone.utc).isoformat(),
+                )
+            else:
+                row.role = rec["role"]
+                row.password_hash = rec.get("password_hash", row.password_hash)
+                row.disabled = disabled
+            session.add(row)
+            session.commit()
+    except Exception as exc:  # noqa: BLE001 - DB 写尽力而为
+        logger.warning("users.persist_failed", username=username,
+                       error=str(exc))
 
 
 class UserOut(BaseModel):
@@ -88,6 +131,7 @@ async def create_user(
         "disabled": False,
     }
     users[body.username] = rec
+    _persist_user_row(services, body.username, rec)
     return UserOut(
         id=rec["user_id"], username=body.username, role=body.role, disabled=False
     )
@@ -109,6 +153,7 @@ async def update_user(
                 rec["role"] = body.role
             if body.disabled is not None:
                 rec["disabled"] = body.disabled
+            _persist_user_row(services, username, rec)
             return Response(status_code=204)
     raise NotFoundError(
         f"user {user_id!r} not found", context={"user_id": user_id}

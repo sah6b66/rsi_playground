@@ -134,6 +134,34 @@ def _master_key(settings: Settings) -> tuple[str, bool]:
     return base64.b64encode(os.urandom(32)).decode(), True
 
 
+def _hydrate_users(session_factory: Callable[[], Any]) -> dict[str, dict]:
+    """Load the ``users`` table into the in-memory auth store (F1).
+
+    Login validates against the in-memory store only — without this
+    hydration a restart locks everyone out, and the admin seeded by
+    ``python -m rsi.init`` would never reach the runtime. Best-effort:
+    a missing/empty table degrades to an empty store with a warning
+    (run ``python -m rsi.init`` first).
+    """
+    users: dict[str, dict] = {}
+    try:
+        from sqlmodel import select
+
+        from rsi.db.tables import User
+
+        with session_factory() as session:
+            for row in session.exec(select(User)).all():
+                users[row.username] = {
+                    "user_id": row.id,
+                    "role": row.role,
+                    "password_hash": row.password_hash or "",
+                    "disabled": bool(row.disabled),
+                }
+    except Exception as exc:  # noqa: BLE001 - offline/未 init 诚实降级
+        logger.warning("users.hydrate_failed", error=str(exc))
+    return users
+
+
 def build_services(
     settings: Settings | None = None,
     session_factory: Callable[[], Any] | None = None,
@@ -472,8 +500,9 @@ def build_services(
         # batch resolver) + N-3 noise-calibration bridge factory
         "stores": stores,
         "noise_run_batch_fn": noise_run_batch_fn,
-        # api compatibility (users store for per-request disable checks)
-        "users": {},
+        # api compatibility (users store for per-request disable checks);
+        # F1: 启动时从 users 表水合（init 种子/API 建号的账号重启不丢）
+        "users": _hydrate_users(session_factory),
     }
     health_monitor = HealthMonitor(
         checkers=build_checkers(services),

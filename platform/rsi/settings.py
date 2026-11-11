@@ -291,7 +291,9 @@ class DatabaseSettings(BaseModel):
     """§2 database — P0 SQLite, P1 PostgreSQL."""
 
     model_config = _C
-    url: str = "sqlite:///platform.db"  # concrete form via Settings.database_url
+    # 留空 = 未显式配置 → Settings.database_url 落到 <RSI_HOME>/platform.db
+    # （F1 修复：原字面量默认值永真，导致 DB 落在 CWD 而非数据根目录）
+    url: str = ""
 
 
 class GitRepoSettings(BaseModel):
