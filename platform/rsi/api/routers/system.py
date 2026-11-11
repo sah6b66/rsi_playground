@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import threading
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -35,6 +37,10 @@ class SettingItem(BaseModel):
     value: Any
     source: str
     mutable: bool
+    # C1: user-tier static keys flipped since boot — a restart (POST
+    # /system:restart) is required for services that snapshot the value at
+    # construction time.
+    pending_restart: bool = False
 
 
 class SettingsPage(BaseModel):
@@ -129,7 +135,8 @@ async def get_settings(
         items=[
             SettingItem(path=p, value=v["value"],
                         source=v.get("source", "runtime"),
-                        mutable=v.get("mutable", False))
+                        mutable=v.get("mutable", False),
+                        pending_restart=bool(v.get("pending_restart", False)))
             for p, v in settings.items()
         ]
     )
@@ -193,11 +200,14 @@ async def update_setting(
                 f"setting {path!r} has no backing Settings field",
                 context={"path": path},
             ) from exc
-        # persist the leaf key to settings.yaml (atomic rewrite)
+        # persist the leaf key to settings.yaml (atomic rewrite) and mark
+        # static (non-hot-reload) keys as pending-restart (C1)
         write_settings_section(spath, value)
+        if item.get("restart_required", True):
+            item["pending_restart"] = True
     item["value"] = value
     return SettingItem(path=path, value=item["value"], source="yaml+runtime",
-                       mutable=True)
+                       mutable=True, pending_restart=bool(item.get("pending_restart")))
 
 
 @router.post("/system:stop", response_model=StopState)
@@ -217,6 +227,27 @@ async def stop_on(
             "manual STOP via POST /system:stop\n", encoding="utf-8"
         )
     return StopState(stopped=True)
+
+
+@router.post("/system:restart", status_code=202)
+@audit.audited("system.restart", object_type="system")
+async def restart(
+    request: Request,
+    user: Claims = Depends(require_perms("system:stop")),
+) -> dict:
+    """Restart the platform process (C1): settings.yaml edits flagged
+    ``pending_restart`` only take effect after this.
+
+    write_settings_section is synchronous-atomic, so there is no async
+    flush to await. We log, answer 202, then hard-exit after a 1 s delay
+    (threading.Timer) so the response reaches the client first; the
+    supervisor (systemd / docker restart policy) brings the process back.
+    """
+    from rsi.log import get_logger
+
+    get_logger(__name__).info("restart.requested", actor=str(user.sub))
+    threading.Timer(1.0, lambda: os._exit(0)).start()
+    return {"status": "restarting"}
 
 
 @router.delete("/system:stop", response_model=StopState)

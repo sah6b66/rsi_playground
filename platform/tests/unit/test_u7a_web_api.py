@@ -68,14 +68,17 @@ class TestFullSettings:
         self, tmp_path, monkeypatch
     ):
         """RSI_HOME yaml（数据库/llm 段）→ GET /system/settings 出现
-        database.url / llm.* 等全量键，总数远大于旧的 ~8 键。"""
+        database.url / llm.* 等用户级键（C1 三层配置后为用户级子集，
+        派生路径/内部键/对象页键不再展示）。"""
         monkeypatch.setenv("RSI_HOME", str(tmp_path))
+        from rsi.settings import Settings
+
         (tmp_path / "settings.yaml").write_text(
             "database:\n  url: sqlite:///u7a.db\n"
             "llm:\n  defaults:\n    judge:\n      model: qwen-u7\n",
             encoding="utf-8",
         )
-        app = create_app(make_services())
+        app = create_app(make_services({"settings": Settings()}))
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as c:
@@ -87,21 +90,22 @@ class TestFullSettings:
             # yaml 值生效
             assert by_path["database.url"]["value"] == "sqlite:///u7a.db"
             assert by_path["llm.defaults.judge.model"]["value"] == "qwen-u7"
-            # 全量键集（Settings 全树展平）远大于旧的 ~8 键
-            assert len(by_path) > 80
+            # 用户级键集（C1：~40 键，派生/内部/对象页键不展示）
+            assert 30 <= len(by_path) <= 45
             assert "server.port" in by_path
-            assert "git.repo.path" in by_path
-            # 动态键可写、静态新键只读
+            assert "git.repo.path" not in by_path
+            assert not any(p.startswith("sandbox.backends") for p in by_path)
+            # C1：用户级所有键皆可 PUT（静态键标 pending_restart）
             assert by_path["llm.defaults.judge.model"]["mutable"] is True
-            assert by_path["database.url"]["mutable"] is False
+            assert by_path["database.url"]["mutable"] is True
             assert by_path["judge.llm.model"]["mutable"] is True
-            # 静态键 PUT → 409
             resp = await c.put(
                 "/api/v1/system/settings/database.url",
-                json={"value": "x"},
+                json={"value": "sqlite:///u7a-2.db"},
                 headers=h,
             )
-            assert resp.status_code == 409
+            assert resp.status_code == 200
+            assert resp.json()["pending_restart"] is True
 
     async def test_settings_hot_update_still_works(self, tmp_path, monkeypatch):
         monkeypatch.setenv("RSI_HOME", str(tmp_path))

@@ -98,17 +98,22 @@ def default_stores(settings: Any = None) -> dict[str, Any]:
     keys are exposed read-only (PUT → 409). Entries without
     ``settings_path`` (e.g. ``sse.max_seconds``) stay runtime-only knobs.
     """
-    from rsi.settings import Settings
+    from rsi.settings import Settings, is_user_config_key
 
     settings = settings or Settings()
 
-    # runtime-hot-reloadable Settings leaves (config doc §2 / deps 注释);
-    # everything else from the flattened Settings tree is static (read-only)
-    _MUTABLE_PATHS = {
-        "sandbox.build_retry",
-        "sandbox.ready_timeout_s",
-        "judge.det_timeout_s",
-        "judge.llm_retry",
+    # C1 (config refactor): only user-tier keys (USER_CONFIG_PREFIXES) are
+    # exposed here. Object-page keys (sandbox.backends.*, carrier.hosts.*)
+    # stay in settings.yaml but are managed by their dedicated endpoints;
+    # internal-tier keys (instrumentor/git/scheduler/tracing.collector/…)
+    # are never exposed. Every user key is PUT-able (persisted to
+    # settings.yaml and flagged pending-restart where the value is only
+    # read at service construction).
+    # keys consumed lazily per request/batch (true hot reload); everything
+    # else is snapshot at construction → PUT flags pending_restart
+    _DYNAMIC_PATHS = {
+        "carrier.task_timeout_s",
+        "carrier.max_instances_per_host",
         "logging.level",
         "llm.defaults.judge.model",
     }
@@ -126,11 +131,14 @@ def default_stores(settings: Any = None) -> dict[str, Any]:
 
     settings_store: dict[str, Any] = {}
     for path, value in _flatten(settings.model_dump(mode="json")).items():
+        if not is_user_config_key(path):
+            continue
         settings_store[path] = {
             "value": value,
-            "mutable": path in _MUTABLE_PATHS,
+            "mutable": True,
             "source": "config",
-            **({"settings_path": path} if path in _MUTABLE_PATHS else {}),
+            "settings_path": path,
+            "restart_required": path not in _DYNAMIC_PATHS,
         }
     # display alias → llm.defaults.judge.model in Settings (legacy path)
     settings_store["judge.llm.model"] = {

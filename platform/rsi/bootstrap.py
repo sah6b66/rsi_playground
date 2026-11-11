@@ -76,6 +76,12 @@ logger = get_logger(__name__)
 
 _EPHEMERAL_JWT_SECRET = "rsi-ephemeral-jwt-secret"
 
+# Deployment-tier secrets (C1): fixed env-var names — the security section
+# no longer exists in Settings; jwt_expire_hours is a deployment constant.
+_JWT_SECRET_ENV = "RSI_JWT_SECRET"
+_MASTER_KEY_ENV = "RSI_MASTER_KEY"
+_JWT_EXPIRE_HOURS = 12
+
 
 def _offline_llm_handler(component: str, prompt_name: str, vars: dict) -> str:
     """Deterministic offline handler: valid-schema payloads for the judge."""
@@ -116,14 +122,13 @@ def bootstrap_database(
 
 def _master_key(settings: Settings) -> tuple[str, bool]:
     """(key, ephemeral) — fall back to a random per-process key offline."""
-    env_name = settings.security.master_key_env
-    candidate = os.environ.get(env_name, "")
+    candidate = os.environ.get(_MASTER_KEY_ENV, "")
     if candidate:
         try:
             CredentialStore(candidate)
             return candidate, False
         except Exception:
-            logger.warning("credentials.invalid_master_key", env=env_name)
+            logger.warning("credentials.invalid_master_key", env=_MASTER_KEY_ENV)
     return base64.b64encode(os.urandom(32)).decode(), True
 
 
@@ -146,12 +151,12 @@ def build_services(
     master_key, ephemeral_creds = _master_key(settings)
     credential_store = CredentialStore(master_key)
     credential_resolver = CredentialResolver(store=credential_store)
-    jwt_secret = os.environ.get(settings.security.jwt_secret_env, "") or (
+    jwt_secret = os.environ.get(_JWT_SECRET_ENV, "") or (
         _EPHEMERAL_JWT_SECRET
     )
     auth_service = AuthService(
         secret=jwt_secret,
-        expire_hours=settings.security.jwt_expire_hours,
+        expire_hours=_JWT_EXPIRE_HOURS,
         session_factory=session_factory,
         audit_log=audit_log,
     )

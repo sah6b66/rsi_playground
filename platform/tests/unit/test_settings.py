@@ -23,8 +23,7 @@ def test_default_settings(monkeypatch):
     assert s.database.url.startswith("sqlite")
     assert s.git.repo.bare is True
     assert s.git.author.name == "rsi-platform"
-    assert s.security.jwt_expire_hours == 12
-    assert s.security.jwt_secret_env == "RSI_JWT_SECRET"
+    # C1: security section removed (deployment env tier); scheduler stays
     assert s.scheduler.kind == "asyncio"
     assert s.seed.master == 20261102
     assert s.llm.cassette_mode == "replay"
@@ -99,12 +98,11 @@ def test_rsi_home_path_resolution(monkeypatch, tmp_path):
     monkeypatch.setenv("RSI_HOME", str(tmp_path))
     s = Settings()
     assert s.home == tmp_path
-    # Relative storage paths resolve against RSI_HOME.
-    assert s.storage.traces_dir == tmp_path / "traces"
-    assert s.storage.stop_file == tmp_path / "STOP"
-    # git section paths default under RSI_HOME too.
-    assert s.git.repo.path == tmp_path / "git" / "platform-repo.git"
-    assert s.git.worktrees == tmp_path / "git" / "wt"
+    # C1: paths are derived from RSI_HOME (no longer Settings fields).
+    assert s.traces_dir == tmp_path / "storage" / "traces"
+    assert s.stop_file == tmp_path / "storage" / "STOP"
+    assert s.git_repo_path == tmp_path / "git" / "platform-repo.git"
+    assert s.git_worktrees_dir == tmp_path / "git" / "wt"
 
 
 def test_default_rsi_home(monkeypatch):
@@ -116,13 +114,17 @@ def test_default_rsi_home(monkeypatch):
 
 
 def test_absolute_path_not_rebased(monkeypatch, tmp_path):
+    """C1: storage paths are derived from RSI_HOME; the old
+    RSI_STORAGE__TRACES_DIR env override no longer has a backing field and
+    is silently ignored."""
     _clean_env(monkeypatch)
     from rsi.settings import Settings
 
     monkeypatch.setenv("RSI_HOME", str(tmp_path))
     monkeypatch.setenv("RSI_STORAGE__TRACES_DIR", str(tmp_path / "elsewhere"))
     s = Settings()
-    assert s.storage.traces_dir == tmp_path / "elsewhere"
+    assert not hasattr(s, "storage")
+    assert s.traces_dir == tmp_path / "storage" / "traces"
 
 
 def test_nested_env_override(monkeypatch):

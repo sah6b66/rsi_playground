@@ -1,8 +1,25 @@
-"""Platform settings (config doc §2, RSI-PG-DES-002).
+"""Platform settings — three-tier configuration (config refactor C1).
 
-Pydantic v2 BaseSettings; env var prefix ``RSI_`` with ``__`` nesting
-(e.g. ``RSI_SERVER__PORT``). ``RSI_HOME`` (default ``./var``) is the base
-for resolving relative paths.
+Tiers (highest priority first):
+
+1. **Deployment env vars** — ``RSI_*`` (e.g. ``RSI_SERVER__PORT``) and the
+   deployment secrets ``RSI_JWT_SECRET`` / ``RSI_MASTER_KEY`` / ``RSI_HOME``.
+2. **User config** — ``<RSI_HOME>/settings.yaml`` (~35 user-facing keys,
+   shown by GET /system/settings and editable via PUT; object pages manage
+   ``sandbox.backends`` / ``carrier.hosts`` in the same file).
+3. **Internal config** — ``<RSI_HOME>/settings-internal.yaml`` (operator
+   knobs; may override defaults but never user-yaml or env values).
+4. Field defaults.
+
+Derived filesystem layout (no longer configurable): all platform state
+lives under ``RSI_HOME`` (default ``./var``):
+
+    <home>/git/platform-repo.git   <home>/git/wt
+    <home>/storage/{traces,artifacts,labs,recordings}
+    <home>/logs
+
+``RSI_HOME`` itself is not a Settings field; it is read from the
+environment (deployment tier) and exposed via the ``home`` property.
 """
 
 from __future__ import annotations
@@ -23,6 +40,88 @@ from pydantic_settings import (
 DEFAULT_HOME = "./var"
 
 _C = ConfigDict(extra="ignore", validate_assignment=True)
+
+# ── three-tier key classification ─────────────────────────────────────────
+#
+# USER_CONFIG_PREFIXES: flattened dotted-path prefixes allowed in GET
+# /system/settings (the user-facing settings page). Everything else in the
+# Settings tree is either object-page managed (sandbox.backends.*,
+# carrier.hosts.*) or internal.
+USER_CONFIG_PREFIXES: tuple[str, ...] = (
+    "server.",
+    "database.",
+    # llm.providers.* is deliberately NOT user-page-visible: it carries
+    # api_key credentials in plaintext — configure via settings.yaml / env.
+    "llm.defaults.",
+    "llm.cassette_mode",
+    "llm.max_concurrent_calls",
+    "judge.",
+    "optimizer.",
+    "decision.",
+    "orchestrator.",
+    "carrier.task_timeout_s",
+    "carrier.max_instances_per_host",
+    "sandbox.build_retry",
+    "sandbox.ready_timeout_s",
+    "tracing.redact.enabled",
+    "tracing.archive.hot_days",
+    "logging.level",
+    "logging.retention_days",
+    "logging.error_split",
+    "seed.",
+)
+
+
+def is_user_config_key(path: str) -> bool:
+    """True when a flattened Settings path belongs to the user config tier."""
+    return any(path.startswith(p) for p in USER_CONFIG_PREFIXES)
+
+
+# INTERNAL_KEYS: sourced from settings-internal.yaml only. The same keys in
+# the *user* settings.yaml are ignored (internal config never wins from the
+# user file), and they are never shown by GET /system/settings.
+_INTERNAL_PREFIXES = (
+    "instrumentor.",
+    "scheduler.",
+    "security.",
+    "git.",
+    "carrier.adapters.",
+    "tracing.collector.",
+)
+_INTERNAL_EXACT = (
+    "tracing.redact.rules_path",
+    "tracing.archive.codec",
+    "tracing.archive.keep_promoted_forever",
+)
+
+#: Keys read from settings-internal.yaml (documentation / load-side marker).
+INTERNAL_KEYS: tuple[str, ...] = (
+    "instrumentor.policy.prefer",
+    "instrumentor.policy.source_injection",
+    "instrumentor.policy.smoke_verify",
+    "tracing.collector.listen",
+    "tracing.collector.grpc",
+    "tracing.collector.http",
+    "tracing.redact.rules_path",
+    "tracing.archive.codec",
+    "tracing.archive.keep_promoted_forever",
+    "scheduler.kind",
+    "scheduler.redis_url",
+    "security.jwt_secret_env",
+    "security.master_key_env",
+    "git.repo.bare",
+    "git.author.name",
+    "git.author.email",
+    "carrier.adapters.claude_code.image_base",
+    "carrier.adapters.opencode.image_base",
+)
+
+
+def is_internal_key(path: str) -> bool:
+    """True when a flattened Settings path is internal-tier."""
+    return path in _INTERNAL_EXACT or any(
+        path.startswith(p) for p in _INTERNAL_PREFIXES
+    )
 
 
 # -- dotted-path access on Settings trees (system settings hot-update) ------
@@ -85,6 +184,21 @@ def settings_yaml_path(home: Path | None = None) -> Path:
     return home / "settings.yaml"
 
 
+def settings_internal_yaml_path(home: Path | None = None) -> Path:
+    """Locate settings-internal.yaml (internal config tier).
+
+    Resolution order: ``RSI_INTERNAL_SETTINGS`` env var (absolute, or
+    relative to *home*), else ``<home>/settings-internal.yaml``. A missing
+    file yields an empty source (field defaults apply).
+    """
+    home = home or _rsi_home()
+    override = os.environ.get("RSI_INTERNAL_SETTINGS")
+    if override:
+        p = Path(override)
+        return p if p.is_absolute() else home / p
+    return home / "settings-internal.yaml"
+
+
 def write_settings_section(section_key: str, data: object, *, home: Path | None = None) -> Path:
     """Rewrite one dotted section (e.g. ``carrier.hosts``) in settings.yaml.
 
@@ -120,7 +234,48 @@ def write_settings_section(section_key: str, data: object, *, home: Path | None 
     return path
 
 
-# ════════ ① Infrastructure (config doc §2 ①) ════════
+def _filter_tree(node: Any, prefix: str, keep_internal: bool) -> Any:
+    """Recursively keep only internal (or only non-internal) leaves.
+
+    A dict node survives when at least one leaf beneath it survives, so a
+    mixed section like ``tracing`` keeps its user leaves in the user tier
+    and its internal leaves in the internal tier; a purely internal
+    section like ``instrumentor`` survives only in the internal tier.
+    """
+    if not isinstance(node, dict) or not node:
+        return node if is_internal_key(prefix) == keep_internal else None
+    out: dict = {}
+    for key, value in node.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict) and value:
+            sub = _filter_tree(value, path, keep_internal)
+            if sub:
+                out[key] = sub
+        elif is_internal_key(path) == keep_internal:
+            out[key] = value
+    return out
+
+
+class _TierYamlConfigSettingsSource(YamlConfigSettingsSource):
+    """Yaml source restricted to one configuration tier.
+
+    ``keep_internal=False`` (default): the *user* settings.yaml source —
+    internal-tier keys found in the user file are dropped (the user file
+    cannot set internal config). ``keep_internal=True``: the
+    settings-internal.yaml source — only internal-tier keys are honoured.
+    """
+
+    def __init__(self, *args: Any, keep_internal: bool = False, **kwargs: Any):
+        super().__init__(*args, **kwargs)
+        self._keep_internal = keep_internal
+
+    def __call__(self) -> dict[str, Any]:
+        data = super().__call__() or {}
+        filtered = _filter_tree(data, "", self._keep_internal)
+        return filtered if isinstance(filtered, dict) else {}
+
+
+# ══════ ① Infrastructure (config doc §2 ①) ══════
 
 
 class ServerSettings(BaseModel):
@@ -139,50 +294,38 @@ class DatabaseSettings(BaseModel):
 
 
 class GitRepoSettings(BaseModel):
-    """§2 git.repo — bare repo for pre-receive freeze enforcement."""
+    """git.repo — bare flag only (repo path is derived from RSI_HOME)."""
 
     model_config = _C
-    path: Path = Path("git/platform-repo.git")
     bare: bool = True
 
 
 class GitAuthorSettings(BaseModel):
+    """git.author — commit identity (internal config)."""
+
     model_config = _C
     name: str = "rsi-platform"
     email: str = "rsi-platform@local"
 
 
 class GitSettings(BaseModel):
-    """§2 git — GitStore repo, worktrees, commit identity."""
+    """git — commit identity + bare flag; paths derived from RSI_HOME."""
 
     model_config = _C
     repo: GitRepoSettings = GitRepoSettings()
-    worktrees: Path = Path("git/wt")
     author: GitAuthorSettings = GitAuthorSettings()
 
 
-class StorageSettings(BaseModel):
-    """§2 storage — traces / artifacts / labs / recordings / stop file."""
-
-    model_config = _C
-    traces_dir: Path = Path("traces")
-    artifacts_dir: Path = Path("artifacts")
-    labs_dir: Path = Path("labs")
-    recordings_dir: Path = Path("recordings")
-    stop_file: Path = Path("STOP")
-
-
 class LoggingSettings(BaseModel):
-    """§2 logging — structured logs, daily rotation, error split."""
+    """§2 logging — level / retention / error split (dir is derived)."""
 
     model_config = _C
-    dir: Path = Path("logs")
     level: Literal["debug", "info", "warning", "error"] = "info"
     retention_days: int = 30
     error_split: bool = True
 
 
-# ════════ ② sandbox (config doc §2 ②) ════════
+# ══════ ② sandbox (config doc §2 ②) ══════
 
 
 class DeviceEndpoint(BaseModel):
@@ -238,7 +381,7 @@ class SandboxSettings(BaseModel):
     ready_timeout_s: int = 600
 
 
-# ════════ ③ carrier (config doc §2 ③) ════════
+# ══════ ③ carrier (config doc §2 ③) ══════
 
 
 class CarrierAdapterSettings(BaseModel):
@@ -272,7 +415,7 @@ class CarrierSettings(BaseModel):
     })
 
 
-# ════════ ④ instrumentor (config doc §2 ④) ════════
+# ══════ ④ instrumentor (config doc §2 ④; internal config) ══════
 
 
 class InstrumentorPolicySettings(BaseModel):
@@ -287,15 +430,17 @@ class InstrumentorPolicySettings(BaseModel):
 
 
 class InstrumentorSettings(BaseModel):
+    """§2 instrumentor — internal config (settings-internal.yaml)."""
+
     model_config = _C
     policy: InstrumentorPolicySettings = InstrumentorPolicySettings()
 
 
-# ════════ ⑤ tracing (config doc §2 ⑤) ════════
+# ══════ ⑤ tracing (config doc §2 ⑤) ══════
 
 
 class TracingCollectorSettings(BaseModel):
-    """§2 tracing.collector — OTLP receivers."""
+    """§2 tracing.collector — OTLP receivers (internal config)."""
 
     model_config = _C
     listen: str = "0.0.0.0"
@@ -306,14 +451,14 @@ class TracingCollectorSettings(BaseModel):
 class TracingRedactSettings(BaseModel):
     model_config = _C
     enabled: bool = True
-    rules_path: Path = Path("redact-rules.yaml")
+    rules_path: Path = Path("redact-rules.yaml")  # internal
 
 
 class TracingArchiveSettings(BaseModel):
     model_config = _C
-    codec: Literal["zstd", "gzip", "none"] = "zstd"
+    codec: Literal["zstd", "gzip", "none"] = "zstd"  # internal
     hot_days: int = 90
-    keep_promoted_forever: bool = True
+    keep_promoted_forever: bool = True  # internal
 
 
 class TracingSettings(BaseModel):
@@ -325,7 +470,7 @@ class TracingSettings(BaseModel):
     archive: TracingArchiveSettings = TracingArchiveSettings()
 
 
-# ════════ ⑥ judge (config doc §2 ⑥) ════════
+# ══════ ⑥ judge (config doc §2 ⑥) ══════
 
 
 class JudgeSettings(BaseModel):
@@ -337,7 +482,7 @@ class JudgeSettings(BaseModel):
     pairwise_enabled: bool = True
 
 
-# ════════ ⑦ optimizer (config doc §2 ⑦) ════════
+# ══════ ⑦ optimizer (config doc §2 ⑦) ══════
 
 
 class OptimizerSftSettings(BaseModel):
@@ -356,7 +501,7 @@ class OptimizerSettings(BaseModel):
     sft: OptimizerSftSettings = OptimizerSftSettings()
 
 
-# ════════ ⑧ decision (config doc §2 ⑧) ════════
+# ══════ ⑧ decision (config doc §2 ⑧) ══════
 
 
 class DecisionNoiseSettings(BaseModel):
@@ -376,7 +521,7 @@ class DecisionSettings(BaseModel):
     no_gain_rounds_default: int = 5
 
 
-# ════════ ⑨ orchestrator (config doc §2 ⑨) ════════
+# ══════ ⑨ orchestrator (config doc §2 ⑨) ══════
 
 
 class BudgetSettings(BaseModel):
@@ -389,10 +534,12 @@ class BudgetSettings(BaseModel):
 
 
 class OrchestratorBudgetSettings(BaseModel):
-    model_config = _C
-    default_iteration: BudgetSettings = BudgetSettings(
+    # yaml key ``iteration_default`` (renamed from ``default_iteration``)
+    iteration_default: BudgetSettings = BudgetSettings(
         max_tokens=50_000_000, max_wall_hours=8.0, max_cost_usd=200.0
     )
+    # yaml key ``global`` (``global`` is a Python keyword; attribute stays
+    # ``global_``). Old ``default_iteration`` / misspelled keys are ignored.
     global_: BudgetSettings = Field(
         default=BudgetSettings(
             max_tokens=100_000_000, max_wall_hours=0.0, max_cost_usd=400.0
@@ -411,19 +558,18 @@ class OrchestratorSettings(BaseModel):
     budget: OrchestratorBudgetSettings = OrchestratorBudgetSettings()
 
 
-# ════════ ⑩ llm (config doc §2 ⑩) ════════
+# ══════ ⑩ llm (config doc §2 ⑩) ══════
 
 
 class LlmProviderSettings(BaseModel):
-    """§2 llm.providers.* — platform-side LLM provider credentials."""
+    """§2 llm.providers.* — direct values (trusted intranet, yaml plaintext)."""
 
     model_config = _C
-    api_key_env: str = ""
-    base_url_env: Optional[str] = None
+    api_key: str = ""
+    base_url: str = ""
 
 
 class LlmModelSettings(BaseModel):
-    model_config = _C
     model: str = ""
     temperature: Optional[float] = None
 
@@ -433,11 +579,8 @@ class LlmSettings(BaseModel):
 
     model_config = _C
     providers: dict[str, LlmProviderSettings] = Field(default_factory=lambda: {
-        "anthropic": LlmProviderSettings(api_key_env="ANTHROPIC_API_KEY"),
-        "openai_compat": LlmProviderSettings(
-            api_key_env="OPENAI_COMPAT_API_KEY",
-            base_url_env="OPENAI_COMPAT_BASE_URL",
-        ),
+        "anthropic": LlmProviderSettings(api_key=""),
+        "openai_compat": LlmProviderSettings(api_key="", base_url=""),
     })
     defaults: dict[str, LlmModelSettings] = Field(default_factory=lambda: {
         "judge": LlmModelSettings(model="", temperature=0.0),
@@ -449,23 +592,11 @@ class LlmSettings(BaseModel):
     max_concurrent_calls: int = 4
 
 
-# ════════ ⑪ security (config doc §2 ⑪) ════════
-
-
-class SecuritySettings(BaseModel):
-    """§2 security — JWT + CredentialStore master key env names."""
-
-    model_config = _C
-    jwt_secret_env: str = "RSI_JWT_SECRET"
-    master_key_env: str = "RSI_MASTER_KEY"
-    jwt_expire_hours: int = 12
-
-
-# ════════ ⑫ scheduler & seed (config doc §2 ⑫) ════════
+# ══════ ⑪ scheduler & seed (config doc §2 ⑫) ══════
 
 
 class SchedulerSettings(BaseModel):
-    """§2 scheduler — P0/P1 asyncio, P2 rq."""
+    """§2 scheduler — P0/P1 asyncio, P2 rq (internal config)."""
 
     model_config = _C
     kind: Literal["asyncio", "rq"] = "asyncio"
@@ -480,7 +611,7 @@ class SeedSettings(BaseModel):
 
 
 class Settings(BaseSettings):
-    """Root platform settings (config doc §2)."""
+    """Root platform settings — three-tier (env / user yaml / internal yaml)."""
 
     model_config = SettingsConfigDict(
         env_prefix="RSI_",
@@ -493,7 +624,6 @@ class Settings(BaseSettings):
     server: ServerSettings = ServerSettings()
     database: DatabaseSettings = DatabaseSettings()
     git: GitSettings = GitSettings()
-    storage: StorageSettings = StorageSettings()
     logging: LoggingSettings = LoggingSettings()
     sandbox: SandboxSettings = SandboxSettings()
     carrier: CarrierSettings = CarrierSettings()
@@ -504,7 +634,6 @@ class Settings(BaseSettings):
     decision: DecisionSettings = DecisionSettings()
     orchestrator: OrchestratorSettings = OrchestratorSettings()
     llm: LlmSettings = LlmSettings()
-    security: SecuritySettings = SecuritySettings()
     scheduler: SchedulerSettings = SchedulerSettings()
     seed: SeedSettings = SeedSettings()
 
@@ -517,38 +646,49 @@ class Settings(BaseSettings):
         dotenv_settings: Any,
         file_secret_settings: Any,
     ) -> tuple[Any, ...]:
-        """Priority: init kwargs > env (RSI_*) > settings.yaml > defaults.
+        """Priority: init kwargs > env (RSI_*) > settings.yaml (user tier)
+        > settings-internal.yaml (internal tier) > defaults.
 
-        The yaml file lives at ``settings_yaml_path()`` (RSI_SETTINGS or
-        ``<RSI_HOME>/settings.yaml``); a missing file yields an empty
-        source, so settings.yaml is now authoritative at runtime — not
-        just a doctor-checked document.
+        Both yaml files live under RSI_HOME (RSI_SETTINGS /
+        RSI_INTERNAL_SETTINGS override); a missing file yields an empty
+        source. Internal-tier keys found in the user settings.yaml are
+        ignored; the internal file only contributes internal-tier keys.
         """
-        yaml_source = YamlConfigSettingsSource(
-            settings_cls, yaml_file=str(settings_yaml_path())
+        user_yaml = _TierYamlConfigSettingsSource(
+            settings_cls, yaml_file=str(settings_yaml_path()), keep_internal=False
+        )
+        internal_yaml = _TierYamlConfigSettingsSource(
+            settings_cls,
+            yaml_file=str(settings_internal_yaml_path()),
+            keep_internal=True,
         )
         return (
             init_settings,
             env_settings,
-            yaml_source,
+            user_yaml,
+            internal_yaml,
             dotenv_settings,
             file_secret_settings,
         )
 
-    # RSI_HOME, read once at construction (env var wins; default ./var).
-    home: Path = Field(default_factory=_rsi_home)
+    # RSI_HOME: deployment env var, read live (not a Settings field so it
+    # never shows up in GET /system/settings or model_dump).
+    @property
+    def home(self) -> Path:
+        return _rsi_home()
 
     def model_post_init(self, __context) -> None:
-        # Resolve relative paths in nested sections against RSI_HOME so
-        # downstream consumers always see absolute paths (config doc §2 ①).
-        self.storage.traces_dir = _resolve(self.home, self.storage.traces_dir)
-        self.storage.artifacts_dir = _resolve(self.home, self.storage.artifacts_dir)
-        self.storage.labs_dir = _resolve(self.home, self.storage.labs_dir)
-        self.storage.recordings_dir = _resolve(self.home, self.storage.recordings_dir)
-        self.storage.stop_file = _resolve(self.home, self.storage.stop_file)
-        self.logging.dir = _resolve(self.home, self.logging.dir)
-        self.git.repo.path = _resolve(self.home, self.git.repo.path)
-        self.git.worktrees = _resolve(self.home, self.git.worktrees)
+        # Ensure the derived platform directory layout exists.
+        for d in (
+            self.git_repo_path.parent,
+            self.git_worktrees_dir,
+            self.traces_dir,
+            self.artifacts_dir,
+            self.labs_dir,
+            self.recordings_dir,
+            self.logs_dir,
+        ):
+            d.mkdir(parents=True, exist_ok=True)
 
     @property
     def database_url(self) -> str:
@@ -559,35 +699,38 @@ class Settings(BaseSettings):
         """Resolve a possibly-relative path against RSI_HOME."""
         return _resolve(self.home, value)
 
-    # Resolved path properties for the storage/git/logging sections.
+    # Derived path layout (fixed, from RSI_HOME — no longer configurable).
     @property
     def traces_dir(self) -> Path:
-        return self.resolve(self.storage.traces_dir)
+        return self.home / "storage" / "traces"
 
     @property
     def artifacts_dir(self) -> Path:
-        return self.resolve(self.storage.artifacts_dir)
+        return self.home / "storage" / "artifacts"
 
     @property
     def labs_dir(self) -> Path:
-        return self.resolve(self.storage.labs_dir)
+        return self.home / "storage" / "labs"
 
     @property
     def recordings_dir(self) -> Path:
-        return self.resolve(self.storage.recordings_dir)
+        return self.home / "storage" / "recordings"
 
     @property
     def stop_file(self) -> Path:
-        return self.resolve(self.storage.stop_file)
+        return self.home / "storage" / "STOP"
+
+    # explicit alias (config refactor C1 naming)
+    stop_file_path = stop_file
 
     @property
     def logs_dir(self) -> Path:
-        return self.resolve(self.logging.dir)
+        return self.home / "logs"
 
     @property
     def git_repo_path(self) -> Path:
-        return self.resolve(self.git.repo.path)
+        return self.home / "git" / "platform-repo.git"
 
     @property
     def git_worktrees_dir(self) -> Path:
-        return self.resolve(self.git.worktrees)
+        return self.home / "git" / "wt"

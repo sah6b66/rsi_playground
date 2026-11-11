@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -33,8 +34,9 @@ OUT = '{"task_complete": true, "root_cause": "GE0/0/1 shutdown"}'
 
 
 def _settings(tmp_path: Path) -> Settings:
+    # C1: home derived from RSI_HOME env (no longer an init field)
+    os.environ["RSI_HOME"] = str(tmp_path)
     return Settings(
-        home=tmp_path,
         database=DatabaseSettings(url=f"sqlite:///{tmp_path/'comp.db'}"),
     )
 
