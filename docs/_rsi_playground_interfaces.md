@@ -48,15 +48,12 @@ class EnvSpec(BaseModel):          # 环境定义（env.yaml；站点覆盖 env.
     topology: Topology                 # links: [{endpoints: ["R1:GE0/0/1", "R2:GE0/0/1"], type: ethernet|serial|…}]
     ssh_access: dict[str, SshAccess]   # 设备名 → {ip, port, username, password | password_ref(凭证引用)}
     ready_checks: list[ReadyCheck] = []    # 缺省 = 全部设备 SSH 可达
-    config_apis: dict[str, ConfigApi] = {} # 外部配置 API（ADR-20）：name → {base_url, auth_ref}；实现在外部系统
     external_deps: list[ExternalDep] = []  # P2: NMS 端点声明（I-11）
 
 class TaskRecord(BaseModel):       # 任务集（tasks.jsonl 一行；设备一律以名称引用，不含 IP）
     task_id: str; title: str
-    prepare: list[PrepareAction] = []   # 评测准备（ADR-20 手段两种，均多设备多命令；目的=故障注入/配置修改等语义，由命令内容体现）：
+    prepare: list[PrepareAction] = []   # 评测准备（ADR-20，多设备多命令；目的=故障注入/配置修改等语义，由命令内容体现）：
                                         #   {action: exec_cli, entries: [{device, cli_lines: [..]}, …]}
-                                        #   {action: call_api, api: <config_apis 键>,
-                                        #    params: {env_name 组网名, scenario 评测场景名, devices: [{device, cli_lines: [..]}, …]}}
     task: TaskSpec                      # prompt(任务描述)/context/tool_constraints
     expected: ExpectedAnswer
     metrics: list[MetricDef]
@@ -347,14 +344,14 @@ class SandboxService:            # I-3 服务端实现，转发到后端适配�
         # 设备端点 = spec.ssh_access 声明；构建后验证可达（不一致→环境错误，FR4.3）
     async def snapshot/restore/reset/destroy(...)
     async def prepare(self, lab, actions: list[PrepareAction]) -> None
-        # 任务级评测准备（FR3.1，ADR-20 两种手段，多设备多命令）：
+        # 任务级评测准备（FR3.1，ADR-20，多设备多命令）：
         #   exec_cli → 先备份涉及设备配置（backups/<task_id>/<device>.cfg）再经 sshpool 逐设备逐条下发；
-        #   call_api → 解析 env.config_apis[api] 端点，组装请求（组网名/场景名/devices）调用外部 API；
-        # 全部操作写 ops.jsonl；任一失败即抛出（调用方按手段恢复后重试 ≤2）
+        # 全部操作写 ops.jsonl；任一失败即抛出（调用方恢复后重试 ≤2）
+        # （API 模式的评测准备不经 SandboxService——见 §11 run_task 的 prep_mode="api"，
+        #   由 NetworkPrepClient 直接调用外部网络准备 API，设计 §3.13）
     async def restore_task(self, lab, applied: list[AppliedAction]) -> None
-        # 任务后恢复（判决之后调用，ADR-20 按手段匹配，L1 快路径）：
+        # 任务后恢复（判决之后调用，ADR-20，L1 快路径）：
         #   exec_cli → 按厂商模板"清空当前配置→重放备份全量"经 CLI 恢复；
-        #   call_api → 以记录原参数 + 撤销标记（undo）重调外部 API（集成契约）；
         # 恢复后 ready_checks 快检；失败重试 ≤2 → 仍失败转 L2 环境级恢复（snapshot/重放）
     # during_task 任务中动态执行（P1）：直接接受 exec_cli 动作，契约 P1 定义（v2.0 无故障编译层）
     async def exec_readonly(self, lab, device, cli) -> str      # 平台侧校验通道（判定 DSL 用）
@@ -599,22 +596,28 @@ class BatchRunner:
     # collector = TraceCollector（主设计 3.5）：finalize/flush 通道；
     #             TraceStore 查询接口另行注入归因/对比等使用方
 
-    async def run_batch(self, batch_id: BatchId) -> BatchStats:
-        """批次主循环：逐任务执行 run_task()；异常不中断整批（FR5.5）。"""
+    async def run_batch(self, batch_id: BatchId,
+                        prep_mode: Literal["cli", "api"] = "cli") -> BatchStats:
+        """批次主循环：逐任务执行 run_task()；异常不中断整批（FR5.5）。
+        prep_mode（ADR-27）：'cli'=CLI 模式（本地 SandboxService）；'api'=API 模式（NetworkPrepClient，见 §11.1）。"""
 
-    async def run_task(self, batch_id: BatchId, task: EvalTask, seq: int) -> RunResult:
+    async def run_task(self, batch_id: BatchId, task: EvalTask, seq: int,
+                       prep_mode: Literal["cli", "api"] = "cli") -> RunResult:
         """单任务流水线，状态落 runs 表：
         1. cache 查询（ADR-5 键）→ 命中则 status='cached' 直接复用判决（不执行不弄脏环境）
         2.（数据集级，仅批次首个任务）选后端实例 → build_lab(env) 一次 → wait_ready → snapshot(snap0)
            构建失败→重建≤2→仍失败整批 failed；snap0 为 L2 兜底基线（ADR-20）
-        3.（任务级）prepare 评测准备（ADR-20 两种手段，多设备多命令，设备名引用；
-           exec_cli 先备份涉及设备配置；失败→按手段恢复重试≤2→仍失败 'env_failed'（0 分）+ L2 恢复）
-        4. carrier.create_instance(...)  含 overlay（若批配置 instrument=true）
+        3.（任务级）prepare 评测准备（ADR-20，多设备多命令，设备名引用）：
+           - prep_mode='cli'：exec_cli 先备份涉及设备配置；失败→恢复重试≤2→仍失败 'env_failed'（0 分）+ L2 恢复
+           - prep_mode='api'：不走 SandboxService——NetworkPrepClient 调用外部网络准备 API（设计 §3.13）
+             完成环境/场景预置；失败语义同上（'env_failed'，由 API 侧恢复）
+        4. carrier.create_instance(...)  含 overlay（若批配置 instrument=true）；API 模式无 DEV_* 注入（ADR-27）
         5. carrier.submit_task(task_spec) 超时→abort→'sut_timeout'（缺试计 0 分，FR7.4）
         6. collector.finalize(run_id)    等待采集器 flush（含脱敏管道）
         7. judge.judge_run(run_id)       → Verdict 落库（终态断言需故障态在场，故恢复在判决后）
-        8. sandbox.restore_task(lab, applied)  任务后恢复（ADR-20：CLI 配置恢复 / API 撤销；
-           失败重试≤2→L2 环境级恢复；恢复失败且 L2 仍失败→该任务后环境异常标记）
+        8. 任务后恢复：prep_mode='cli' → sandbox.restore_task(lab, applied)（CLI 配置恢复；
+           失败重试≤2→L2 环境级恢复；恢复失败且 L2 仍失败→该任务后环境异常标记）；
+           prep_mode='api' → NetworkPrepClient 撤销（undo，集成契约）
         9. checkpoint.save(run_id, state)（FR5.5 断点续跑：每步完成即持久化，
            恢复时从 checkpoint 反查已完成的 seq_in_batch 跳过）
         """
@@ -648,6 +651,15 @@ class CheckpointStore:             # SQLite 表 checkpoints(scope, state_json, u
 ```
 
 批次状态机与重试矩阵见主设计文档 3.1。
+
+### 11.1 API 模式相关契约（ADR-27）
+
+- **NetworkPrepClient**（网络准备客户端）：prep_mode="api" 时替代 SandboxService 的评测准备/恢复通道。
+  完整契约见设计文档 §3.13（`prepare(env_name, scenario, devices)` / `undo(...)`；鉴权、超时与幂等语义以设计 §3.13 为准）。
+- **评估集在线 API 端点**：`GET /evalsets/online/{name}` —— 按名称在线预览外部评估集，
+  返回 `ApiEvalsetTask` 列表摘要（task_id/title/prepare 摘要等，不含完整契约正文）。
+  供 API 模式会话在本地无评估集时在线获取任务列表（数据源与缓存策略见设计 §3.13）。
+
 
 ---
 
@@ -780,4 +792,4 @@ class CassetteStore:             # 录制回放（ADR-7）
 
 ---
 
-> 修订记录：v2.6 — 第四轮审计文档-代码对齐（2026-11-09）：§9.6 `POST /batches/{id}:rerun` 补 rerun 批次语义——**复制原批次 purpose**，以 `params.rerun_of`（原批 id）与 `params.rerun_scope`（failed|all）标记（D-9，与实现一致；purpose 枚举无 rerun 值）。v2.5 — P0 多实例并行联动（设计 v2.13 / ADR-24）：labs.device_endpoints_json 语义改为适配器 (网络名,设备名)→(IP+端口) 映射（权威）+ env.ssh_access 基准校验；build_lab 多实例键 `<type>-<n>` P0 即用。v2.4 — 二轮交叉审查修复：DDL **optimization_profiles+iterations 前移至 batches 之前**（消除 batches.iteration_id/hypotheses.iteration_id/iterations.profile_id 前向外键——SQLite 宽容但 P1 PostgreSQL 建表即失败）；§9.12 budget_used `wall_h`→`wall_time_s`（与 Verdict.efficiency 命名统一）；§2.1 Verdict.efficiency 注明 estimated 透传。v2.3 — **平台 API 与 WEB 全量补齐（A–N）**：Router 17→**19 组**（新增 instances、audit-logs）；suts 增手动快照与**配置树文件 CRUD**（staging 编辑+commit 走 TargetRegistry 校验，P0 人工模式核心入口）；iterations 增 **:resume/DELETE（软删）/四个人工门端点**（confirm-direction/hypothesis/review/decision）与 budget_used；labs 增管理操作（建/销毁/重置/快照/恢复/只读 exec）；traces 增 :query/:stats（P1）；experiments 增 sft-report；dashboard 增 noise-bands；system 组扩展（settings 动态/静态管理与热更、DELETE :stop 熔断恢复、freeze 校验状态、logs 检索、health 组件级增强）；evalsets 增 site_overrides 与冻结版本列表；DDL hypotheses 增 iteration_id 列。v2.2 — 归因原文输入联动（设计 v2.10）：§12 AttributionAnalyzer.analyze 增 sut_config 参数（ConfigSnapshot，token 控制仅取相关文件原文）、AttributionReport.evidence 增 SUT 原文证据引用；HypothesisGenerator.stage2 输入"内容摘要"升级为"相关要素原文"。v2.1 — LLM 主判决层联动（设计 v2.9 / ADR-23）：§2.1 ExpectedAnswer.root_cause 契约改为 RootCauseExpectation（自然语言期望 + 可选 match_hints，语义判定归 LLMJudge P0）；checklist/risk_findings 标注语义命中判定。v2.0 — 删除故障编译层联动（设计 v2.8 / ADR-20 收尾）：DDL 删 fault_injections 表（22 张，其跟踪/清除职责由 ops.jsonl + restore_task 承担）；§4 SandboxService 删 inject_fault、Backend ABC 删 apply_fault（during_task P1 直接接受 CLI 动作再定契约）。v1.9 — 载体轨迹通道核实与分期联动（设计 v2.7 / ADR-22）：§8 增 wiretap 原文契约（per-run 文件、原帧永久保留、脱敏域界）；§10 适配器分期标注（P0=OpenCode 优先 / P2=ClaudeCode）。v1.8 — 自优化模式分期重构联动（设计 v2.6 / ADR-21）：DDL 增 iterations 表（mode/state/round 持久化）、batches 增 iteration_id 列（23 张表）；§9.12 iterations 改 **P0 交付** + mode 参数（p1/p2，人工模式不经端点）、§9.2 promote 扩展双批引用自动登记 experiments；§11 iterate_once 增 mode 参数。v1.7 — 评测准备模型重构联动（设计 v2.3 / ADR-20）：§2.1 EnvSpec 增 config_apis（外部配置 API 端点）、TaskRecord.prepare 改两种手段（exec_cli 多设备多命令 / call_api 组网名+场景名+devices）；§4 SandboxService prepare 重写 + 新增 restore_task（任务后恢复，按手段匹配 L1/L2）；§11 run_task 步骤扩至 9 步（备份在 prepare 内、恢复在判决后）。v1.6 — 七模块详细设计联动（设计 v2.2）：§5 增 TraceCollector 契约（serve_otel/tail_ndjson/ingest/finalize，EOF+宽限语义）；新增 §13 LLM 客户端与提示词库契约（LLMClient/PromptLibrary/CassetteStore）；§9 iterations 端点标注 P1 交付（P0 人工逐批驱动）。v1.5 — 子系统详细设计联动（设计 v2.1）：§9 重构为逐端点契约分表（9.0 统一约定+错误码表、9.1–9.17 端点契约、9.18 SSE/WS 事件信封与帧协议，ADR-18）；§12 增执行器协议（HypothesisSource/ReviewGate，ADR-16）、DecisionCtx、Selector 规则 0 与 P2 自动晋升前置条件、NoiseBandCalibrator 改显式标定批次语义（ADR-17）；DDL 增 noise_bands 表（22 张）、batches.purpose 增 noise_calibration。v1.4 — 二次交叉审查修复：OptimizationProfile 契约补全（全字段）并同步 DDL；StateAssert 补 expect_absent；DDL 增 checkpoints 表、batches 增 instrument/permission 列；eval_cases 更名 eval_tasks（case_key→task_id、yaml_path→source_ref）、runs.case_id→eval_task_id；§9 增 labs/iterations 路由及 pause/rerun/re-judge 端点（FR10.2/FR9.1）；§11 run_case→run_task（依赖改 TraceCollector、步骤重编号）；§12 TargetRegistry 冻结域注释修正、Selector 补加权综合分定义；§4 build_lab 后端键解析规则明确（与 env.yaml 枚举同名）。v1.2 — 评估集三件套重构（需求 v0.14）：§2.1 LabSpec/EvalCase 重构为 EnvSpec（env.yaml 契约，含 ssh_access 与站点覆盖规则）+ TaskRecord（tasks.jsonl 行契约，设备名引用）；§3 设备凭证来源改为 env.ssh_access 解析；§4 SandboxService 增 prepare；§11 run_case 流程改为"数据集级一次构建 + 任务级 restore/prepare"；labs 表注释同步；勘误：Hypothesis 字段名 case→task 对齐。v1.1 — §2 拆分为领域模型与元数据库 DDL。v1.0 — 自主设计文档 v1.5 拆分建档。
+> 修订记录：v2.7 — RSI 会话 API 模式联动（ADR-27，2026-11-05）：§2.1 删 EnvSpec.config_apis 字段与 TaskRecord.prepare 的 call_api 手段（PrepareAction 仅保留 exec_cli）；§4 prepare/restore_task 相应收敛为纯 CLI；§11 run_batch/run_task 签名增 `prep_mode: Literal["cli","api"]`（API 模式不走 SandboxService，走 NetworkPrepClient，设计 §3.13；无 DEV_* 注入）；新增 §11.1 API 模式相关契约（NetworkPrepClient 引用 + `GET /evalsets/online/{name}` 在线评估集端点）。v2.6 — 第四轮审计文档-代码对齐（2026-11-09）：§9.6 `POST /batches/{id}:rerun` 补 rerun 批次语义——**复制原批次 purpose**，以 `params.rerun_of`（原批 id）与 `params.rerun_scope`（failed|all）标记（D-9，与实现一致；purpose 枚举无 rerun 值）。v2.5 — P0 多实例并行联动（设计 v2.13 / ADR-24）：labs.device_endpoints_json 语义改为适配器 (网络名,设备名)→(IP+端口) 映射（权威）+ env.ssh_access 基准校验；build_lab 多实例键 `<type>-<n>` P0 即用。v2.4 — 二轮交叉审查修复：DDL **optimization_profiles+iterations 前移至 batches 之前**（消除 batches.iteration_id/hypotheses.iteration_id/iterations.profile_id 前向外键——SQLite 宽容但 P1 PostgreSQL 建表即失败）；§9.12 budget_used `wall_h`→`wall_time_s`（与 Verdict.efficiency 命名统一）；§2.1 Verdict.efficiency 注明 estimated 透传。v2.3 — **平台 API 与 WEB 全量补齐（A–N）**：Router 17→**19 组**（新增 instances、audit-logs）；suts 增手动快照与**配置树文件 CRUD**（staging 编辑+commit 走 TargetRegistry 校验，P0 人工模式核心入口）；iterations 增 **:resume/DELETE（软删）/四个人工门端点**（confirm-direction/hypothesis/review/decision）与 budget_used；labs 增管理操作（建/销毁/重置/快照/恢复/只读 exec）；traces 增 :query/:stats（P1）；experiments 增 sft-report；dashboard 增 noise-bands；system 组扩展（settings 动态/静态管理与热更、DELETE :stop 熔断恢复、freeze 校验状态、logs 检索、health 组件级增强）；evalsets 增 site_overrides 与冻结版本列表；DDL hypotheses 增 iteration_id 列。v2.2 — 归因原文输入联动（设计 v2.10）：§12 AttributionAnalyzer.analyze 增 sut_config 参数（ConfigSnapshot，token 控制仅取相关文件原文）、AttributionReport.evidence 增 SUT 原文证据引用；HypothesisGenerator.stage2 输入"内容摘要"升级为"相关要素原文"。v2.1 — LLM 主判决层联动（设计 v2.9 / ADR-23）：§2.1 ExpectedAnswer.root_cause 契约改为 RootCauseExpectation（自然语言期望 + 可选 match_hints，语义判定归 LLMJudge P0）；checklist/risk_findings 标注语义命中判定。v2.0 — 删除故障编译层联动（设计 v2.8 / ADR-20 收尾）：DDL 删 fault_injections 表（22 张，其跟踪/清除职责由 ops.jsonl + restore_task 承担）；§4 SandboxService 删 inject_fault、Backend ABC 删 apply_fault（during_task P1 直接接受 CLI 动作再定契约）。v1.9 — 载体轨迹通道核实与分期联动（设计 v2.7 / ADR-22）：§8 增 wiretap 原文契约（per-run 文件、原帧永久保留、脱敏域界）；§10 适配器分期标注（P0=OpenCode 优先 / P2=ClaudeCode）。v1.8 — 自优化模式分期重构联动（设计 v2.6 / ADR-21）：DDL 增 iterations 表（mode/state/round 持久化）、batches 增 iteration_id 列（23 张表）；§9.12 iterations 改 **P0 交付** + mode 参数（p1/p2，人工模式不经端点）、§9.2 promote 扩展双批引用自动登记 experiments；§11 iterate_once 增 mode 参数。v1.7 — 评测准备模型重构联动（设计 v2.3 / ADR-20）：§2.1 EnvSpec 增 config_apis（外部配置 API 端点）、TaskRecord.prepare 改两种手段（exec_cli 多设备多命令 / call_api 组网名+场景名+devices）；§4 SandboxService prepare 重写 + 新增 restore_task（任务后恢复，按手段匹配 L1/L2）；§11 run_task 步骤扩至 9 步（备份在 prepare 内、恢复在判决后）。v1.6 — 七模块详细设计联动（设计 v2.2）：§5 增 TraceCollector 契约（serve_otel/tail_ndjson/ingest/finalize，EOF+宽限语义）；新增 §13 LLM 客户端与提示词库契约（LLMClient/PromptLibrary/CassetteStore）；§9 iterations 端点标注 P1 交付（P0 人工逐批驱动）。v1.5 — 子系统详细设计联动（设计 v2.1）：§9 重构为逐端点契约分表（9.0 统一约定+错误码表、9.1–9.17 端点契约、9.18 SSE/WS 事件信封与帧协议，ADR-18）；§12 增执行器协议（HypothesisSource/ReviewGate，ADR-16）、DecisionCtx、Selector 规则 0 与 P2 自动晋升前置条件、NoiseBandCalibrator 改显式标定批次语义（ADR-17）；DDL 增 noise_bands 表（22 张）、batches.purpose 增 noise_calibration。v1.4 — 二次交叉审查修复：OptimizationProfile 契约补全（全字段）并同步 DDL；StateAssert 补 expect_absent；DDL 增 checkpoints 表、batches 增 instrument/permission 列；eval_cases 更名 eval_tasks（case_key→task_id、yaml_path→source_ref）、runs.case_id→eval_task_id；§9 增 labs/iterations 路由及 pause/rerun/re-judge 端点（FR10.2/FR9.1）；§11 run_case→run_task（依赖改 TraceCollector、步骤重编号）；§12 TargetRegistry 冻结域注释修正、Selector 补加权综合分定义；§4 build_lab 后端键解析规则明确（与 env.yaml 枚举同名）。v1.2 — 评估集三件套重构（需求 v0.14）：§2.1 LabSpec/EvalCase 重构为 EnvSpec（env.yaml 契约，含 ssh_access 与站点覆盖规则）+ TaskRecord（tasks.jsonl 行契约，设备名引用）；§3 设备凭证来源改为 env.ssh_access 解析；§4 SandboxService 增 prepare；§11 run_case 流程改为"数据集级一次构建 + 任务级 restore/prepare"；labs 表注释同步；勘误：Hypothesis 字段名 case→task 对齐。v1.1 — §2 拆分为领域模型与元数据库 DDL。v1.0 — 自主设计文档 v1.5 拆分建档。
