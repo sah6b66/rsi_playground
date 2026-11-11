@@ -179,13 +179,30 @@ async def gate_direction(id: str, body: DirectionConfirm,
 @router.get("/system/settings")
 @require("credential:manage")  # admin only
 async def get_settings(mgr=Depends(get_service("settings_manager"))) -> list[SettingItem]:
-    return mgr.list_all()  # [{path, value, source, mutable, 需求号}]
+    return mgr.list_all()  # 用户级 45 键子集（三层模型 v2.0：不含内部层/对象页/部署层键）
+    # [{path, value, source, mutable, pending_restart, 需求号}]
 
 @router.put("/system/settings/{path:path}")
 @require("credential:manage")
 @audited("system.settings_update")
 async def update_setting(path: str, body: SettingUpdate, mgr=…):
-    mgr.update(path, body.value)  # 动态项：写 yaml+热生效；静态项→409
+    mgr.update(path, body.value)  # 写回 settings.yaml；动态 4 键即时生效，
+    # 其余标 pending_restart（非 409）；非用户级路径 → 404/409
+
+@router.post("/system:restart", status_code=202)
+@require("system:stop")
+@audited("system.restart")
+async def restart(...): ...  # 重启平台进程（C1）——pending_restart 键统一生效；
+    # 由进程管理器重新拉起
+
+@router.get("/system/settings/llm")
+@require("credential:manage")  # admin only
+async def get_llm(...): ...    # LLM 配置（providers api_key/base_url + judge 缺省）半脱敏读取
+
+@router.put("/system/settings/llm")
+@require("credential:manage")
+@audited("system.llm_update")
+async def put_llm(...): ...    # LLM 配置整体写入（内网明文直配，C1）；写后标 pending_restart
 ```
 
 ## 6. 依赖矩阵

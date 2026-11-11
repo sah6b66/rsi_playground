@@ -1,7 +1,7 @@
 // 四门工作台（DD-14 §5.2 / iterations.py 四门端点）。
 // 仅当前门可操作；已过的门标"已过"，未到的门 disabled 标"未到"。
 import { useState } from 'react';
-import { Button, Card, Input, Radio, Select, Space, Tag } from 'antd';
+import { Button, Card, Col, Input, Radio, Row, Select, Tag } from 'antd';
 import { useGateAction, useSessionTimeline, type Iteration } from '../api/hooks';
 
 const GATES = [
@@ -45,16 +45,16 @@ export function GateWorkbench({ session }: { session: Iteration }) {
   ].map((t) => ({ label: t, value: t }));
 
   return (
-    <Space align="start" wrap style={{ display: 'flex' }}>
+    <Row gutter={[12, 12]} data-testid="gate-row">
       {GATES.map((g, i) => {
         const isCurrent = i === currentIdx;
         const passed = session.state !== 'paused' || i < currentIdx;
         return (
+          <Col span={6} key={g.key} style={{ display: 'flex' }}>
           <Card
-            key={g.key}
             size="small"
             title={g.title}
-            style={{ width: 300, opacity: isCurrent ? 1 : 0.75 }}
+            style={{ flex: 1, opacity: isCurrent ? 1 : 0.75 }}
             extra={
               isCurrent ? (
                 <Tag color="warning">待审批</Tag>
@@ -178,8 +178,9 @@ export function GateWorkbench({ session }: { session: Iteration }) {
               </>
             )}
           </Card>
+          </Col>
         );
       })}
-    </Space>
+    </Row>
   );
 }

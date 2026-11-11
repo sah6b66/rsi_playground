@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import socket
+
 import pytest
 
 from rsi.core.errors import EnvError
 from rsi.core.models import DeviceSpec, EnvSpec, LinkSpec, SshAccess, Topology
+from rsi.sandbox.backends import prebuilt
 from rsi.sandbox.backends.prebuilt import PrebuiltBackend
 from rsi.sandbox.platform_probe import PlatformProbeResult
 from rsi.sandbox.readiness import ReadyReport
@@ -94,13 +97,14 @@ def make_env() -> EnvSpec:
 _UNSET = object()
 
 
-def make_backend(probe=None, pool=_UNSET, readiness=None):
+def make_backend(probe=None, pool=_UNSET, readiness=None, devices=None):
     return PrebuiltBackend(
         key="ensp-pro-1",
         kind="ensp-pro",
         probe=probe or StubProbe(),
         ssh_pool=StubPool() if pool is _UNSET else pool,
         readiness=readiness or StubReadiness(),
+        devices=devices,
     )
 
 
@@ -325,6 +329,124 @@ class TestStatus:
         status = backend.status()
         assert status.available is False
         assert status.detail == "ConnectError"
+
+
+# ---------------------------------------------------------------------------
+# status 在线判定增补（ADR-25）：未配置 URL → 设备 SSH 可达回退
+
+
+class TestStatusNoUrlFallback:
+    def _no_url_backend(self):
+        probe = StubProbe()
+        probe.url = ""  # 未配置平台 URL（物理网络）
+        return make_backend(probe=probe)
+
+    @pytest.mark.asyncio
+    async def test_no_url_with_reachable_device_is_online(self):
+        # 本地起一个 TCP listener 模拟可达设备 SSH 端口
+        with socket.socket() as srv:
+            srv.bind(("127.0.0.1", 0))
+            srv.listen(1)
+            port = srv.getsockname()[1]
+            backend = self._no_url_backend()
+            base = make_env()
+            env = base.model_copy(
+                update={
+                    "ssh_access": {
+                        "R1": SshAccess(
+                            ip="127.0.0.1", port=port, username="admin", password="pw"
+                        ),
+                        "R2": SshAccess(
+                            ip="127.0.0.1", port=1, username="admin", password="pw"
+                        ),  # 不可达端口——任一可达即可
+                    }
+                }
+            )
+            await backend.build(env)
+            status = backend.status()
+            assert status.available is True
+            assert status.detail == "设备 SSH 可达"
+            assert status.active_labs == 1
+
+    @pytest.mark.asyncio
+    async def test_no_url_without_labs_is_offline(self):
+        backend = self._no_url_backend()
+        status = backend.status()
+        assert status.available is False
+        assert status.detail == "未配置 URL 且无设备信息"
+
+    @pytest.mark.asyncio
+    async def test_no_url_unreachable_devices_are_offline(self, monkeypatch):
+        monkeypatch.setattr(
+            prebuilt, "tcp_reachable", lambda ip, port: False
+        )
+        backend = self._no_url_backend()
+        await backend.build(make_env())
+        status = backend.status()
+        assert status.available is False
+        assert status.detail == "未配置 URL 且无设备信息"
+
+    # ── 平台级设备清单（ADR-25 增补：监控与 lab 无关）─────────────────
+
+    @pytest.mark.asyncio
+    async def test_no_url_platform_devices_reachable_is_online(self, monkeypatch):
+        # ① 平台级 devices 任一可达 → 在线（无需任何在用 lab）
+        called: list[tuple[str, int]] = []
+
+        def fake_tcp(ip: str, port: int) -> bool:
+            called.append((ip, port))
+            return ip == "192.168.56.10"
+
+        monkeypatch.setattr(prebuilt, "tcp_reachable", fake_tcp)
+        backend = make_backend(probe=self._no_url_probe(), devices={
+            "R1": prebuilt.DeviceEndpoint(ip="192.168.56.11", port=22),
+            "R2": prebuilt.DeviceEndpoint(ip="192.168.56.10", port=22),
+        })
+        status = backend.status()
+        assert status.available is True
+        assert status.detail == "设备 SSH 可达（平台配置）"
+        assert status.active_labs == 0  # 未跑评测也在线
+        assert ("192.168.56.11", 22) in called  # 确实在探测平台级清单
+
+    @pytest.mark.asyncio
+    async def test_no_url_platform_devices_unreachable_falls_back_to_lab(self):
+        # ② 平台级全不可达 → 回退在用 lab 端点
+        with socket.socket() as srv:
+            srv.bind(("127.0.0.1", 0))
+            srv.listen(1)
+            port = srv.getsockname()[1]
+            backend = make_backend(
+                probe=self._no_url_probe(),
+                devices={"R1": prebuilt.DeviceEndpoint(ip="192.168.56.99", port=22)},
+            )
+            env = make_env().model_copy(
+                update={
+                    "ssh_access": {
+                        "R1": SshAccess(
+                            ip="127.0.0.1", port=port, username="admin", password="pw"
+                        )
+                    }
+                }
+            )
+            await backend.build(env)
+            status = backend.status()
+            assert status.available is True
+            assert status.detail == "设备 SSH 可达"
+
+    def _no_url_probe(self):
+        probe = StubProbe()
+        probe.url = ""
+        return probe
+
+    @pytest.mark.asyncio
+    async def test_build_without_url_skips_platform_probe(self):
+        # 物理网络：无 URL 也可 build（端点透传），可达性交给 wait_ready
+        probe = StubProbe()
+        probe.url = ""
+        backend = make_backend(probe=probe)
+        lab = await backend.build(make_env())
+        assert lab.endpoints == make_env().ssh_access
+        assert lab.host == ""
 
 
 # ---------------------------------------------------------------------------

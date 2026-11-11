@@ -5,19 +5,12 @@ import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useSession, useSuts, type Iteration } from '../../../api/hooks';
 import { StatusBadge } from '../../../components/StatusBadge';
+import { gateStepLabel, modeLabel } from '../../../utils/labels';
 import { ProgressTab } from '../tabs/ProgressTab';
 import { EffectTab } from '../tabs/EffectTab';
 import { DiffTab } from '../tabs/DiffTab';
 import { TasksTab } from '../tabs/TasksTab';
 import { TraceTab } from '../tabs/TraceTab';
-
-// awaiting_* → 门中文名（横幅/Steps 高亮共用）
-export const AWAITING_LABEL: Record<string, string> = {
-  awaiting_direction: '方向确认',
-  awaiting_hypothesis: '假设提交',
-  awaiting_review: '预审裁决',
-  awaiting_decision: '决策执行',
-};
 
 // 任务明细行点击提升到页级：选中 run + 切到轨迹 Tab（T5）
 export interface SelectedTask {
@@ -41,7 +34,7 @@ export function SessionDetailPage() {
   const it = session.data as Iteration;
   const sutName =
     suts.data?.items.find((s) => s.id === it.sut_id)?.name ?? it.sut_id;
-  const awaiting = AWAITING_LABEL[it.current_step ?? ''];
+  const awaiting = gateStepLabel(it.current_step);
 
   return (
     <div>
@@ -57,17 +50,26 @@ export function SessionDetailPage() {
       <Card style={{ marginBottom: 12 }}>
         <Descriptions size="small" column={3}>
           <Descriptions.Item label="会话 ID">{it.id}</Descriptions.Item>
-          <Descriptions.Item label="SUT">{sutName}</Descriptions.Item>
+          <Descriptions.Item label="会话标识">
+            {it.label ?? '—'}
+          </Descriptions.Item>
+          <Descriptions.Item label="网络Agent">{sutName}</Descriptions.Item>
           <Descriptions.Item label="评测集">
             {it.evalset_id ?? '—'}
           </Descriptions.Item>
-          <Descriptions.Item label="模式">{it.mode}</Descriptions.Item>
+          <Descriptions.Item label="运行模式">{modeLabel(it.mode)}</Descriptions.Item>
           <Descriptions.Item label="状态">
             <StatusBadge value={it.state} />
           </Descriptions.Item>
-          <Descriptions.Item label="预算消耗">
+          <Descriptions.Item label="Token 消耗">
             {typeof it.budget_used?.tokens === 'number'
-              ? `${it.budget_used.tokens.toLocaleString()} tokens`
+              ? `${it.budget_used.tokens.toLocaleString()} Token`
+              : '—'}
+          </Descriptions.Item>
+          <Descriptions.Item label="模型调用次数">
+            {typeof (it.budget_used as { llm_calls?: unknown } | undefined)?.llm_calls ===
+            'number'
+              ? (it.budget_used as { llm_calls: number }).llm_calls.toLocaleString()
               : '—'}
           </Descriptions.Item>
         </Descriptions>

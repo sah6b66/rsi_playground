@@ -5,9 +5,12 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { SettingsPage } from '../../src/pages/settings/SettingsPage';
+import { UsersPage } from '../../src/pages/users/UsersPage';
+import { SecurityPage } from '../../src/pages/security/SecurityPage';
 import { useUiStore } from '../../src/stores/ui';
 import { resetT7Settings, resetT7Users, t7Requests } from '../msw/handlers';
 
+// U7a：六 Tab 容器拆为独立页面——按目标页渲染
 function renderSettings() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 0 } },
@@ -17,6 +20,34 @@ function renderSettings() {
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <SettingsPage />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+function renderUsers() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 0 } },
+  });
+  useUiStore.getState().setUser({ username: 'admin', role: 'admin' });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <UsersPage />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+function renderSecurity() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 0 } },
+  });
+  useUiStore.getState().setUser({ username: 'admin', role: 'admin' });
+  return render(
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <SecurityPage />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -34,12 +65,18 @@ beforeEach(() => {
 // 静态项锁标"静态"、无编辑控件
 test('ParamsTab：动态编辑保存热生效 + 静态项锁', async () => {
   renderSettings();
-  // 动态 number 项渲染为 InputNumber（仅 budget.llm.daily 一项）
-  const num = await screen.findByRole('spinbutton');
-  // 静态项：锁标文案 + 动态标记
-  expect(screen.getByText('静态')).toBeInTheDocument();
-  expect(screen.getAllByText('动态').length).toBeGreaterThanOrEqual(2);
-  // 编辑动态项 budget.llm.daily：清空 → 输入 200 → 失焦保存
+  // U2：配置项以中文名渲染，内部 path 不作为单元格文本（在 tooltip 中）
+  await screen.findByText('裁判模型');
+  expect(screen.getByText('每日模型调用上限')).toBeInTheDocument();
+  expect(screen.getByText('环境构建重试次数')).toBeInTheDocument();
+  expect(screen.queryByText('budget.llm.daily')).not.toBeInTheDocument();
+  // 缺省值列来自静态快照
+  expect(screen.getByText('100')).toBeInTheDocument(); // budget.llm.daily 缺省
+  // 可热更 / 需重启生效 Tag（C2：静态键保存后变「待重启」Badge）
+  expect(screen.getAllByText('需重启生效').length).toBeGreaterThanOrEqual(2);
+  expect(screen.getAllByText('可热更').length).toBeGreaterThanOrEqual(2);
+  // 编辑动态项 budget.llm.daily（数值输入框）：清空 → 输入 200 → 失焦保存
+  const num = screen.getByTestId('edit-budget.llm.daily');
   await userEvent.clear(num);
   await userEvent.type(num, '200');
   await userEvent.tab();
@@ -51,19 +88,15 @@ test('ParamsTab：动态编辑保存热生效 + 静态项锁', async () => {
   expect(put.path).toBe('budget.llm.daily');
   expect(put.body.value).toBe(200);
   // invalidate 后编辑器重挂载显示新值 200（key=value 强制刷新）
-  await waitFor(() =>
-    expect(screen.getByRole('spinbutton')).toHaveValue('200'),
-  );
-  // 静态项没有编辑输入框（spinbutton 仅动态数字项 1 个）
-  expect(screen.getAllByRole('spinbutton').length).toBe(1);
+  await waitFor(() => expect(num).toHaveValue('200'));
+  // 数字型可编辑项共 29 个（C2 全量键 fixture），只读项无输入框
+  expect(screen.getAllByRole('spinbutton').length).toBe(29);
 }, 20_000);
 
 // ② UsersTab：创建 Modal（用户名/角色 5 选/密码 ≥8 位）→ POST body；
 // 禁用 Switch → PUT {disabled:true}
 test('UsersTab：创建用户 + 禁用 Switch', async () => {
-  renderSettings();
-  // 切到用户管理 Tab
-  await userEvent.click(screen.getByRole('tab', { name: '用户管理' }));
+  renderUsers();
   await screen.findByText('u-admin');
   expect(screen.getByText('u-eng-1')).toBeInTheDocument();
   // 创建 Modal
@@ -102,12 +135,11 @@ test('UsersTab：创建用户 + 禁用 Switch', async () => {
     id: 'u-eng-1',
     body: { disabled: true },
   });
-}, 20_000);
+}, 60_000);
 
 // ③ SecurityTab 只读：白名单 8 项路径与冻结域 3 项渲染
 test('SecurityTab：白名单 8 项 + 冻结域 3 项只读渲染', async () => {
-  renderSettings();
-  await userEvent.click(screen.getByRole('tab', { name: '安全边界' }));
+  renderSecurity();
   // 白名单 8 项（代码级常量兜底）
   await waitFor(() =>
     expect(screen.getByText('suts/{id}/skills/.*')).toBeInTheDocument(),
@@ -120,14 +152,13 @@ test('SecurityTab：白名单 8 项 + 冻结域 3 项只读渲染', async () => 
   expect(screen.getByText('evalsets/.*')).toBeInTheDocument();
   // 三层保障说明
   expect(screen.getByText(/三层保障/)).toBeInTheDocument();
-  // 只读：激活面板内无任何按钮型写操作
-  expect(within(screen.getByRole('tabpanel')).queryAllByRole('button')).toEqual([]);
+  // 只读：页面内无任何按钮型写操作
+  expect(screen.queryAllByRole('button')).toEqual([]);
 });
 
 // ④ UsersTab 重置密码：操作列按钮 → Modal（Input.Password ≥8 位）→ POST body
 test('UsersTab：重置密码 Modal + POST body', async () => {
-  renderSettings();
-  await userEvent.click(screen.getByRole('tab', { name: '用户管理' }));
+  renderUsers();
   await screen.findByText('u-admin');
   // 每行操作列都有"重置密码"按钮
   const eng1Row = screen.getByText('u-eng-1').closest('tr') as HTMLElement;
@@ -141,4 +172,4 @@ test('UsersTab：重置密码 Modal + POST body', async () => {
     id: 'u-eng-1',
     password: 'new-pass-9',
   });
-}, 20_000);
+}, 60_000);

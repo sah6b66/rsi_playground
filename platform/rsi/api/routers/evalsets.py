@@ -62,6 +62,9 @@ class EvalsetOut(BaseModel):
     # T6: 解析后的 env.yaml（backend/devices/ssh_access/...）；无 env 的记
     # 录为 None（前端克隆表单/沙箱设备端点聚合消费）
     env: dict[str, Any] | None = None
+    # U7a：详情页友好摘要（设备清单含 ssh ip/port，凭证字段 username/
+    # password/password_ref 全部剥离；无 env → None）
+    env_parsed: dict[str, Any] | None = None
 
 
 class EvalsetPage(BaseModel):
@@ -110,8 +113,55 @@ def _env_of(es: dict) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _env_parsed_of(es: dict) -> dict[str, Any] | None:
+    """env.yaml → 凭证剥离后的详情页摘要（U7a）。
+
+    ``devices``: [{name, type, version?, ip, port}]（ip/port 来自
+    ssh_access；username/password/password_ref 绝不出现在输出）。
+    ``config_apis``: [{name, base_url}]（dict 或 list 两种 yaml 形态）。
+    """
+    env = _env_of(es)
+    if env is None:
+        return None
+    ssh = env.get("ssh_access") or {}
+    devices: list[dict[str, Any]] = []
+    for d in env.get("devices") or []:
+        if isinstance(d, dict):
+            name = d.get("name")
+            spec = d
+        else:
+            name, spec = str(d), {}
+        sa = ssh.get(name) or {}
+        devices.append({
+            "name": name,
+            "type": spec.get("type"),
+            "version": spec.get("version"),
+            "ip": sa.get("ip"),
+            "port": sa.get("port"),
+        })
+    raw_apis = env.get("config_apis") or []
+    if isinstance(raw_apis, dict):
+        api_items = [{"name": k, **(v if isinstance(v, dict) else {})}
+                     for k, v in raw_apis.items()]
+    else:
+        api_items = [v if isinstance(v, dict) else {"name": str(v)}
+                     for v in raw_apis]
+    config_apis = [
+        {"name": a.get("name"), "base_url": a.get("base_url")}
+        for a in api_items
+    ]
+    return {
+        "name": env.get("name"),
+        "backend": env.get("backend"),
+        "devices": devices,
+        "config_apis": config_apis,
+    }
+
+
 def _out(es: dict) -> EvalsetOut:
-    return EvalsetOut(**{**es, "env": _env_of(es)})
+    return EvalsetOut(
+        **{**es, "env": _env_of(es), "env_parsed": _env_parsed_of(es)}
+    )
 
 
 @router.get("", response_model=EvalsetPage)

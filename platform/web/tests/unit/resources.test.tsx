@@ -92,7 +92,7 @@ test('环境页：模式徽章 + 在线灯 + 编辑 PUT + 重启提示', async (
   // 编辑 remote-1 → 保存 → PUT carrier/hosts → restart Alert
   const row = screen.getByText('remote-1').closest('tr')!;
   await userEvent.click(within(row).getByRole('button', { name: /编\s*辑/ }));
-  const endpointInput = await screen.findByRole('textbox', { name: /Endpoint/ });
+  const endpointInput = await screen.findByRole('textbox', { name: /访问端点/ });
   expect(endpointInput).toHaveValue('ssh://user@192.168.1.50');
   await userEvent.click(screen.getByRole('button', { name: /保\s*存/ }));
   await waitFor(() =>
@@ -131,6 +131,78 @@ test('沙箱页：平台卡片 + 探活 detail + 设备端点聚合', async () =
     'href',
     '/evalsets',
   );
+}, 60000);
+
+// ③b 物理网络类型（用户第 5 轮反馈 3）：kind 四值 + physical 隐藏 URL + 卡片 Tag
+test('沙箱页：kind 四值选项 + physical 隐藏 URL 输入 + 物理网络卡片 Tag', async () => {
+  renderApp('/sandboxes');
+  await waitFor(() => expect(screen.getByText('phys-1')).toBeInTheDocument());
+  expect(screen.getAllByText('物理网络').length).toBeGreaterThanOrEqual(1); // phys-1 卡片类型 Tag（卡头+描述行）
+  // 打开新增平台弹窗：类型选项四值（文本嵌在 Space 内——按 option-content DOM 断言）
+  await userEvent.click(screen.getByRole('button', { name: '新增平台' }));
+  const kindSelect = await screen.findByRole('combobox', { name: '类型' });
+  await userEvent.click(kindSelect);
+  const optionEls = await waitFor(() => {
+    const els = document.querySelectorAll('.ant-select-item-option-content');
+    expect(els.length).toBe(4);
+    return els;
+  }, { timeout: 10_000 });
+  expect(Array.from(optionEls).map((e) => e.textContent)).toEqual([
+    'eNSP Pro',
+    'PNETLab',
+    '物理网络',
+    'Fake（离线开发）',
+  ]);
+  // 选「物理网络」→ URL 输入隐藏，出现设备 SSH 提示
+  await userEvent.click(optionEls[2]!);
+  await waitFor(() =>
+    expect(
+      screen.getByText('物理网络无需平台地址，以设备 SSH 可达判断在线'),
+    ).toBeInTheDocument(),
+  );
+  expect(
+    screen.queryByPlaceholderText('https://192.168.56.101:8443'),
+  ).not.toBeInTheDocument();
+}, 60000);
+
+// ③c 平台级设备清单（U6/ADR-25 增补）：物理类型设备编辑器 + 提交 devices + 卡片"设备 N 台"
+test('沙箱页：平台级设备清单编辑器 + 提交 devices + 卡片设备计数', async () => {
+  renderApp('/sandboxes');
+  // phys-1 卡片：设备 2 台 + 平台配置探测文案
+  await waitFor(() =>
+    expect(screen.getByTestId('device-count').textContent).toContain('设备 2 台'),
+  );
+  expect(screen.getByText('设备 SSH 可达（平台配置）')).toBeInTheDocument();
+  // 新增平台 → 选物理网络 → 出现设备清单编辑器
+  await userEvent.click(screen.getByRole('button', { name: '新增平台' }));
+  const kindSelect = await screen.findByRole('combobox', { name: '类型' });
+  await userEvent.click(kindSelect);
+  const optionEls = await waitFor(() => {
+    const els = document.querySelectorAll('.ant-select-item-option-content');
+    expect(els.length).toBe(4);
+    return els;
+  }, { timeout: 10_000 });
+  await userEvent.click(optionEls[2]!); // 物理网络
+  await waitFor(() =>
+    expect(screen.getByTestId('device-editor')).toBeInTheDocument(),
+  );
+  // 填平台标识 + 两个设备行 → 提交 body 含 devices
+  await userEvent.type(screen.getByRole('textbox', { name: /平台标识/ }), 'phys-2');
+  await userEvent.click(screen.getByRole('button', { name: /添加设备/ }));
+  await userEvent.type(screen.getByPlaceholderText('R1'), 'R1');
+  await userEvent.type(screen.getByPlaceholderText('192.168.56.10'), '192.168.56.11');
+  await userEvent.click(screen.getByRole('button', { name: '保 存' }));
+  await waitFor(() =>
+    expect(resourceRequests.sandboxBackend.length).toBe(1),
+  );
+  const req = resourceRequests.sandboxBackend[0] as {
+    key: string;
+    body: Record<string, unknown>;
+  };
+  expect(req.key).toBe('phys-2');
+  const body = req.body;
+  expect(body.kind).toBe('physical');
+  expect(body.devices).toEqual({ R1: { ip: '192.168.56.11', port: 22 } });
 }, 60000);
 
 // ④ 克隆向导：设备 ip/port 动态行（源 ssh_access 预填）→ 提交 201 → 列表出现新名
@@ -188,18 +260,17 @@ import { http, HttpResponse } from 'msw';
 import { server } from '../setup';
 import { MENU, can } from '../../src/utils/permissions';
 
-test('菜单权限投影：researcher 不可见 /images（image:manage），可见沙箱/环境', () => {
+test('菜单权限投影（U1 合并后）：菜单无 /images 项，镜像入口收敛到 /suts 页内 Tab', () => {
   const visible = MENU.flatMap((g) => g.items)
     .filter((i) => can('researcher', i.perm ?? 'view:read'))
     .map((i) => i.key);
-  expect(visible).not.toContain('/images');
+  expect(visible).not.toContain('/images'); // 菜单不再有独立镜像项（任何角色）
   expect(visible).toContain('/sandboxes'); // GET 仅需登录 → view:read
   expect(visible).toContain('/environments'); // GET 仅 view:read
-  // admin 全量可见
   const adminVisible = MENU.flatMap((g) => g.items)
     .filter((i) => can('admin', i.perm ?? 'view:read'))
     .map((i) => i.key);
-  expect(adminVisible).toContain('/images');
+  expect(adminVisible).not.toContain('/images');
 });
 
 test('镜像页 403：无权列表渲染 403 Result 而非空白', async () => {

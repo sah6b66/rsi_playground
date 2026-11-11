@@ -3,6 +3,7 @@
 import { Input, Space, Table, Tag } from 'antd';
 import { useState } from 'react';
 import { useAuditLogs } from '../../../api/hooks';
+import { auditActionLabel } from '../../../utils/labels';
 
 function DetailJson({ detail }: { detail: Record<string, unknown> }) {
   return (
@@ -24,14 +25,14 @@ export function AuditTab() {
     <Space direction="vertical" style={{ width: '100%' }}>
       <Space>
         <Input.Search
-          placeholder="action 包含（如 sut.create）"
+          placeholder="操作包含（如 sut.create）"
           style={{ width: 240 }}
           allowClear
           onSearch={setAction}
           data-testid="audit-action-filter"
         />
         <Input.Search
-          placeholder="actor 等于（如 admin）"
+          placeholder="操作人等于（如 admin）"
           style={{ width: 200 }}
           allowClear
           onSearch={setActor}
@@ -49,12 +50,14 @@ export function AuditTab() {
         }}
         columns={[
           { title: '时间', dataIndex: 'ts', width: 220 },
-          { title: 'Actor', dataIndex: 'actor', width: 120 },
+          { title: '操作人', dataIndex: 'actor', width: 120 },
           {
-            title: 'Action',
+            title: '操作',
             dataIndex: 'action',
             width: 180,
-            render: (v: string) => <Tag color="blue">{v}</Tag>,
+            render: (v: string) => (
+            <Tag color="blue">{auditActionLabel(v)}</Tag>
+          ),
           },
           { title: '对象类型', dataIndex: 'object_type', width: 120 },
           { title: '对象 ID', dataIndex: 'object_id', width: 180 },

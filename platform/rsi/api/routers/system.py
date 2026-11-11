@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import threading
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -35,6 +37,10 @@ class SettingItem(BaseModel):
     value: Any
     source: str
     mutable: bool
+    # C1: user-tier static keys flipped since boot — a restart (POST
+    # /system:restart) is required for services that snapshot the value at
+    # construction time.
+    pending_restart: bool = False
 
 
 class SettingsPage(BaseModel):
@@ -43,6 +49,108 @@ class SettingsPage(BaseModel):
 
 class SettingUpdate(BaseModel):
     value: Any
+
+
+# C2: LLM provider editor — llm.providers.* is excluded from GET
+# /system/settings (plaintext api_key). These dedicated endpoints expose
+# only a half-masked key and accept direct writes.
+class LlmProviderOut(BaseModel):
+    name: str
+    api_key_masked: str
+    base_url: str
+
+
+class LlmConfigOut(BaseModel):
+    providers: list[LlmProviderOut]
+
+
+class LlmProviderUpdate(BaseModel):
+    api_key: str | None = None
+    base_url: str | None = None
+
+
+def _mask_key(key: str) -> str:
+    """Half-mask an api_key: keep the last 3 chars only (sk-***xxx)."""
+    if not key:
+        return ""
+    return f"***{key[-3:]}" if len(key) > 3 else "***"
+
+
+def _llm_config(request: Request) -> tuple[Any, LlmConfigOut]:
+    """Resolve the live Settings object and a masked provider listing."""
+    real = request.app.state.services.get("settings")
+    providers: dict[str, Any] = {}
+    if real is not None:
+        providers = real.llm.providers
+    listing = LlmConfigOut(
+        providers=[
+            LlmProviderOut(
+                name=name,
+                api_key_masked=_mask_key(
+                    getattr(p, "api_key", "") if not isinstance(p, str) else p
+                ),
+                base_url=str(getattr(p, "base_url", "") or ""),
+            )
+            for name, p in providers.items()
+        ]
+    )
+    return providers, listing
+
+
+@router.get("/system/settings/llm", response_model=LlmConfigOut)
+async def get_llm_config(
+    request: Request,
+    user: Claims = Depends(require_perms("credential:manage")),
+) -> LlmConfigOut:
+    """Masked LLM provider listing (C2) — never returns a full api_key."""
+    _, listing = _llm_config(request)
+    return listing
+
+
+@router.put("/system/settings/llm/providers/{name}", response_model=LlmProviderOut)
+@audit.audited("system.llm_provider_update", object_type="llm_provider")
+async def update_llm_provider(
+    name: str,
+    body: LlmProviderUpdate,
+    request: Request,
+    user: Claims = Depends(require_perms("credential:manage")),
+) -> LlmProviderOut:
+    """Update one llm.providers.{name} entry (api_key and/or base_url).
+
+    Writes the live Settings object and persists the whole ``llm.providers``
+    section to settings.yaml (plaintext keys are accepted by design: trusted
+    intranet deployment, config doc §2). The new key takes effect for
+    consumers reading it lazily; a restart is recommended otherwise.
+    """
+    from rsi.settings import LlmProviderSettings, write_settings_section
+
+    providers, listing = _llm_config(request)
+    if name not in providers:
+        raise ConflictError(
+            f"unknown llm provider {name!r}", context={"name": name}
+        )
+    real = request.app.state.services.get("settings")
+    if real is None:
+        raise ConflictError("settings service unavailable", context={"name": name})
+    entry = providers[name]
+    if body.api_key is not None:
+        entry.api_key = body.api_key
+    if body.base_url is not None:
+        entry.base_url = body.base_url
+    write_settings_section(
+        "llm.providers",
+        {
+            pname: LlmProviderSettings(
+                api_key=pval.api_key, base_url=pval.base_url
+            ).model_dump()
+            for pname, pval in providers.items()
+        },
+    )
+    return LlmProviderOut(
+        name=name,
+        api_key_masked=_mask_key(entry.api_key),
+        base_url=entry.base_url,
+    )
 
 
 class StopState(BaseModel):
@@ -129,7 +237,8 @@ async def get_settings(
         items=[
             SettingItem(path=p, value=v["value"],
                         source=v.get("source", "runtime"),
-                        mutable=v.get("mutable", False))
+                        mutable=v.get("mutable", False),
+                        pending_restart=bool(v.get("pending_restart", False)))
             for p, v in settings.items()
         ]
     )
@@ -193,11 +302,14 @@ async def update_setting(
                 f"setting {path!r} has no backing Settings field",
                 context={"path": path},
             ) from exc
-        # persist the leaf key to settings.yaml (atomic rewrite)
+        # persist the leaf key to settings.yaml (atomic rewrite) and mark
+        # static (non-hot-reload) keys as pending-restart (C1)
         write_settings_section(spath, value)
+        if item.get("restart_required", True):
+            item["pending_restart"] = True
     item["value"] = value
     return SettingItem(path=path, value=item["value"], source="yaml+runtime",
-                       mutable=True)
+                       mutable=True, pending_restart=bool(item.get("pending_restart")))
 
 
 @router.post("/system:stop", response_model=StopState)
@@ -217,6 +329,27 @@ async def stop_on(
             "manual STOP via POST /system:stop\n", encoding="utf-8"
         )
     return StopState(stopped=True)
+
+
+@router.post("/system:restart", status_code=202)
+@audit.audited("system.restart", object_type="system")
+async def restart(
+    request: Request,
+    user: Claims = Depends(require_perms("system:stop")),
+) -> dict:
+    """Restart the platform process (C1): settings.yaml edits flagged
+    ``pending_restart`` only take effect after this.
+
+    write_settings_section is synchronous-atomic, so there is no async
+    flush to await. We log, answer 202, then hard-exit after a 1 s delay
+    (threading.Timer) so the response reaches the client first; the
+    supervisor (systemd / docker restart policy) brings the process back.
+    """
+    from rsi.log import get_logger
+
+    get_logger(__name__).info("restart.requested", actor=str(user.sub))
+    threading.Timer(1.0, lambda: os._exit(0)).start()
+    return {"status": "restarting"}
 
 
 @router.delete("/system:stop", response_model=StopState)

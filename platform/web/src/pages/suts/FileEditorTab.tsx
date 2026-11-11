@@ -191,7 +191,7 @@ export function FileEditorTab({ sutId }: { sutId: string }) {
           }}
         >
           <Form.Item
-            label="路径（相对 SUT 根，如 skills/bgp.md）"
+            label="路径（相对 Agent 根目录，如 skills/bgp.md）"
             name="path"
             rules={[{ required: true, message: '请输入路径' }]}
           >

@@ -15,6 +15,7 @@ import {
 } from 'antd';
 import { InboxOutlined } from '@ant-design/icons';
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   useCloneEvalset,
   useDeleteEvalset,
@@ -112,7 +113,16 @@ export function EvalsetListPage() {
         dataSource={data?.items ?? []}
         pagination={false}
         columns={[
-          { title: '名称', dataIndex: 'name' },
+          {
+            title: '名称',
+            dataIndex: 'name',
+            // U7a：名称改为详情页链接
+            render: (name: string, rec) => (
+              <Link to={`/evalsets/${rec.id}`} data-testid={`evalset-link-${rec.id}`}>
+                {name}
+              </Link>
+            ),
+          },
           {
             title: '用途',
             dataIndex: 'purpose',
@@ -265,7 +275,7 @@ export function EvalsetListPage() {
             required
             name="new_name"
             example="netops-bgp-site2"
-            tooltip="重名会返回 409"
+            tooltip="名称需唯一，与已有评测集重名将无法创建"
           >
             <Input />
           </FieldWithHints>
@@ -303,10 +313,10 @@ export function EvalsetListPage() {
             </Form.List>
           ) : null}
           <FieldWithHints
-            label="config_apis（可选）"
+            label="网络环境准备API（可选）"
             name="config_apis"
             extra='JSON 数组，如 [{"name":"nms","base_url":"http://10.0.0.20/api"}]；留空不改'
-            tooltip="整表替换 env.yaml 的 config_apis 段"
+            tooltip="用于评测集任务执行前准备网络环境（如网管 API 预置状态）；保存后将整体替换该评测集的 API 清单；留空表示沿用原值"
           >
             <Input.TextArea rows={3} />
           </FieldWithHints>

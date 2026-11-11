@@ -22,35 +22,46 @@ test('仪表盘渲染指标卡片：会话/镜像/环境/沙箱/实例计数', a
   await waitFor(() =>
     expect(screen.getByText('iter-aaaa1111')).toBeInTheDocument(),
   );
-  // 会话指标（fixture: running 1 / paused_awaiting 1 / finalized 1）
-  expect(screen.getAllByText('运行中').length).toBeGreaterThanOrEqual(1);
+  // 会话指标（fixture: running 1 / paused_awaiting 1 / finalized 1）——标题名词化（U1）
+  expect(screen.getByText('运行中会话')).toBeInTheDocument();
+  expect(screen.getByText('待审批会话')).toBeInTheDocument();
+  expect(screen.getByText('已完成会话')).toBeInTheDocument();
   expect(screen.getAllByText('1').length).toBeGreaterThan(0);
-  expect(screen.getByText(/待审批 1/)).toBeInTheDocument();
-  expect(screen.getByText(/已完成 1/)).toBeInTheDocument();
-  // SUT 镜像数 = 5
-  expect(screen.getByText('SUT 镜像')).toBeInTheDocument();
-  expect(screen.getByText('5')).toBeInTheDocument();
-  // 运行环境（platform:* 检查项 1/2）
+  // 资源卡统一 X/Y 风格（第 5 轮反馈 1a）：
+  // 网络Agent=运行实例 2 / 注册总数 5
+  expect(screen.getAllByText('网络Agent').length).toBeGreaterThanOrEqual(1);
+  expect(screen.getByText('2/5')).toBeInTheDocument();
+  expect(screen.getByText('运行实例 / 注册总数')).toBeInTheDocument();
+  // 运行环境：GET /carrier/hosts（fixture 2 在线 / 共 2）
   expect(screen.getByText('运行环境')).toBeInTheDocument();
-  expect(screen.getByText('1/2')).toBeInTheDocument();
-  expect(screen.getByText('执行主机')).toBeInTheDocument();
-  // 仿真沙箱 3（2 在线）
-  expect(screen.getByText('仿真沙箱')).toBeInTheDocument();
-  expect(screen.getByText('共 3（2 在线）')).toBeInTheDocument();
-  // SUT 实例运行数 = 2
-  expect(screen.getByText(/SUT 实例/)).toBeInTheDocument();
-  expect(screen.getAllByText('2').length).toBeGreaterThanOrEqual(1);
-  // MetricCard 数量 ≥ 6
-  expect(screen.getAllByTestId('metric-card').length).toBeGreaterThanOrEqual(6);
+  expect(screen.getByText('2/2')).toBeInTheDocument();
+  // 网络仿真平台：4 个平台（ensp-pro-1/pnetlab/fake/phys-1）3 在线
+  expect(screen.getByText('网络仿真平台')).toBeInTheDocument();
+  expect(screen.getByText('3/4')).toBeInTheDocument();
+  // 指标卡 6 张两行（会话类/资源类分行，span=8 等宽）；无独立 Token 卡
+  expect(screen.getAllByTestId('metric-card').length).toBe(6);
+  expect(
+    document.querySelectorAll('.ant-row .ant-col-8').length,
+  ).toBeGreaterThanOrEqual(6);
+  expect(screen.queryByText('Token 预算消耗')).not.toBeInTheDocument();
 });
 
-test('依赖面板展示依赖项与离线原因', async () => {
+test('环境状态面板：保留 LLM/数据库等项，隐藏已由指标卡覆盖的项', async () => {
   renderDashboard();
   await waitFor(() =>
-    expect(screen.getByText('platform:pnetlab')).toBeInTheDocument(),
+    expect(screen.getByText('数据库')).toBeInTheDocument(),
   );
-  expect(screen.getByText('platform:ensp-pro-1')).toBeInTheDocument();
-  expect(screen.getByText('connect timeout')).toBeInTheDocument();
+  expect(screen.getByText('LLM 服务')).toBeInTheDocument();
+  expect(screen.getByText('环境状态')).toBeInTheDocument(); // 标题改名（原「外部依赖状态」）
+  expect(screen.queryByText('外部依赖状态')).not.toBeInTheDocument();
+  // 隐藏集（第 5 轮反馈 1a）：docker/docker:*/lab/instances/platform:*
+  expect(screen.queryByText('Docker 引擎')).not.toBeInTheDocument();
+  expect(screen.queryByText('实验环境设备')).not.toBeInTheDocument();
+  expect(screen.queryByText('Agent 实例')).not.toBeInTheDocument();
+  expect(screen.queryByText('网络仿真平台（pnetlab）')).not.toBeInTheDocument();
+  expect(screen.queryByText('网络仿真平台（ensp-pro-1）')).not.toBeInTheDocument();
+  // 中文状态词 + 延迟展示（db/llm 在线）
+  expect(screen.getAllByText('在线').length).toBeGreaterThanOrEqual(2);
   expect(screen.getByText(/211/)).toBeInTheDocument();
 });
 
@@ -59,8 +70,8 @@ test('最近会话迷你表：徽章+待审批高亮+行链接', async () => {
   await waitFor(() =>
     expect(screen.getByText('iter-aaaa1111')).toBeInTheDocument(),
   );
-  expect(screen.getAllByText('运行中').length).toBeGreaterThanOrEqual(1);
-  expect(screen.getAllByText('待审批').length).toBeGreaterThanOrEqual(1);
+  expect(screen.getAllByText('运行中会话').length).toBeGreaterThanOrEqual(1);
+  expect(screen.getAllByText('待审批会话').length).toBeGreaterThanOrEqual(1);
   expect(screen.getAllByText('成功')[0]).toBeInTheDocument();
   // 待审批行高亮 class
   expect(document.querySelectorAll('tr.row-awaiting').length).toBe(1);

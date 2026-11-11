@@ -1,6 +1,6 @@
 // 应用根：QueryClientProvider + 路由表（DD-14 §4）+ 全局 SSE 失效
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { BrowserRouter, Route, Routes } from 'react-router-dom';
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { AuthGuard, RequirePerm } from './components/AuthGuard';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -11,12 +11,16 @@ import { SessionListPage } from './pages/sessions/SessionListPage';
 import { CreateSessionWizard } from './pages/sessions/CreateSessionWizard';
 import { SessionDetailPage } from './pages/sessions/detail/SessionDetailPage';
 import { EvalsetListPage } from './pages/evalsets/EvalsetListPage';
-import { ImagesPage } from './pages/images/ImagesPage';
 import { SandboxesPage } from './pages/sandboxes/SandboxesPage';
 import { EnvironmentsPage } from './pages/environments/EnvironmentsPage';
 import { SutListPage } from './pages/suts/SutListPage';
 import { SutDetailPage } from './pages/suts/SutDetailPage';
 import { SettingsPage } from './pages/settings/SettingsPage';
+import { LogsPage } from './pages/logs/LogsPage';
+import { CredentialsPage } from './pages/credentials/CredentialsPage';
+import { SecurityPage } from './pages/security/SecurityPage';
+import { UsersPage } from './pages/users/UsersPage';
+import { EvalsetDetailPage } from './pages/evalsets/EvalsetDetailPage';
 import { useEventStream } from './api/sse';
 
 const queryClient = new QueryClient({
@@ -35,16 +39,51 @@ function Shell() {
           <Route path="/sessions/new" element={<CreateSessionWizard />} />
           <Route path="/sessions/:id" element={<SessionDetailPage />} />
           <Route path="/evalsets" element={<EvalsetListPage />} />
+          <Route path="/evalsets/:id" element={<EvalsetDetailPage />} />
           <Route path="/suts" element={<SutListPage />} />
           <Route path="/suts/:id" element={<SutDetailPage />} />
-          <Route path="/images" element={<ImagesPage />} />
+          {/* U1：镜像库合并进「网络Agent」页 Tab，旧路由重定向 */}
+          <Route path="/images" element={<Navigate to="/suts?tab=images" replace />} />
           <Route path="/sandboxes" element={<SandboxesPage />} />
           <Route path="/environments" element={<EnvironmentsPage />} />
+          {/* U7a：系统菜单拆分——原六 Tab 容器拆为五个独立页面 */}
           <Route
             path="/settings"
             element={
               <RequirePerm perm="settings:write">
                 <SettingsPage />
+              </RequirePerm>
+            }
+          />
+          <Route
+            path="/logs"
+            element={
+              <RequirePerm perm="view:read">
+                <LogsPage />
+              </RequirePerm>
+            }
+          />
+          <Route
+            path="/credentials"
+            element={
+              <RequirePerm perm="cred:manage">
+                <CredentialsPage />
+              </RequirePerm>
+            }
+          />
+          <Route
+            path="/security"
+            element={
+              <RequirePerm perm="view:read">
+                <SecurityPage />
+              </RequirePerm>
+            }
+          />
+          <Route
+            path="/users"
+            element={
+              <RequirePerm perm="user:manage">
+                <UsersPage />
               </RequirePerm>
             }
           />

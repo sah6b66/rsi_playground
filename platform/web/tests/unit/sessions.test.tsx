@@ -59,11 +59,15 @@ test('列表渲染：Steps 迷你条 + 待审批徽章 + 状态化操作', async
 
 test('向导全流程：公式预览 + 权重和警告 + 提交请求体 + 列表刷新', async () => {
   renderApp('/sessions/new');
-  // Step1：三个下拉（SUT/运行环境/评测集）
+  // Step1：会话标识（U7a 首字段，必选）+ 三个下拉（SUT/运行环境/评测集）
   await waitFor(() =>
     expect(screen.getByText('下一步')).toBeInTheDocument(),
   );
-  await userEvent.click(screen.getByRole('combobox', { name: 'SUT' }));
+  await userEvent.type(
+    screen.getByRole('textbox', { name: /会话标识/ }),
+    'BGP排障优化-第一轮',
+  );
+  await userEvent.click(screen.getByRole('combobox', { name: '网络Agent' }));
   await userEvent.click(await screen.findByText('ipops-agent-1'));
   await userEvent.click(screen.getByRole('combobox', { name: '运行环境' }));
   await userEvent.click(
@@ -108,6 +112,7 @@ test('向导全流程：公式预览 + 权重和警告 + 提交请求体 + 列�
   expect(iterationCreateRequests.length).toBe(1);
   const body = iterationCreateRequests[0] as Record<string, unknown>;
   expect(body.sut_id).toBe('sut-1');
+  expect(body.label).toBe('BGP排障优化-第一轮');
   expect(body.evalset_id).toBe('eval-0001');
   expect(body.mode).toBe('p1');
   const profile = body.profile as {
@@ -123,7 +128,11 @@ test('提交 409（同 SUT 活跃）→ 表单 alert 显示后端 detail', async
   renderApp('/sessions/new');
   await waitFor(() => expect(screen.getByText('下一步')).toBeInTheDocument());
   // sut-2 已有活跃会话（fixture iter-bbbb2222）
-  await userEvent.click(screen.getByRole('combobox', { name: 'SUT' }));
+  await userEvent.type(
+    screen.getByRole('textbox', { name: /会话标识/ }),
+    '冲突会话',
+  );
+  await userEvent.click(screen.getByRole('combobox', { name: '网络Agent' }));
   await userEvent.click(await screen.findByText('ipops-agent-2'));
   await userEvent.click(screen.getByRole('combobox', { name: '运行环境' }));
   await userEvent.click(

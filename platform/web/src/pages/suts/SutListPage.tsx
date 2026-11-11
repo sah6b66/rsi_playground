@@ -1,6 +1,7 @@
-// SUT 列表页（DD-14 §5.6/§5.8，T7）：列表 + 创建 Modal（G5 镜像接入）+
-// 验证镜像（GET /suts/{id}/verify-image）+ 删除确认；?image_ref= 预填。
-import { Button, Form, Input, Modal, Radio, Space, Table, Tag } from 'antd';
+// 网络Agent 管理页（DD-14 §5.6/§5.8，T7；U1 合并镜像库）：
+// Tab1「Agent 列表」= 原 SUT 列表（创建 Modal/验证镜像/删除，?image_ref= 预填）；
+// Tab2「镜像库」= 原 /images 页整体迁入（权限 image:manage，无权显示 403）。
+import { Button, Form, Input, Modal, Radio, Result, Space, Table, Tabs, Tag, Tooltip, Typography } from 'antd';
 import type { TableProps } from 'antd';
 import type { Sut } from '../../api/hooks';
 import { useEffect, useState } from 'react';
@@ -12,8 +13,15 @@ import {
   useVerifyImage,
   type ImageCheckResult,
 } from '../../api/hooks';
+import { QuestionCircleOutlined } from '@ant-design/icons';
 import { DangerConfirm } from '../../components/DangerConfirm';
 import { FieldWithHints } from '../../components/FieldWithHints';
+import { ScopeEditor } from '../../components/ScopeEditor';
+import { ImagesPage } from '../images/ImagesPage';
+import { can } from '../../utils/permissions';
+import { useUiStore } from '../../stores/ui';
+import { scopeFromSelection } from '../../utils/targets';
+import type { ScopeSelection } from '../../utils/targets';
 
 interface SutForm {
   name: string;
@@ -22,21 +30,21 @@ interface SutForm {
   description?: string;
 }
 
-export function SutListPage() {
+function SutListTab({ presetImageRef }: { presetImageRef: string }) {
   const { data, isLoading } = useSuts();
   const createMut = useCreateSut();
   const delMut = useDeleteSut();
   const verifyMut = useVerifyImage();
   const navigate = useNavigate();
-  const [params] = useSearchParams();
   const [createOpen, setCreateOpen] = useState(false);
   const [delTarget, setDelTarget] = useState<{ id: string; name: string } | null>(null);
   const [verifyResult, setVerifyResult] = useState<ImageCheckResult | null>(null);
   // 验证状态仅存前端会话内存（SutOut 无 verify 字段）——刷新后回"未验证"
   const [verified, setVerified] = useState<Record<string, boolean>>({});
+  // U7b 可优化范围：自动（默认）/明确定义 + 域选择
+  const [scopeMode, setScopeMode] = useState<'auto' | 'explicit'>('auto');
+  const [scopeSel, setScopeSel] = useState<ScopeSelection>({});
   const [form] = Form.useForm<SutForm>();
-
-  const presetImageRef = params.get('image_ref') ?? '';
 
   useEffect(() => {
     if (presetImageRef) setCreateOpen(true);
@@ -67,7 +75,7 @@ export function SutListPage() {
         ),
       },
       {
-        title: '镜像',
+        title: '镜像引用',
         render: (_, r) => (
           <Space>
             <code>{r.image_ref}</code>
@@ -114,7 +122,7 @@ export function SutListPage() {
           setCreateOpen(true);
         }}
       >
-        创建 SUT
+        创建 Agent
       </Button>
       <Table
         rowKey="id"
@@ -127,7 +135,7 @@ export function SutListPage() {
 
       <Modal
         open={createOpen}
-        title="创建 SUT"
+        title="创建 Agent"
         okText="创建"
         cancelText="取消"
         onOk={() => form.submit()}
@@ -143,12 +151,21 @@ export function SutListPage() {
           layout="vertical"
           initialValues={{ carrier: 'opencode' }}
           onFinish={(v) => {
-            createMut.mutate(v, {
-              onSuccess: () => {
-                setCreateOpen(false);
-                form.resetFields();
+            // U7b：自动模式不提交 optimization_scope（后端默认自动）；
+            // 明确定义但未勾选任何域同样按自动处理（避免空范围锁死优化）
+            const scope =
+              scopeMode === 'explicit' ? scopeFromSelection(scopeSel) : [];
+            createMut.mutate(
+              scope.length ? { ...v, optimization_scope: scope } : v,
+              {
+                onSuccess: () => {
+                  setCreateOpen(false);
+                  form.resetFields();
+                  setScopeMode('auto');
+                  setScopeSel({});
+                },
               },
-            });
+            );
           }}
         >
           <FieldWithHints
@@ -171,20 +188,57 @@ export function SutListPage() {
           >
             <Input placeholder="ipops-agent:v1.2" />
           </FieldWithHints>
-          <FieldWithHints label="载体" required name="carrier">
-            <Radio.Group>
-              <Radio value="opencode">OpenCode</Radio>
-            </Radio.Group>
-          </FieldWithHints>
+          {/* U7a 载体：只读展示（提交值固定 opencode），不再提供 Radio 选择 */}
+          <Form.Item
+            label={
+              <span>
+                载体&nbsp;
+                <Tooltip title="载体是容器内 Agent 的运行框架（提供 Agent 循环与轨迹采集）；镜像=打包了载体与插件的容器映像。当前支持 OpenCode，其他载体后续开放">
+                  <QuestionCircleOutlined style={{ color: 'rgba(0,0,0,0.45)' }} />
+                </Tooltip>
+              </span>
+            }
+            required
+          >
+            <Tag color="blue" data-testid="carrier-readonly">OpenCode</Tag>
+          </Form.Item>
+          <Form.Item name="carrier" hidden initialValue="opencode">
+            <Input />
+          </Form.Item>
           <FieldWithHints label="描述" name="description">
             <Input.TextArea rows={2} />
           </FieldWithHints>
+          {/* U7b 可优化范围：自动（平台扫描后自行决定=现状）/明确定义（RSI 只碰定义项） */}
+          <Form.Item
+            label={
+              <span>
+                可优化范围&nbsp;
+                <Tooltip title="自动=平台扫描 Agent 文件系统后自行决定优化哪些 skill/工具/脚本；明确定义=RSI 自动优化仅限勾选项（人工编辑不受此限制，仍受全局安全边界约束）">
+                  <QuestionCircleOutlined style={{ color: 'rgba(0,0,0,0.45)' }} />
+                </Tooltip>
+              </span>
+            }
+          >
+            <Radio.Group
+              value={scopeMode}
+              onChange={(e) => setScopeMode(e.target.value)}
+              data-testid="scope-mode"
+            >
+              <Radio value="auto">自动（由平台扫描后决定）</Radio>
+              <Radio value="explicit">明确定义</Radio>
+            </Radio.Group>
+            {scopeMode === 'explicit' && (
+              <div style={{ marginTop: 8 }}>
+                <ScopeEditor value={scopeSel} onChange={setScopeSel} />
+              </div>
+            )}
+          </Form.Item>
         </Form>
       </Modal>
 
       <DangerConfirm
         open={!!delTarget}
-        title="删除 SUT"
+        title="删除 Agent"
         name={delTarget?.name ?? ''}
         description="删除后其 staging 文件与版本引用将不可恢复。"
         loading={delMut.isPending}
@@ -228,6 +282,54 @@ export function SutListPage() {
           </div>
         )}
       </Modal>
+    </Space>
+  );
+}
+
+export function SutListPage() {
+  const [params, setSearchParams] = useSearchParams();
+  const user = useUiStore((s) => s.user);
+  const canManageImages = can(user?.role, 'image:manage');
+  const presetImageRef = params.get('image_ref') ?? '';
+  // ?tab=images（/images 重定向入口）→ 镜像库；?image_ref= → Agent 列表（预填创建）
+  const activeKey =
+    params.get('tab') === 'images' && canManageImages && !presetImageRef
+      ? 'images'
+      : 'agents';
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <Typography.Title level={4} style={{ margin: 0 }}>
+        网络Agent 管理
+      </Typography.Title>
+      <Tabs
+        activeKey={activeKey}
+        onChange={(key) =>
+          setSearchParams(key === 'images' ? { tab: 'images' } : {}, {
+            replace: true,
+          })
+        }
+        items={[
+          {
+            key: 'agents',
+            label: 'Agent 列表',
+            children: <SutListTab presetImageRef={presetImageRef} />,
+          },
+          {
+            key: 'images',
+            label: '镜像库',
+            children: canManageImages ? (
+              <ImagesPage embedded />
+            ) : (
+              <Result
+                status="403"
+                title="无权访问"
+                subTitle="镜像库需要镜像管理权限（image:manage）。"
+              />
+            ),
+          },
+        ]}
+      />
     </Space>
   );
 }

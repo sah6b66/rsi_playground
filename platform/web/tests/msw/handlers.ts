@@ -53,6 +53,7 @@ const baseSessions = () => [
   iteration({
     id: 'iter-aaaa1111',
     sut_id: 'sut-1',
+    label: 'BGP排障优化-第一轮',
     state: 'running',
     current_step: 'attributing',
     round: 3,
@@ -83,7 +84,30 @@ resetSessionFixtures();
 const sessionItems = () => sessions;
 
 // ── Task 6 评测集 fixtures（可变：克隆/导入/删除后变化，测试间重置）──────
-const baseEvalsets = () => [
+interface EvalsetFixture {
+  id: string;
+  name: string;
+  purpose: string;
+  tasks: { id: string }[];
+  description: string;
+  frozen: boolean;
+  version: number;
+  created_at: string;
+  env: Record<string, unknown> | null;
+  env_parsed: {
+    name: string | null;
+    backend: string | null;
+    devices: {
+      name: string;
+      type: string;
+      version: string | null;
+      ip: string;
+      port: number;
+    }[];
+    config_apis: { name: string; base_url: string }[];
+  } | null;
+}
+const baseEvalsets = (): EvalsetFixture[] => [
   {
     id: 'eval-0001',
     name: 'netops-bgp-triage',
@@ -98,6 +122,15 @@ const baseEvalsets = () => [
       devices: [{ name: 'R1', type: 'vrp' }],
       ssh_access: { R1: { ip: '192.168.56.10', port: 22, username: 'admin' } },
     },
+    // U7a 详情页摘要（凭证剥离）
+    env_parsed: {
+      name: 'env-bgp',
+      backend: 'ensp-pro',
+      devices: [
+        { name: 'R1', type: 'vrp', version: '8.180', ip: '192.168.56.10', port: 22 },
+      ],
+      config_apis: [{ name: 'nms', base_url: 'http://10.0.0.9/api' }],
+    },
   },
   {
     id: 'eval-0002',
@@ -109,6 +142,7 @@ const baseEvalsets = () => [
     version: 1,
     created_at: '2026-11-01T00:00:00Z',
     env: null,
+    env_parsed: null,
   },
 ];
 let evalsetData: ReturnType<typeof baseEvalsets>;
@@ -144,6 +178,7 @@ export const sessionsHandlers = [
       iteration({
         id,
         sut_id: (body as { sut_id?: string }).sut_id ?? 'sut-1',
+        label: (body as { label?: string }).label ?? null,
         state: 'attributing',
         current_step: 'awaiting_direction',
         round: 1,
@@ -172,6 +207,14 @@ export const sessionsHandlers = [
       has_more: false,
     }),
   ),
+  // U7a 评测集详情
+  http.get(/\/api\/v1\/evalsets\/[^/]+$/, ({ request }) => {
+    const id = new URL(request.url).pathname.split('/').pop();
+    const es = evalsets().find((e) => e.id === id);
+    if (!es)
+      return HttpResponse.json({ detail: 'not found' }, { status: 404 });
+    return HttpResponse.json(es);
+  }),
   // 运行环境（T6 /carrier/hosts 契约 stub；本任务 hooks 按该契约消费）
   http.get('/api/v1/carrier/hosts', () =>
     HttpResponse.json({
@@ -269,6 +312,19 @@ export const dashboardHandlers = [  http.get('/api/v1/iterations', () =>
           active_labs: 0,
           detail: null,
         },
+        {
+          name: 'phys-1',
+          kind: 'physical',
+          status: 'ready',
+          available: true,
+          active_labs: 0,
+          detail: '设备 SSH 可达（平台配置）',
+          device_count: 2,
+          devices: {
+            R1: { ip: '192.168.56.10', port: 22 },
+            SW2: { ip: '192.168.56.11', port: 2222 },
+          },
+        },
       ],
     }),
   ),
@@ -292,6 +348,10 @@ export const dashboardHandlers = [  http.get('/api/v1/iterations', () =>
           latency_ms: null,
           detail: 'connect timeout',
         },
+        // 以下三项（docker/lab/instances）在前端环境状态面板中隐藏
+        { name: 'docker', status: 'ok', latency_ms: 0 },
+        { name: 'lab', status: 'ok', latency_ms: 1 },
+        { name: 'instances', status: 'ok', latency_ms: 0 },
         { name: 'db', status: 'ok', latency_ms: 0.6 },
         { name: 'llm', status: 'ok', latency_ms: 211 },
       ],
@@ -648,6 +708,14 @@ export const resourcesHandlers = [
         devices: [{ name: 'R1', type: 'vrp' }],
         ssh_access: { R1: { ip: '10.201.0.10', port: 2222, username: 'admin' } },
       },
+      env_parsed: {
+        name: null,
+        backend: 'ensp-pro',
+        devices: [
+          { name: 'R1', type: 'vrp', version: null, ip: '10.201.0.10', port: 2222 },
+        ],
+        config_apis: [],
+      },
     };
     evalsetData = [...evalsets(), clone];
     return HttpResponse.json(clone, { status: 201 });
@@ -671,6 +739,7 @@ export const resourcesHandlers = [
       version: 1,
       created_at: '2026-11-05T00:00:00Z',
       env: null,
+      env_parsed: null,
     };
     evalsetData = [...evalsets(), es];
     return HttpResponse.json(es, { status: 201 });
@@ -688,24 +757,86 @@ handlers.push(...resourcesHandlers);
 // 请求捕获（settings/suts 测试断言用）
 export const t7Requests: Record<string, unknown[]> = {
   settingPut: [],
+  llmProviderPut: [],
+  restartPost: [],
   userCreate: [],
   userUpdate: [],
   userResetPassword: [],
   credCreate: [],
   credRotate: [],
   sutCreate: [],
+  sutScopePut: [],
   filePut: [],
   fileCreate: [],
 };
 
-// system.py SettingItem 形态：{path, value, source, mutable}（静态 → PUT 409）
-type SettingRow = { path: string; value: unknown; source: string; mutable: boolean };
+// system.py SettingItem 形态：{path, value, source, mutable, pending_restart}
+type SettingRow = {
+  path: string;
+  value: unknown;
+  source: string;
+  mutable: boolean;
+  pending_restart?: boolean;
+};
+// 与后端 rsi/api/deps.py default_stores 用户级键清单一致（C2 三层模型）
 const baseSettings = (): SettingRow[] => [
-  { path: 'judge.llm.model', value: 'default', source: 'runtime', mutable: true },
+  // 动态热更键（4）+ 运行时键
+  { path: 'carrier.task_timeout_s', value: 1800, source: 'config', mutable: true },
+  { path: 'carrier.max_instances_per_host', value: 10, source: 'config', mutable: true },
+  { path: 'logging.level', value: 'info', source: 'config', mutable: true },
+  { path: 'llm.defaults.judge.model', value: 'claude-sonnet-4-6', source: 'config', mutable: true },
   { path: 'budget.llm.daily', value: 100, source: 'runtime', mutable: true },
+  // 静态键（保存后标 pending_restart）
+  { path: 'sandbox.build_retry', value: 2, source: 'config', mutable: true },
+  { path: 'sandbox.ready_timeout_s', value: 600, source: 'config', mutable: true },
+  { path: 'judge.det_timeout_s', value: 120, source: 'config', mutable: true },
+  { path: 'judge.llm_retry', value: 2, source: 'config', mutable: true },
+  { path: 'judge.pairwise_enabled', value: true, source: 'config', mutable: true },
+  { path: 'judge.llm.model', value: 'claude-sonnet-4-6', source: 'config', mutable: true },
+  { path: 'llm.cassette_mode', value: 'replay', source: 'config', mutable: true },
+  { path: 'llm.max_concurrent_calls', value: 4, source: 'config', mutable: true },
+  { path: 'llm.defaults.judge.temperature', value: 0, source: 'config', mutable: true },
+  { path: 'llm.defaults.attribution.model', value: '', source: 'config', mutable: true },
+  { path: 'llm.defaults.attribution.temperature', value: null, source: 'config', mutable: true },
+  { path: 'llm.defaults.hypothesis.model', value: '', source: 'config', mutable: true },
+  { path: 'llm.defaults.hypothesis.temperature', value: null, source: 'config', mutable: true },
+  { path: 'llm.defaults.critic.model', value: '', source: 'config', mutable: true },
+  { path: 'llm.defaults.critic.temperature', value: null, source: 'config', mutable: true },
+  { path: 'logging.retention_days', value: 30, source: 'config', mutable: true },
+  { path: 'logging.error_split', value: true, source: 'config', mutable: true },
+  { path: 'server.host', value: '0.0.0.0', source: 'config', mutable: true },
+  { path: 'server.port', value: 8000, source: 'config', mutable: true },
+  { path: 'database.url', value: 'sqlite:///platform.db', source: 'config', mutable: true },
+  { path: 'seed.master', value: 20261102, source: 'config', mutable: true },
+  { path: 'optimizer.critic_max_repair_rounds', value: 5, source: 'config', mutable: true },
+  { path: 'optimizer.sft.no_gain_rounds', value: 5, source: 'config', mutable: true },
+  { path: 'optimizer.sft.min_samples', value: 50, source: 'config', mutable: true },
+  { path: 'decision.alpha', value: 0.05, source: 'config', mutable: true },
+  { path: 'decision.noise.k_repeats', value: 3, source: 'config', mutable: true },
+  { path: 'decision.noise.factor', value: 1.96, source: 'config', mutable: true },
+  { path: 'decision.no_gain_rounds_default', value: 5, source: 'config', mutable: true },
+  { path: 'orchestrator.max_parallel_batches', value: 2, source: 'config', mutable: true },
+  { path: 'orchestrator.checkpoint_interval_s', value: 5, source: 'config', mutable: true },
+  { path: 'orchestrator.health_monitor_interval_s', value: 30, source: 'config', mutable: true },
+  { path: 'orchestrator.budget.iteration_default.max_tokens', value: 50000000, source: 'config', mutable: true },
+  { path: 'orchestrator.budget.iteration_default.max_wall_hours', value: 8, source: 'config', mutable: true },
+  { path: 'orchestrator.budget.iteration_default.max_cost_usd', value: 200, source: 'config', mutable: true },
+  { path: 'orchestrator.budget.global_.max_tokens', value: 100000000, source: 'config', mutable: true },
+  { path: 'orchestrator.budget.global_.max_wall_hours', value: 0, source: 'config', mutable: true },
+  { path: 'orchestrator.budget.global_.max_cost_usd', value: 400, source: 'config', mutable: true },
+  { path: 'tracing.redact.enabled', value: true, source: 'config', mutable: true },
+  { path: 'tracing.archive.hot_days', value: 90, source: 'config', mutable: true },
   { path: 'platform.static_item', value: 'static', source: 'runtime', mutable: false },
 ];
 let settingsData: SettingRow[];
+// 与前端 ParamsTab HOT_KEYS / 后端 _DYNAMIC_PATHS 同构
+const HOT_SETTING_KEYS = new Set([
+  'carrier.task_timeout_s',
+  'carrier.max_instances_per_host',
+  'logging.level',
+  'llm.defaults.judge.model',
+  'budget.llm.daily',
+]);
 export const resetT7Settings = () => {
   settingsData = baseSettings();
 };
@@ -767,7 +898,8 @@ export const settingsHandlers = [
   http.get('/api/v1/system/settings', () =>
     HttpResponse.json({ items: settingsData }),
   ),
-  http.put(/\/api\/v1\/system\/settings\/.+$/, async ({ request }) => {
+  // 注意负向前瞻：llm/providers/* 走下方专用 handler
+  http.put(/\/api\/v1\/system\/settings\/(?!llm\/providers\/).+$/, async ({ request }) => {
     const path = decodeURIComponent(
       new URL(request.url).pathname.replace('/api/v1/system/settings/', ''),
     );
@@ -792,7 +924,36 @@ export const settingsHandlers = [
       );
     }
     item.value = body.value;
+    // 与后端一致：非热更键保存后标 pending_restart（C2）
+    if (!HOT_SETTING_KEYS.has(path)) item.pending_restart = true;
+    else item.pending_restart = false;
     return HttpResponse.json({ ...item });
+  }),
+  // C2：LLM 提供商半脱敏配置 + 平台重启
+  http.get('/api/v1/system/settings/llm', () =>
+    HttpResponse.json({
+      providers: [
+        { name: 'anthropic', api_key_masked: '***xyz', base_url: '' },
+        { name: 'openai_compat', api_key_masked: '', base_url: 'http://llm-gw:8000/v1' },
+      ],
+    }),
+  ),
+  http.put(/\/api\/v1\/system\/settings\/llm\/providers\/.+$/, async ({ request }) => {
+    const name = decodeURIComponent(
+      new URL(request.url).pathname.split('/').pop() ?? '',
+    );
+    const body = (await request.json()) as { api_key?: string; base_url?: string };
+    t7Requests.llmProviderPut.push({ name, body });
+    const masked = body.api_key ? `***${body.api_key.slice(-3)}` : '***xyz';
+    return HttpResponse.json({
+      name,
+      api_key_masked: masked,
+      base_url: body.base_url ?? '',
+    });
+  }),
+  http.post('/api/v1/system:restart', () => {
+    t7Requests.restartPost.push({});
+    return HttpResponse.json({ status: 'restarting' }, { status: 202 });
   }),
   http.get('/api/v1/system/freeze', () => HttpResponse.json({ frozen: false })),
   http.get('/api/v1/system/logs', ({ request }) => {
@@ -1009,6 +1170,36 @@ export const sutsHandlers = [
     return new HttpResponse(null, { status: 201 });
   }),
   http.delete(/\/api\/v1\/suts\/[^/]+$/, () => new HttpResponse(null, { status: 204 })),
+  // U7b PUT optimization-scope：与后端 _validate_scope 同构（越域项 → 422；
+  // fixture 约定 scripts/ 域在本测试环境视为已冻结，用于行内 422 错误断言）
+  http.put(/\/api\/v1\/suts\/[^/]+\/optimization-scope$/, async ({ request }) => {
+    const body = (await request.json()) as { optimization_scope?: string[] | null };
+    const scope = body.optimization_scope ?? null;
+    t7Requests.sutScopePut.push(scope);
+    const invalid = (scope ?? []).filter(
+      (i) =>
+        i.startsWith('scripts/') ||
+        !/^(system-prompt(\.md)?|skills\/.*|scripts\/.*|mcp\.json|mcp-src\/.*|memory\/.*|knowledge\/.*|model\.json)$/.test(i),
+    );
+    if (invalid.length) {
+      return HttpResponse.json(
+        {
+          detail: {
+            code: 'VALIDATION',
+            message: `optimization_scope 项超出全局优化白名单域: ${invalid
+              .map((i) => `'${i}'`)
+              .join(', ')}`,
+            invalid,
+          },
+        },
+        { status: 422 },
+      );
+    }
+    return HttpResponse.json({
+      ...t7Sut(),
+      optimization_scope: scope && scope.length ? scope : null,
+    });
+  }),
 ];
 
 resetT7Settings();

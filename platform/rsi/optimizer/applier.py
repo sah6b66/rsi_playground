@@ -15,7 +15,7 @@ from typing import Any
 
 from rsi.core.errors import TargetViolationError
 from rsi.log import get_logger
-from rsi.optimizer.targets import TargetRegistry
+from rsi.optimizer.targets import TargetRegistry, matches_scope
 from rsi.versioning.changeset import Changeset, FileChange, VersionId
 
 __all__ = ["ChangeApplier"]
@@ -39,9 +39,17 @@ class ChangeApplier:
         sut_id: str,
         hypothesis: dict[str, Any],
         enabled_targets: set[str],
+        allowed_paths: list[str] | None = None,
     ) -> str:
         """1. Snapshot (stub / GitStore), 2. build changeset, 3. validate,
-        4. return candidate version id (GitStore commit or deterministic id)."""
+        4. return candidate version id (GitStore commit or deterministic id).
+
+        *allowed_paths* (U7b, per-agent optimization scope) narrows the
+        global whitelist further (items relative to the SUT tree root:
+        ``dir/`` prefix, otherwise fnmatch); ``None`` = automatic mode.
+        This constrains RSI auto-optimization only — manual FileEditor
+        writes stay bounded by the global whitelist alone.
+        """
         hyp_id = str(hypothesis.get("hypothesis_id") or hypothesis.get("id") or "hyp")
 
         # 1. Snapshot the current SUT so the candidate has an explicit base.
@@ -83,6 +91,19 @@ class ChangeApplier:
         #    validation: the DeterministicCritic runs the same registry).
         for fc in changeset.files:
             self.registry.validate(fc.path, enabled_targets)
+            # U7b per-agent scope enforcement (belt-and-suspenders: the
+            # DeterministicCritic runs the same check before apply).
+            if allowed_paths is not None and not matches_scope(
+                fc.path, allowed_paths
+            ):
+                raise TargetViolationError(
+                    f"path {fc.path!r} 超出该 Agent 的优化范围",
+                    context={
+                        "path": fc.path,
+                        "reason": "out_of_scope",
+                        "allowed_paths": list(allowed_paths),
+                    },
+                )
 
         # 4. Candidate version id.
         if self.gitstore is not None:

@@ -76,6 +76,12 @@ logger = get_logger(__name__)
 
 _EPHEMERAL_JWT_SECRET = "rsi-ephemeral-jwt-secret"
 
+# Deployment-tier secrets (C1): fixed env-var names — the security section
+# no longer exists in Settings; jwt_expire_hours is a deployment constant.
+_JWT_SECRET_ENV = "RSI_JWT_SECRET"
+_MASTER_KEY_ENV = "RSI_MASTER_KEY"
+_JWT_EXPIRE_HOURS = 12
+
 
 def _offline_llm_handler(component: str, prompt_name: str, vars: dict) -> str:
     """Deterministic offline handler: valid-schema payloads for the judge."""
@@ -116,14 +122,13 @@ def bootstrap_database(
 
 def _master_key(settings: Settings) -> tuple[str, bool]:
     """(key, ephemeral) — fall back to a random per-process key offline."""
-    env_name = settings.security.master_key_env
-    candidate = os.environ.get(env_name, "")
+    candidate = os.environ.get(_MASTER_KEY_ENV, "")
     if candidate:
         try:
             CredentialStore(candidate)
             return candidate, False
         except Exception:
-            logger.warning("credentials.invalid_master_key", env=env_name)
+            logger.warning("credentials.invalid_master_key", env=_MASTER_KEY_ENV)
     return base64.b64encode(os.urandom(32)).decode(), True
 
 
@@ -146,12 +151,12 @@ def build_services(
     master_key, ephemeral_creds = _master_key(settings)
     credential_store = CredentialStore(master_key)
     credential_resolver = CredentialResolver(store=credential_store)
-    jwt_secret = os.environ.get(settings.security.jwt_secret_env, "") or (
+    jwt_secret = os.environ.get(_JWT_SECRET_ENV, "") or (
         _EPHEMERAL_JWT_SECRET
     )
     auth_service = AuthService(
         secret=jwt_secret,
-        expire_hours=settings.security.jwt_expire_hours,
+        expire_hours=_JWT_EXPIRE_HOURS,
         session_factory=session_factory,
         audit_log=audit_log,
     )
@@ -177,19 +182,16 @@ def build_services(
     _prompts_dir = _Path(__file__).parent / "judge" / "prompts"
     prompt_library = PromptLibrary(template_dir=_prompts_dir, component="judge")
     accountant = Accountant(session_factory=session_factory)  # C-7: llm_calls rows
+    judge_cfg = settings.llm.defaults.get("judge")
     llm_client = LLMClient(
         handler=_offline_llm_handler,
         max_concurrent_calls=settings.llm.max_concurrent_calls,
-        model=settings.llm.defaults.get("judge").model
-        if settings.llm.defaults.get("judge")
-        else "mock",
+        # 本地 settings.yaml 可能只写 judge 的部分键（如仅 model）——
+        # temperature/model 缺省回退，避免 None 进入 float()/LLM 调用。
+        model=(judge_cfg.model or "mock") if judge_cfg else "mock",
         prompt_library=prompt_library,
         accountant=accountant,
-        temperature=float(
-            settings.llm.defaults.get("judge").temperature
-            if settings.llm.defaults.get("judge")
-            else 0.0
-        ),
+        temperature=float(judge_cfg.temperature) if judge_cfg and judge_cfg.temperature is not None else 0.0,
     )
 
     # -- Judge (session_factory wired -> judgments table persistence) -----
@@ -247,11 +249,9 @@ def build_services(
             backends.setdefault(name, FakeSandboxBackend())
             continue
         if not cfg.url:
-            # Keep the backend constructed so the registry matches settings,
-            # but its probe reports offline for an empty URL (probing ""
-            # never raises) — the scheduler skips it and doctor flags the
-            # config. This prevents "no candidate" EnvErrors from bad YAML
-            # while still surfacing the misconfiguration.
+            # No platform URL（物理网络 kind=physical 或未配 URL）：backend 保持
+            # 构造，在线判定回退为设备 SSH 可达（PrebuiltBackend.status，
+            # ADR-25 增补）——建成 lab 之前 status 报离线。
             logger.warning(
                 "bootstrap.sandbox_backend_missing_url",
                 backend=name,
@@ -265,6 +265,7 @@ def build_services(
             probe=probe,
             ssh_pool=ssh_pool,
             readiness=readiness_checker,
+            devices=cfg.devices,
         )
 
     sandbox_service = SandboxService(
@@ -387,6 +388,12 @@ def build_services(
         gitstore=git_store,
         noise_lookup=_noise_lookup,
         state_store=pause_store,
+        # U7b: per-SUT optimization scope (suts store record) narrows RSI
+        # auto-optimization to the explicitly defined paths; missing/empty
+        # = automatic mode (platform scans and decides, previous behaviour).
+        sut_scope_fn=lambda sut_id: stores["suts"]
+        .get(sut_id, {})
+        .get("optimization_scope"),
     )
 
     # -- HealthMonitor (D-1, DD-12 §4.7) -----------------------------------

@@ -23,6 +23,8 @@ export interface Iteration {
   created_at: string;
   evalset_id?: string | null;
   profile?: Record<string, unknown> | null;
+  // U7a 会话标识（1-64 字符人可读名称；null → 列表回退 ID 前 8 位）
+  label?: string | null;
 }
 
 export interface IterationPage {
@@ -37,6 +39,8 @@ export interface Sut {
   image_ref: string;
   description: string;
   created_at: string;
+  // U7b：RSI 可优化范围（SUT 树相对路径模式）；null/undefined=自动模式
+  optimization_scope?: string[] | null;
 }
 
 export interface SutPage {
@@ -67,6 +71,9 @@ export interface BackendStatus {
   available: boolean;
   active_labs: number;
   detail: string | null;
+  // 平台级设备清单（ADR-25 增补：监控寻址，与在用 lab 无关）
+  device_count?: number;
+  devices?: Record<string, { ip: string; port: number }>;
 }
 
 export interface BackendPage {
@@ -171,6 +178,20 @@ export interface EvalsetEnv {
   [k: string]: unknown;
 }
 
+// U7a 详情页摘要（凭证剥离：仅 name/type/version/ip/port/base_url）
+export interface EvalsetEnvParsed {
+  name?: string | null;
+  backend?: string | null;
+  devices: {
+    name?: string | null;
+    type?: string | null;
+    version?: string | null;
+    ip?: string | null;
+    port?: number | null;
+  }[];
+  config_apis: { name?: string | null; base_url?: string | null }[];
+}
+
 export interface Evalset {
   id: string;
   name: string;
@@ -181,6 +202,7 @@ export interface Evalset {
   version: number;
   created_at: string;
   env?: EvalsetEnv | null;
+  env_parsed?: EvalsetEnvParsed | null;
 }
 
 export interface EvalsetPage {
@@ -194,6 +216,17 @@ export function useEvalsets(): UseQueryResult<EvalsetPage, Error> {
     queryKey: ['evalsets'],
     queryFn: () => apiFetch<EvalsetPage>('GET', '/evalsets'),
     staleTime: 15_000,
+  });
+}
+
+// U7a 评测集详情
+export function useEvalset(
+  id: string | undefined,
+): UseQueryResult<Evalset, Error> {
+  return useQuery({
+    queryKey: ['evalset', id],
+    queryFn: () => apiFetch<Evalset>('GET', `/evalsets/${id}`),
+    enabled: !!id,
   });
 }
 
@@ -229,6 +262,8 @@ export interface CreateSessionBody {
   evalset_id?: string;
   profile_id?: string;
   profile?: Record<string, unknown>;
+  // U7a 会话标识（1-64 字符，中文可用）
+  label?: string;
 }
 
 export function useCreateSession() {
@@ -517,6 +552,7 @@ export interface BackendSaveBody {
   url: string;
   verify_tls: boolean;
   subnets: string[];
+  devices?: Record<string, { ip: string; port: number }>;
 }
 
 export function useSaveBackend() {
@@ -605,6 +641,8 @@ export interface SettingItem {
   value: unknown;
   source: string;
   mutable: boolean;
+  // C2：静态键自启动后被改过 → 需重启平台才生效
+  pending_restart?: boolean;
 }
 
 export interface SettingsPageDto {
@@ -628,10 +666,63 @@ export function useUpdateSetting() {
         { value },
       ),
     onSuccess: (out) => {
-      void message.success(`已热生效：${out.path}`);
+      void message.success(
+        out.pending_restart ? `已保存，重启平台后生效：${out.path}` : `已热生效：${out.path}`,
+      );
       void qc.invalidateQueries({ queryKey: ['system-settings'] });
     },
     onError: (err) => void message.error(err.message),
+  });
+}
+
+// ── C2：LLM 提供商直配（半脱敏）+ 平台重启 ────────────────────────────────
+
+// system.py LlmProviderOut（api_key 仅返回掩码 ***尾3位）
+export interface LlmProviderDto {
+  name: string;
+  api_key_masked: string;
+  base_url: string;
+}
+
+export interface LlmConfigDto {
+  providers: LlmProviderDto[];
+}
+
+export function useLlmConfig(): UseQueryResult<LlmConfigDto, Error> {
+  return useQuery({
+    queryKey: ['system-settings-llm'],
+    queryFn: () => apiFetch<LlmConfigDto>('GET', '/system/settings/llm'),
+  });
+}
+
+export function useUpdateLlmProvider() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      name,
+      api_key,
+      base_url,
+    }: {
+      name: string;
+      api_key?: string;
+      base_url?: string;
+    }) =>
+      apiFetch<LlmProviderDto>(
+        'PUT',
+        `/system/settings/llm/providers/${encodeURIComponent(name)}`,
+        { api_key, base_url },
+      ),
+    onSuccess: (out) => {
+      void message.success(`已保存模型服务配置：${out.name}`);
+      void qc.invalidateQueries({ queryKey: ['system-settings-llm'] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+export function useRestartPlatform() {
+  return useMutation({
+    mutationFn: () => apiFetch<{ status: string }>('POST', '/system:restart'),
   });
 }
 
@@ -813,7 +904,7 @@ export function useSut(id: string | undefined): UseQueryResult<Sut, Error> {
   });
 }
 
-// POST /suts（SutCreate：name/carrier/image_ref/description）
+// POST /suts（SutCreate：name/carrier/image_ref/description/optimization_scope）
 export function useCreateSut() {
   const qc = useQueryClient();
   return useMutation({
@@ -822,6 +913,7 @@ export function useCreateSut() {
       carrier: string;
       image_ref: string;
       description?: string;
+      optimization_scope?: string[];
     }) => apiFetch<Sut>('POST', '/suts', body),
     onSuccess: (out) => {
       void message.success(`SUT ${out.name} 已创建`);
@@ -837,6 +929,25 @@ export function useDeleteSut() {
     mutationFn: (id: string) => apiFetch<void>('DELETE', `/suts/${id}`),
     onSuccess: () => {
       void message.success('SUT 已删除');
+      void qc.invalidateQueries({ queryKey: ['suts'] });
+    },
+    onError: (err) => void message.error(err.message),
+  });
+}
+
+// PUT /suts/{id}/optimization-scope（U7b：编辑 RSI 可优化范围；null/[]=自动模式）
+export function useUpdateSutScope(id: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (optimization_scope: string[] | null) =>
+      apiFetch<Sut>(
+        'PUT',
+        `/suts/${id}/optimization-scope`,
+        { optimization_scope },
+      ),
+    onSuccess: () => {
+      void message.success('优化范围已保存');
+      void qc.invalidateQueries({ queryKey: ['sut', id] });
       void qc.invalidateQueries({ queryKey: ['suts'] });
     },
     onError: (err) => void message.error(err.message),

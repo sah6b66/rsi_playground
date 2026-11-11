@@ -1,11 +1,14 @@
 // SUT 详情页（DD-14 §5.6，T7）：Descriptions 头 + lineage 版本链（列表呈现，
 // DAG 可视化留后续）+ 配置文件（FileEditor）+ 版本（选两版本 DiffViewer）。
-import { Card, Descriptions, Empty, Select, Space, Spin, Table, Tabs, Tag } from 'antd';
-import { useState } from 'react';
+import { Alert, Button, Card, Descriptions, Empty, Radio, Select, Space, Spin, Table, Tabs, Tag } from 'antd';
+import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { useSut, useSutLineage, useVersionDiff } from '../../api/hooks';
+import { useSut, useSutLineage, useUpdateSutScope, useVersionDiff } from '../../api/hooks';
 import { DiffViewer } from '../../components/DiffViewer';
 import { FileEditorTab } from './FileEditorTab';
+import { ScopeEditor } from '../../components/ScopeEditor';
+import { TARGET_PATHS, scopeFromSelection, selectionFromScope } from '../../utils/targets';
+import type { ScopeSelection } from '../../utils/targets';
 
 function LineagePanel({ sutId }: { sutId: string }) {
   const { data, isLoading } = useSutLineage(sutId);
@@ -100,6 +103,95 @@ function LineagePanel({ sutId }: { sutId: string }) {
   );
 }
 
+// 优化范围 Tab（U7b）：自动/明确定义可编辑（PUT optimization-scope）。
+// 仅约束 RSI 自动优化；人工编辑仍受全局安全边界（白名单+冻结域）约束。
+function ScopeTab({ sutId, scope }: { sutId: string; scope: string[] | null }) {
+  const saveMut = useUpdateSutScope(sutId);
+  const explicit = !!scope?.length;
+  const [mode, setMode] = useState<'auto' | 'explicit'>(explicit ? 'explicit' : 'auto');
+  const [sel, setSel] = useState<ScopeSelection>(() => selectionFromScope(scope));
+  const [scopeError, setScopeError] = useState('');
+  useEffect(() => {
+    setMode(scope?.length ? 'explicit' : 'auto');
+    setSel(selectionFromScope(scope));
+  }, [scope]);
+
+  const items = scopeFromSelection(sel);
+  const save = () => {
+    saveMut.mutate(mode === 'explicit' && items.length ? items : null, {
+      onSuccess: () => setScopeError(''),
+      onError: (err) => setScopeError(err.message),
+    });
+  };
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Alert
+        type="info"
+        showIcon
+        message={`当前模式：${
+          explicit ? `明确定义（${scope!.length} 项）` : '自动（由平台扫描后决定）'
+        }`}
+        description="仅约束 RSI 自动优化（Critic/applier 在执行层强制收窄至勾选项）；人工文件编辑不受此限制，仍受全局安全边界（白名单+冻结域）约束。"
+      />
+      <Card size="small" title={<b>RSI 可优化范围（可编辑）</b>}>
+        <Space direction="vertical" style={{ width: '100%' }} size="small">
+          <Radio.Group
+            value={mode}
+            onChange={(e) => setMode(e.target.value)}
+            data-testid="detail-scope-mode"
+          >
+            <Radio value="auto">自动（由平台扫描后决定）</Radio>
+            <Radio value="explicit">明确定义</Radio>
+          </Radio.Group>
+          {mode === 'explicit' && <ScopeEditor value={sel} onChange={setSel} />}
+          {mode === 'explicit' && items.length > 0 && (
+            <div>
+              将提交：
+              {items.map((i) => (
+                <Tag key={i}>
+                  <code>{i}</code>
+                </Tag>
+              ))}
+            </div>
+          )}
+          {scopeError && (
+            <Alert
+              type="error"
+              showIcon
+              data-testid="scope-422-error"
+              message={scopeError}
+            />
+          )}
+          <Space>
+            <Button
+              type="primary"
+              loading={saveMut.isPending}
+              onClick={save}
+              data-testid="scope-save"
+            >
+              保存
+            </Button>
+          </Space>
+        </Space>
+      </Card>
+      <Card size="small" title={<b>全局可优化项参考（8 项白名单，只读）</b>}>
+        <Table
+          rowKey="key"
+          size="small"
+          pagination={false}
+          dataSource={TARGET_PATHS}
+          columns={[
+            { title: '优化项', dataIndex: 'key', width: 140 },
+            { title: '路径规则', dataIndex: 'path', render: (v: string) => <code>{v}</code> },
+            { title: '说明', dataIndex: 'desc' },
+          ]}
+        />
+      </Card>
+    </Space>
+  );
+}
+
 export function SutDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { data: sut, isLoading } = useSut(id);
@@ -127,6 +219,13 @@ export function SutDetailPage() {
         items={[
           { key: 'files', label: '配置文件', children: <FileEditorTab sutId={sut.id} /> },
           { key: 'versions', label: '版本', children: <LineagePanel sutId={sut.id} /> },
+          {
+            key: 'scope',
+            label: '优化范围',
+            children: (
+              <ScopeTab sutId={sut.id} scope={sut.optimization_scope ?? null} />
+            ),
+          },
         ]}
       />
     </Space>

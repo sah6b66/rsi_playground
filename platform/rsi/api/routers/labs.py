@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from rsi.api.deps import audit, get_current_user, get_store, require_perms
 from rsi.api.pagination import DEFAULT_LIMIT, paginate
@@ -164,6 +164,11 @@ async def list_backends(
     svc = services.get("sandbox_service")
     if svc is not None:
         statuses = await svc.backend_status()
+        # 平台级设备清单计数（settings 静态段；监控寻址与在用 lab 无关）
+        cfg_backends = getattr(getattr(services.get("settings"), "sandbox", None), "backends", {}) or {}
+        def _cfg_devices(name: str) -> dict:
+            return getattr(cfg_backends.get(name), "devices", None) or {}
+
         return {
             "items": [
                 {
@@ -173,6 +178,11 @@ async def list_backends(
                     "available": s.available,
                     "active_labs": s.active_labs,
                     "detail": s.detail,
+                    "device_count": len(_cfg_devices(s.key)),
+                    "devices": {
+                        n: {"ip": ep.ip, "port": ep.port}
+                        for n, ep in _cfg_devices(s.key).items()
+                    },
                 }
                 for s in statuses
             ]
@@ -185,13 +195,21 @@ async def list_backends(
     }
 
 
+class DeviceEndpointPut(BaseModel):
+    """平台级设备端点（监控寻址用 ip:port；凭证属评测集 env.yaml）。"""
+
+    ip: str
+    port: int = Field(22, ge=1, le=65535)
+
+
 class BackendPutBody(BaseModel):
     """PUT /sandbox/backends/{key}：写 settings.yaml 静态段（DD-14 §5.8）。"""
 
-    kind: Literal["ensp-pro", "pnetlab", "fake"]
+    kind: Literal["ensp-pro", "pnetlab", "physical", "fake"]
     url: str = ""
     verify_tls: bool = False
     subnets: list[str] = []
+    devices: dict[str, DeviceEndpointPut] = {}
 
 
 @router.put("/sandbox/backends/{key}")
@@ -208,14 +226,21 @@ async def put_backend(
     """
     services = getattr(request.app.state, "services", None) or {}
     settings = services.get("settings")
+    # 空 devices → 不写入（section 整体替换，旧清单即被清除）
+    payload: dict[str, Any] = {
+        "kind": body.kind,
+        "url": body.url,
+        "verify_tls": body.verify_tls,
+        "subnets": body.subnets,
+    }
+    if body.devices:
+        payload["devices"] = {
+            name: {"ip": ep.ip, "port": ep.port}
+            for name, ep in body.devices.items()
+        }
     write_settings_section(
         f"sandbox.backends.{key}",
-        {
-            "kind": body.kind,
-            "url": body.url,
-            "verify_tls": body.verify_tls,
-            "subnets": body.subnets,
-        },
+        payload,
         home=getattr(settings, "home", None),
     )
     return {"restart_required": True}

@@ -105,6 +105,8 @@ React 18 + TypeScript + Vite；**Ant Design 5**（Table/Form/Steps/Upload/Timeli
 ### 5.6 SUT 管理 `/suts`（DD-14 既有保留）
 列表/创建（G5 镜像接入：image_ref+验证镜像按钮）/详情（版本 lineage+diff+优化项勾选）/FileEditor（Monaco 配置树 CRUD——P0 人工模式核心；冻结路径保存 409 → 行内提示）
 
+**SutCreate·可优化范围（U7b）**：创建 Modal 增「可优化范围」区——默认"自动（由平台扫描后决定）"，切"明确定义"出现 8 目标域 Checkbox + 域内路径模式细化（tags 输入，留空=整域；提交组装为 `optimization_scope`，目录域自动补域根前缀与 `/` 后缀）。详情「优化范围」Tab 同编辑器可编辑（`PUT /suts/{id}/optimization-scope`，非法项 422 行内错误），并显示当前模式与说明文案：**仅约束 RSI 自动优化（critic/applier 执行层强制收窄，见 DD-11）；未定义=扫描自动决定=现状；人工编辑仍受全局安全边界约束**。
+
 ### 5.7 镜像 `/images`（U4）
 按执行主机分组的镜像表（名称:tag/大小/创建时间/**被哪些 SUT 引用**）；操作：路径导入（输入宿主机 tar 路径→`POST /docker/images:load`→轮询结果）、删除（被引用禁用+提示）、创建 SUT 快捷入口（预填 image_ref）、验证镜像（既有 `/suts/{id}/verify-image`）
 数据：**新增** `GET /docker/images`（按主机，docker-py images 列表+离线返回空标 offline）、`POST /docker/images:load`（body={host, tar_path}→to_thread docker load）、`DELETE /docker/images/{ref}?host=`（引用检查）

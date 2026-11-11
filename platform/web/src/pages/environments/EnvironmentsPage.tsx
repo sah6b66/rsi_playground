@@ -54,7 +54,7 @@ export function EnvironmentsPage() {
           type="info"
           showIcon
           message="已写入配置，重启平台后生效"
-          description="carrier.hosts 为静态配置段，运行中的主机池不会热重建"
+          description="主机清单属于静态配置，保存后需重启平台才会生效；运行中的主机池不会自动重建"
           closable
           style={{ marginBottom: 16 }}
         />
@@ -76,7 +76,7 @@ export function EnvironmentsPage() {
                 <Tag color="green">本地</Tag>
               ),
           },
-          { title: 'Endpoint', dataIndex: 'endpoint' },
+          { title: '访问端点', dataIndex: 'endpoint' },
           {
             title: '状态',
             dataIndex: 'online',
@@ -143,21 +143,21 @@ export function EnvironmentsPage() {
       >
         <Form form={form} layout="vertical">
           <FieldWithHints
-            label="主机键"
+            label="主机标识"
             required
             name="key"
-            example="remote-1"
-            extra="settings.yaml carrier.hosts 下的键名"
-            tooltip="主机池按键路由（DD-14 §5.9）"
+            example="agent-host-1"
+            extra="仅小写字母、数字与连字符；创建后不可修改"
+            tooltip="用于在平台内唯一标识这台执行主机的名字，会话创建与镜像导入时按它选择主机"
           >
             <Input />
           </FieldWithHints>
           <FieldWithHints
-            label="Endpoint"
+            label="访问端点"
             name="endpoint"
             example="ssh://user@192.168.1.50"
-            extra="远端 SSH；本地留空或 docker 默认（缺省 local）"
-            tooltip="远端执行主机经 SSH 隧道访问 Docker daemon；端口缺省 22"
+            extra="本地 Docker 留空即可（缺省 local）；远端主机需可免密 SSH 访问其 Docker 服务"
+            tooltip="本地执行主机使用平台自带 Docker，留空即可；远端主机填写 SSH 连接串（端口缺省 22）"
           >
             <Input />
           </FieldWithHints>
@@ -165,7 +165,7 @@ export function EnvironmentsPage() {
             label="实例上限"
             name="max_instances"
             extra="缺省 2，范围 1–64"
-            tooltip="该主机可同时承载的 SUT 容器数上限"
+            tooltip="该主机可同时承载的 Agent 容器数上限"
           >
             <InputNumber min={1} max={64} style={{ width: '100%' }} />
           </FieldWithHints>

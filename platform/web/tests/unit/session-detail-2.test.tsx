@@ -91,7 +91,7 @@ test('修改对比：轮次默认 R1，文件列表 + Monaco diff 内容 + 清�
 
   // 修改清单表：path/target/git ref（ref=第 1 轮 config_version_after=2）
   const manifest = await screen.findByTestId('diff-manifest-table');
-  expect(manifest.textContent).toContain('git ref');
+  expect(manifest.textContent).toContain('Git 版本');
   expect(manifest.textContent).toContain('v2');
   expect(manifest.textContent).toContain('skill/bgp.md');
 }, 30000);

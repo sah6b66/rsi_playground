@@ -4,6 +4,7 @@ import type { DataNode } from 'antd/es/tree';
 import { useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { TraceEventDto } from '../api/hooks';
+import { eventTypeLabel } from '../utils/labels';
 
 export type { TraceEventDto };
 
@@ -125,7 +126,7 @@ export function TraceTimeline({
                   {ev.seq}
                 </Tag>
                 <Tag color={EVENT_COLOR[ev.event_type] ?? 'default'}>
-                  {ev.event_type}
+                  {eventTypeLabel(ev.event_type)}
                 </Tag>
                 <Typography.Text type="secondary" style={{ marginRight: 8 }}>
                   {relTs(events, ev)}

@@ -13,16 +13,17 @@ cd rsi_playground
 # 3. 安装依赖
 cd platform && uv sync
 
-# 4. 复制配置样例并修改
-cp ../examples/settings.yaml.example ../settings.yaml
-# 编辑 settings.yaml，至少设置：
-#   sandbox.backends.ensp-pro-1.host  → 你的 ENSP Pro 主机 IP
-#   carrier.hosts.main.subnets       → 本机 Docker 网段
+# 4. 复制配置样例并修改（三层配置模型：用户 yaml + 内部 yaml + 环境变量）
+cp ../examples/settings.yaml.example ../var/settings.yaml
+cp ../examples/settings-internal.yaml.example ../var/settings-internal.yaml   # 可选（内部项通常无需修改）
+# 编辑 var/settings.yaml（用户级，WEB 参数页亦可在线编辑）：
+#   llm.providers.anthropic.api_key   → 模型密钥（内网明文直配）
+#   llm.defaults.judge.model          → 裁判模型名称
 
-# 5. 设置环境变量（密钥类）
+# 5. 设置环境变量（部署级：安全密钥 + 数据根目录）
 export RSI_JWT_SECRET=$(openssl rand -hex 32)
 export RSI_MASTER_KEY=$(openssl rand -base64 32)
-export ANTHROPIC_API_KEY=sk-ant-...
+export RSI_HOME=/path/to/var   # 数据根目录（默认 ./var；git/storage/logs 均由此派生）
 
 # 6. 启动
 uv run uvicorn rsi.api.app:create_app --factory --port 8000

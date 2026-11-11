@@ -77,8 +77,7 @@ RSI_MODULES = [
 ]
 
 REQUIRED_SECTIONS = [
-    "server", "database", "git", "storage", "security",
-    "llm", "carrier", "sandbox",
+    "server", "database", "llm", "carrier", "sandbox",
 ]
 
 JWT_MIN_BYTES = 32
@@ -279,11 +278,9 @@ class Doctor:
                 message=f"database.url = {db_url!r}，仅支持 sqlite:// 或 postgresql://",
                 fix_hint="P0 使用 sqlite:///platform.db；P1 使用 postgresql://…"))
 
-        # git.repo.path parent writable
+        # git bare repo parent writable (C1: path derived from RSI_HOME)
         home = Path(os.environ.get("RSI_HOME", "./var"))
-        repo_path = Path((cfg.get("git") or {}).get("repo", {})
-                         .get("path", "git/platform-repo.git"))
-        repo_path = repo_path if repo_path.is_absolute() else home / repo_path
+        repo_path = home / "git" / "platform-repo.git"
         try:
             repo_path.parent.mkdir(parents=True, exist_ok=True)
             probe = repo_path.parent / ".doctor-write-test"
@@ -630,10 +627,8 @@ class Doctor:
         home = Path(os.environ.get("RSI_HOME", "./var"))
         cfg = self._load_settings()
 
-        # git bare repo
-        repo_path = Path((cfg.get("git") or {}).get("repo", {})
-                         .get("path", "git/platform-repo.git"))
-        repo_path = repo_path if repo_path.is_absolute() else home / repo_path
+        # git bare repo (C1: derived layout <home>/git/platform-repo.git)
+        repo_path = home / "git" / "platform-repo.git"
         if repo_path.exists():
             results.append(CheckResult(
                 category="internal", name="Git 裸仓", status="pass",
@@ -656,15 +651,14 @@ class Doctor:
         dir_ok = self._db_dir_writable(db_url, home)
         results.append(dir_ok)
 
-        # traces/artifacts/logs directories
-        for label, key, default in (
-            ("traces", "traces_dir", "traces"),
-            ("artifacts", "artifacts_dir", "artifacts"),
-            ("logs", "dir", "logs"),
+        # traces/artifacts/logs directories (C1: derived layout
+        # <home>/storage/{traces,artifacts} and <home>/logs — no longer
+        # configurable via settings.yaml)
+        for label, p in (
+            ("traces", home / "storage" / "traces"),
+            ("artifacts", home / "storage" / "artifacts"),
+            ("logs", home / "logs"),
         ):
-            section = cfg.get("storage") if label != "logs" else cfg.get("logging")
-            p = Path((section or {}).get(key, default))
-            p = p if p.is_absolute() else home / p
             try:
                 p.mkdir(parents=True, exist_ok=True)
                 results.append(CheckResult(
@@ -674,7 +668,7 @@ class Doctor:
                 results.append(CheckResult(
                     category="internal", name=f"{label} 目录", status="fail",
                     message=f"{label} 目录不可创建: {p} ({exc})",
-                    fix_hint="检查目录权限或修改 storage/logging 配置"))
+                    fix_hint="检查目录权限 (目录由 RSI_HOME 派生)"))
 
         # API app creatable
         try:

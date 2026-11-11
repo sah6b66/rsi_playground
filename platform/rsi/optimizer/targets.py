@@ -8,13 +8,19 @@ the DeterministicCritic (double validation, DD-11 §4).
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from pathlib import PurePosixPath
 
 from rsi.core.errors import TargetViolationError
 from rsi.log import get_logger
 
-__all__ = ["FROZEN_PATHS", "TARGET_PATHS", "TargetRegistry"]
+__all__ = [
+    "FROZEN_PATHS",
+    "TARGET_PATHS",
+    "TargetRegistry",
+    "matches_scope",
+]
 
 logger = get_logger(__name__)
 
@@ -56,6 +62,37 @@ _TARGET_EXAMPLES: dict[str, str] = {
 }
 
 _ID = r"[^/]+"
+
+
+def matches_scope(full_path: str, allowed_paths: list[str]) -> bool:
+    """Per-agent optimization-scope match (U7b, DD-11 §3).
+
+    *full_path* is a ``suts/<id>/...`` changeset path; *allowed_paths* items
+    are relative to the SUT config-tree root (no ``suts/<id>/`` prefix).
+    Matching semantics per item:
+
+    * item ends with ``/`` → directory prefix match (``skills/a/`` allows
+      ``skills/a/x.md`` but not ``skills/ab/y.md``);
+    * otherwise → fnmatch glob against the relative path
+      (``mcp.json`` exact, ``skills/*.md`` glob).
+
+    An empty *allowed_paths* allows nothing (callers normalize the
+    "undefined = automatic mode" case to ``None`` before calling).
+    """
+    parts = PurePosixPath(full_path.replace("\\", "/")).parts
+    if len(parts) < 3 or parts[0] != "suts":
+        return False
+    rel = "/".join(parts[2:])
+    for item in allowed_paths:
+        item = str(item).strip()
+        if not item:
+            continue
+        if item.endswith("/"):
+            if rel.startswith(item):
+                return True
+        elif fnmatch.fnmatch(rel, item):
+            return True
+    return False
 
 
 def _compile(pattern: str) -> re.Pattern[str]:

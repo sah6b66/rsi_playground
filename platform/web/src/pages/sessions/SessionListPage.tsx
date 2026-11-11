@@ -10,6 +10,7 @@ import {
   type Iteration,
 } from '../../api/hooks';
 import { DangerConfirm } from '../../components/DangerConfirm';
+import { modeLabel, stepLabel } from '../../utils/labels';
 import { StatusBadge } from '../../components/StatusBadge';
 import { useUiStore } from '../../stores/ui';
 import { can } from '../../utils/permissions';
@@ -129,14 +130,26 @@ export function SessionListPage() {
             dataIndex: 'id',
             render: (id: string) => <Link to={`/sessions/${id}`}>{id}</Link>,
           },
+          {
+            // U7a 会话标识：空回退 ID 前 8 位
+            title: '会话标识',
+            dataIndex: 'label',
+            render: (label: string | null | undefined, it: Iteration) => (
+              <Link to={`/sessions/${it.id}`}>
+                {label && label.trim() ? label : it.id.slice(0, 8)}
+              </Link>
+            ),
+          },
           { title: '开始时间', dataIndex: 'created_at' },
-          { title: 'SUT', dataIndex: 'sut_id', render: (v: string) => sutName(v) },
+          { title: '网络Agent', dataIndex: 'sut_id', render: (v: string) => sutName(v) },
           {
             title: '评测集',
             dataIndex: 'evalset_id',
             render: (v: string | null) => evalName(v),
           },
-          { title: '模式', dataIndex: 'mode', render: (m: string) => <span>{m}</span> },
+          { title: '运行模式',
+          dataIndex: 'mode',
+          render: (m: string) => <span>{modeLabel(m)}</span> },
           {
             title: '状态',
             dataIndex: 'state',
@@ -150,14 +163,14 @@ export function SessionListPage() {
           {
             title: '当前阶段',
             dataIndex: 'current_step',
-            render: (v: string | null) => v ?? '—',
+            render: (v: string | null) => stepLabel(v) ?? '—',
           },
           {
-            title: '预算消耗',
+            title: 'Token 消耗',
             dataIndex: 'budget_used',
             render: (b: Record<string, unknown>) =>
               typeof b?.tokens === 'number'
-                ? `${(b.tokens as number).toLocaleString()} tokens`
+                ? `${(b.tokens as number).toLocaleString()} Token`
                 : '—',
           },
           {

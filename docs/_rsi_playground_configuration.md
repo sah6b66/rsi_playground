@@ -3,8 +3,8 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DES-002 |
-| 版本 | v1.6（ADR-25 沙箱连通性模型：平台 URL + 设备级 SSH） |
-| 日期 | 2026-11-09 |
+| 版本 | v2.0（配置三层模型：用户/内部/部署分离，C1-C2 落地） |
+| 日期 | 2026-11-05 |
 | 状态 | 待评审 |
 | 上游文档 | 需求 RSI-PG-REQ-001 v0.25；设计 RSI-PG-DES-001 v2.12 |
 | 关联文档 | 接口定义 RSI-PG-DES-003（docs/_rsi_playground_interfaces.md）；测试设计 RSI-PG-DES-004（docs/_rsi_playground_test.md） |
@@ -36,152 +36,173 @@
 
 ---
 
-## 2. 平台配置（`settings.py`，环境变量/`settings.yaml` 双源）
+## 2. 平台配置（三层模型 v2.0）
 
-> **动态/静态分区（v2.11）**：下述带 `§动态` 标注范围内的项可经 WEB/API（`PUT /system/settings/{path}`）热更（写回 settings.yaml + 内存刷新 + 审计，TU-034）；其余为静态项（路径/DB/git/网络类，改文件 + 重启生效，API 侧只读 409）。动态范围：`sandbox.build_retry/ready_timeout_s`、`carrier.task_timeout_s`、`judge.*`、`optimizer.*`、`decision.noise/alpha/no_gain_rounds_default`、`orchestrator.budget/checkpoint_interval_s`、`instrumentor.policy`、`tracing.redact/archive`、`llm.providers/defaults`、`security.jwt_expire_hours`。
->
-> **热更真实语义（终审 H1 修复注记）**：`Settings` 现按 env > `settings.yaml` > 默认值构造（`YamlConfigSettingsSource`），PUT 会更新共享 `Settings` 对象并把叶子键写回 `settings.yaml`。**即时生效**仅限按需读取 `settings.*` 的消费方（hosts/images 路由、BatchRunner 每批次超时/重试、HostService 配额等）；构造时快照字段的服务（SandboxService.build_retry、JudgeService 判定超时、HealthMonitor 轮询周期等）需重启生效——yaml 已持久化，重启后自动加载（同名 env 变量仍优先于 yaml）。
+### 2.0 配置分层
 
-```yaml
-# ════════ ① 基础设施（全局） ════════
-# 路径基准：相对路径基于 RSI_HOME（默认 ./var）；优先级：环境变量 > settings.yaml > 默认值
-server:
-  host: 0.0.0.0                 # str，API 监听地址（P0）
-  port: 8000                    # int，Platform API 端口（I-9，P0）
-database:
-  url: sqlite:///${RSI_HOME}/platform.db   # str，P0 SQLite；P1 换 postgresql://（NFR4）
-git:
-  repo: {path: var/git/platform-repo.git, bare: true}   # 裸仓：承载 pre-receive 冻结强制（设计 6.4，P0）
-  worktrees: var/git/wt         # GitStore 临时 worktree 目录（设计 3.8，P0）
-  author: {name: rsi-platform, email: rsi-platform@local}   # 提交身份，联动审计（NFR1④，P0）
-storage:
-  traces_dir: var/traces        # 轨迹 NDJSON 根目录（设计 2.3，P0）
-  artifacts_dir: var/artifacts  # 判决/报告/SUT 日志目录（设计 2.3，P0）
-  labs_dir: var/labs            # lab 初始配置实例化产物目录（设计 2.3，P0）
-  recordings_dir: var/recordings # LLM cassette 录制资产目录（设计 2.3，P0）
-  stop_file: var/STOP           # 外部停机开关（FR5.5，P0；存在即熔断，5s 轮询）
+| 层 | 载体 | 内容 | 修改方式 |
+|----|------|------|---------|
+| 部署环境变量 | 进程环境 | RSI_JWT_SECRET、RSI_MASTER_KEY（安全密钥）、RSI_HOME（数据根目录） | 部署时设置 |
+| 用户配置 settings.yaml | 文件 + WEB 参数页 | ~45 项系统级与对象缺省参数 | WEB 在线编辑（热更或待重启）或直接改文件 |
+| 内部配置 settings-internal.yaml | 文件（不进 WEB） | ~15 项开发运维项 | 改文件 + 重启 |
 
-logging:                        # 统一结构化日志（设计 5.2，NFR5）
-  dir: var/logs                 # 日志根目录；rsi-YYYYMMDD.log 按天轮转
-  level: info                   # 默认级别（debug|info|warning|error）
-  retention_days: 30            # 轮转保留天数
-  error_split: true             # rsi-error.log 单独实时落盘
-                                # 开发态彩色格式：环境变量 RSI_LOG_FORMAT=console
+优先级：环境变量（前缀 RSI_，如 RSI_SERVER__PORT）> settings.yaml > 代码默认值。示例文件：`examples/settings.yaml.example` 与 `examples/settings-internal.yaml.example`（复制到 RSI_HOME 目录使用）。
 
-# ════════ ② sandbox —— 仿真环境抽象层（rsi/sandbox，设计 3.4，FR4） ════════
-sandbox:
-  backends:                     # 后端资源自包含定义（FR5.8 模块自管；键=backend 类型名或
-                                # 多实例键 <type>-<n>（**P0 即用**，ADR-24——每实例=独立 VM/服务器，
-                                # 网络名字空间独立，按 (网络名,设备名)→(IP+端口) 映射寻址）
-    fake:                       # 离线测试后端（内存虚拟设备）
-      kind: fake
-    ensp-pro-1:                 # ENSP Pro 实例 1（预建模式，ADR-25）
-      kind: ensp-pro            # ensp-pro | pnetlab | fake（决定 bootstrap 组装哪种后端实现）
-      url: "https://192.168.56.101:8443"   # str，平台 Web 入口（URL 探活监控目标；doctor 校验）
-      verify_tls: false         # bool，平台自签证书默认关闭 TLS 校验
-      # api: null               # str|None，平台 Web API 编排通道预留（P1/S11）
-      subnets: [10.101.0.0/16]  # list，本后端设备管理网段池（全网唯一，check-subnets 校验）
-    pnetlab:                    # PNETLab 后端（预建模式，ADR-25）
-      kind: pnetlab
-      url: "https://192.168.56.102"        # str，平台 Web 入口（URL 探活监控目标）
-      verify_tls: false
-      subnets: [10.102.0.0/16]
-                                # 旧键 host/ssh_port/ssh_user/agent_cmd/templates_dir 已废除（平台
-                                # 不可 SSH，见下注）；doctor 检出旧键时输出迁移提示（warn）
+### 2.1 用户配置（settings.yaml）
 
-  # 注记（ADR-25 沙箱预建模式与平台/设备双层寻址）：
-  # **平台不可 SSH**——eNSP Pro/PNETLab 是网页平台（平台监控走 URL 探活，任何 HTTP 响应=在线）；
-  # **设备 SSH 凭证在评估集 env.yaml 的 ssh_access 段定义**（每设备独立 ip/port/username/password——
-  # 同一沙箱内多设备常复用同一 IP、以不同端口区分；**设备登录 IP 可与平台 URL IP 不同，分别定义**）。
-  build_retry: 2                # int，环境构建失败重建上限（FR5.5，默认 2）
-  ready_timeout_s: 600          # int，就绪探测超时秒（FR4.6，默认 600）
+分组与 `settings.yaml.example` 一致；每键均为用户级可编辑（GET/PUT /system/settings）。
 
-# ════════ ③ carrier —— SUT 承载适配层（rsi/carrier，设计 3.2，FR1） ════════
-carrier:
-  task_timeout_s: 1800          # int，单任务执行上限=30min（NFR4；超时→缺试计 0 分，FR7.4）
-  adapters:                     # 载体基底镜像 = CarrierAdapter.build_image 的 FROM（FR1.1，非 SUT 镜像本身）
-    claude_code: {image_base: rsi/claude-code-runtime:1.x}
-    opencode:    {image_base: rsi/opencode-runtime:1.x}
-  hosts:                        # Docker 执行主机池（FR5.8 模块自管；v2.18 R1-R6 多主机 P0 即用）
-    main: {docker: local, subnets: [10.100.0.0/16]}
-                                 # 本机 Docker Desktop（npipe）；subnets=本主机 lab 网段池
-    gpu-01:                      # 远端 Linux 服务器 1（SSH 隧道 Docker，v2.18 P0）
-      docker: ssh://ops@192.168.1.100
-      subnets: [10.101.0.0/16]
-      max_instances: 10          # 本主机 SUT 容器上限（默认 10）
-    gpu-02:                      # 远端 Linux 服务器 2（可选，多台远端并行管理）
-      docker: ssh://ops@192.168.1.101
-      subnets: [10.102.0.0/16]
-      max_instances: 10
-  max_instances_per_host: 10     # int，全局默认每主机实例上限（host 级可覆盖）
+**服务**
 
-# ════════ ④ instrumentor —— 插桩流水线（rsi/instrumentor，设计 3.3，I-8） ════════
-instrumentor:
-  policy:
-    prefer: [hooks, mcp_wrap, kb_proxy, source]   # list，注入方式优先级（侵入度低→高，I-8 阶段2）
-    source_injection: true      # bool，允许源码级注入（PG-TRACE 标记块）；false 则仅配置级（P1 起生效）
-    smoke_verify: true          # bool，注入后冒烟验证（事件产出+行为不变），I-8 阶段4，不可关闭；
-                                # 冒烟任务=冒烟集（FR3.7，P0）；评估集未含冒烟集时降级=数据集首个任务
+| 键 | 类型 | 缺省 | 说明 |
+|----|------|------|------|
+| server.host | str | 0.0.0.0 | API 监听地址；127.0.0.1=仅本机 |
+| server.port | int | 8000 | API 端口号（1-65535） |
 
-# ════════ ⑤ tracing —— 轨迹子系统（rsi/tracing，设计 3.5，FR2） ════════
-tracing:
-  collector: {listen: 0.0.0.0, grpc: 4317, http: 4318}   # OTLP 接收（FR2.2；SUT 容器可达，FR1.6 白名单）
-  redact: {enabled: true, rules_path: var/redact-rules.yaml}         # 脱敏管道（FR2.7，P1）
-  archive: {codec: zstd, hot_days: 90, keep_promoted_forever: true}  # 归档老化（FR2.6/NFR7，仅归档不截断）
+**数据库**
 
-# ════════ ⑥ judge —— 评估裁判（rsi/judge，设计 3.6，FR7） ════════
-judge:                          # 提示词/安全规则在 Git judge/ 冻结域（设计 2.2/6.4），此处仅运行参数
-  det_timeout_s: 120            # int，确定性判定单命令超时（FR7.1）
-  llm_retry: 2                  # int，裁判 LLM 失败重试；超限→run 判 indeterminate 进人工队列（设计 3.6）
-  pairwise_enabled: true        # bool，pairwise 对比判决开关（P1，FR7.2）
+| 键 | 类型 | 缺省 | 说明 |
+|----|------|------|------|
+| database.url | str | sqlite:///<RSI_HOME>/platform.db | P0 用 SQLite；P1 升 PostgreSQL 时改 postgresql:// |
 
-# ════════ ⑦ optimizer —— 优化引擎（rsi/optimizer，设计 3.7，FR6） ════════
-optimizer:
-  critic_max_repair_rounds: 5  # int，Critic 拒绝后修复循环上限（FR6.10，默认 5）
-  sft:
-    no_gain_rounds: 5           # int，SFT 准入：同缺陷类 Agent 侧连续无收益轮数（FR6.9，Q8）
-    min_samples: 50             # int，SFT 准入：失败轨迹样本量门槛（FR6.9，Q8）
+**模型服务（LLM）**
 
-# ════════ ⑧ decision —— 迭代决策（rsi/decision，设计 3.9，FR9） ════════
-decision:
-  noise: {k_repeats: 3, factor: 1.96}   # 噪声带：同任务重复 k 次标定 δ=σ×factor（FR9.2）
-  alpha: 0.05                   # float，显著性检验水平（FR9.2）
-  no_gain_rounds_default: 5     # int，收敛停机 N 全局默认（FR9.4；profile.stop.no_gain_rounds 可覆盖）
+| 键 | 类型 | 缺省 | 说明 |
+|----|------|------|------|
+| llm.defaults.judge.model | str | "" | 裁判模型名称；留空用回放/规则兜底（热更） |
+| llm.defaults.judge.temperature | float | 0.0 | 裁判采样温度；0 = 尽量确定性 |
+| llm.cassette_mode | str | replay | replay 回放录像 / record 录制 / off 真实调用（ADR-7） |
+| llm.max_concurrent_calls | int | 4 | 模型并发调用上限（多批次并行防 rate limit） |
 
-# ════════ ⑨ orchestrator —— 编排引擎（rsi/orchestrator，设计 3.1，FR5） ════════
-orchestrator:
-  max_parallel_batches: 2       # int，全局并行批次上限（v2.14 合并原 batch_concurrency/max_parallel_labs；
-                                # 同 lab 内固定串行——共享设备状态；并行=跨批次，各自独立 lab；
-                                # 受沙箱实例数约束；同 evalset 并行路由不同实例，ADR-24）
-  checkpoint_interval_s: 5      # int，断点保存最小间隔秒（FR5.5）
-  budget:
-    default_iteration: {max_tokens: 50000000, max_wall_hours: 8, max_cost_usd: 200}   # 默认 scope 预算（FR5.6；profile.budget 可覆盖）
-    global: {max_tokens: 100000000, max_cost_usd: 400}   # 全局预算（v2.14：跨批次聚合上限；
-                                                          # 默认=单轮×max_parallel_batches；超限→全局 STOP 熔断）
+> 注记：`llm.providers.*`（api_key/base_url）不在参数页 dump——经专用 LLM 配置接口（`GET /system/settings/llm` 半脱敏 + admin `PUT`）或直接改 settings.yaml 管理（内网可信环境，明文直配）。
 
-# ════════ ⑩ llm —— 平台 LLM（rsi/llm，ADR-7/ADR-10） ════════
-llm:                            # 仅平台侧四个 LLM 点（归因/假设/Critic/裁判）；SUT 的模型配置在
-  providers:                    # /agent-config/model.json（FR1.8），二者勿混淆
-    anthropic:     {api_key_env: ANTHROPIC_API_KEY}
-    openai_compat: {api_key_env: OPENAI_COMPAT_API_KEY, base_url_env: OPENAI_COMPAT_BASE_URL}
-  defaults:
-    judge:       {model: "...", temperature: 0.0}   # 裁判温度锁定（ADR-10/NFR2）
-    attribution: {model: "..."}
-    hypothesis:  {model: "..."}
-    critic:      {model: "..."}
-  cassette_mode: replay         # replay|record|off，LLM 录制回放（ADR-7，测试用）
-  max_concurrent_calls: 4       # int，LLM 调用全局并发信号量（v2.14：多批次并行防 rate limit；
-                                # 优先级排队 judge>hypothesis>attribution>critic>sft）
+**裁判**
 
-# ════════ ⑪ security —— 认证与凭证（rsi/security，设计 3.11，NFR8） ════════
-security:
-  jwt_secret_env: RSI_JWT_SECRET   # JWT 签名密钥（仅环境变量，不入库不入仓）
-  master_key_env: RSI_MASTER_KEY   # CredentialStore Fernet 主密钥（仅环境变量）
-  jwt_expire_hours: 12             # int，token 有效期（设计 3.11）
+| 键 | 类型 | 缺省 | 说明 |
+|----|------|------|------|
+| judge.det_timeout_s | int | 120 | 确定性（规则型）评审单次执行超时（秒，FR7.1） |
+| judge.llm_retry | int | 2 | 模型评审失败重试次数；超限→indeterminate 进人工队列 |
+| judge.pairwise_enabled | bool | true | 同轮多方案时启用两两对比评审（FR7.2） |
 
-# ════════ ⑫ 调度与可复现（ADR-8 / NFR2④） ════════
-scheduler: {kind: asyncio, redis_url: redis://...}   # P0/P1=asyncio；P2 切 rq（ADR-8）
-seed: {master: 20261102}         # int，全局主种子，三段派生（NFR2④）
+**优化与决策**
+
+| 键 | 类型 | 缺省 | 说明 |
+|----|------|------|------|
+| optimizer.critic_max_repair_rounds | int | 5 | 自动评审发现问题后的最大修复轮数（FR6.10） |
+| optimizer.sft.no_gain_rounds | int | 5 | 连续无提升多少轮后允许整理 SFT 训练数据（FR6.9） |
+| optimizer.sft.min_samples | int | 50 | 整理训练数据所需最低有效样本数（FR6.9） |
+| decision.alpha | float | 0.05 | 统计检验显著性水平 α；越小越保守（FR9.2） |
+| decision.no_gain_rounds_default | int | 5 | 连续无提升多少轮后触发收敛判定（FR9.4；profile 可覆盖） |
+| decision.noise.k_repeats | int | 3 | 标定基线噪声的重复测量次数（FR9.2） |
+| decision.noise.factor | float | 1.96 | 95% 置信对应的 σ 倍数（FR9.2） |
+
+**编排**
+
+| 键 | 类型 | 缺省 | 说明 |
+|----|------|------|------|
+| orchestrator.max_parallel_batches | int | 2 | 同时运行的评测批次数上限（同 lab 内固定串行，ADR-24） |
+| orchestrator.checkpoint_interval_s | int | 5 | 断点续跑检查点存档间隔（秒，FR5.5） |
+| orchestrator.health_monitor_interval_s | int | 30 | 运行环境健康巡检周期（秒） |
+| orchestrator.budget.iteration_default.max_tokens | int | 50000000 | 每 RSI 会话缺省 Token 上限（FR5.6） |
+| orchestrator.budget.iteration_default.max_wall_hours | int | 8 | 每会话墙上时长上限（小时） |
+| orchestrator.budget.iteration_default.max_cost_usd | int | 200 | 每会话费用上限（美元） |
+| orchestrator.budget.global.max_tokens | int | 100000000 | 全平台累计 Token 上限；超限→全局 STOP 熔断 |
+| orchestrator.budget.global.max_wall_hours | int | 0 | 全平台累计时长上限；0 = 不限制 |
+| orchestrator.budget.global.max_cost_usd | int | 400 | 全平台累计费用上限（美元） |
+
+**载体缺省**
+
+| 键 | 类型 | 缺省 | 说明 |
+|----|------|------|------|
+| carrier.task_timeout_s | int | 1800 | Agent 单任务最长执行时间（秒）；可热更（超时→缺试计 0 分，FR7.4） |
+| carrier.max_instances_per_host | int | 10 | 未单独配置主机的 SUT 实例数上限；可热更（host 级可覆盖） |
+
+**网络仿真缺省**
+
+| 键 | 类型 | 缺省 | 说明 |
+|----|------|------|------|
+| sandbox.build_retry | int | 2 | 实验环境构建失败重试次数（FR5.5） |
+| sandbox.ready_timeout_s | int | 600 | 等待仿真环境就绪超时（秒，FR4.6） |
+
+**轨迹**
+
+| 键 | 类型 | 缺省 | 说明 |
+|----|------|------|------|
+| tracing.redact.enabled | bool | true | 入库前按规则抹除密钥等敏感内容（FR2.7） |
+| tracing.archive.hot_days | int | 90 | 热数据保留天数；超期转入冷归档（FR2.6） |
+
+**日志**
+
+| 键 | 类型 | 缺省 | 说明 |
+|----|------|------|------|
+| logging.level | str | info | debug / info / warning / error；可热更 |
+| logging.retention_days | int | 30 | 超期日志自动清理 |
+| logging.error_split | bool | true | 错误级别日志单独落盘便于排查 |
+
+**可复现**
+
+| 键 | 类型 | 缺省 | 说明 |
+|----|------|------|------|
+| seed.master | int | 20261102 | 随机种子：相同种子+相同输入 → 相同采样与裁决顺序（NFR2④） |
+
+### 2.2 对象页管理（不在参数页呈现）
+
+- `sandbox.backends.*` → 网络仿真平台页（每实例 kind/url/verify_tls/api/subnets，ADR-24/25；独立 GET/PUT 端点，改后 restart_required）
+- `carrier.hosts.*` → 运行环境页（docker/subnets/max_instances 多主机池，v2.18 R1-R6；独立 GET/PUT 端点，改后 restart_required）
+
+### 2.3 内部配置（settings-internal.yaml.example）
+
+内部项只认 settings-internal.yaml（写入用户 settings.yaml 的同名键被忽略），不呈现于 WEB，修改后需重启。
+
+**插桩策略**
+
+| 键 | 缺省 | 说明 |
+|----|------|------|
+| instrumentor.policy.prefer | [hooks, mcp_wrap, kb_proxy, source_marker] | 注入方式优先级（侵入度低→高，I-8） |
+| instrumentor.policy.source_injection | true | 允许源码级注入（PG-TRACE 标记块） |
+| instrumentor.policy.smoke_verify | true | 注入后冒烟验证（事件产出+行为不变，不可关闭） |
+
+**轨迹采集器与归档**
+
+| 键 | 缺省 | 说明 |
+|----|------|------|
+| tracing.collector.listen / grpc / http | 0.0.0.0 / 4317 / 4318 | OTLP 接收（FR2.2；SUT 容器可达） |
+| tracing.redact.rules_path | redact-rules.yaml | 脱敏规则文件路径 |
+| tracing.archive.codec | zstd | 冷归档压缩编码 |
+| tracing.archive.keep_promoted_forever | true | 已晋升轨迹永久保留 |
+
+**调度器**
+
+| 键 | 缺省 | 说明 |
+|----|------|------|
+| scheduler.kind | asyncio | P0/P1=asyncio；P2 可切 rq（ADR-8） |
+| scheduler.redis_url | null | rq 调度时使用 |
+
+**Git**
+
+| 键 | 缺省 | 说明 |
+|----|------|------|
+| git.repo.bare | true | 裸仓形态（pre-receive 冻结强制，设计 6.4；仓库路径从 RSI_HOME 派生） |
+| git.author.name / email | rsi-platform / rsi-platform@local | 提交身份，联动审计（NFR1④） |
+
+**载体基座**
+
+| 键 | 缺省 | 说明 |
+|----|------|------|
+| carrier.adapters.claude_code.image_base | rsi/claude-code-runtime:1.x | Claude Code 载体基底镜像（FR1.1） |
+| carrier.adapters.opencode.image_base | rsi/opencode-runtime:1.x | OpenCode 载体基底镜像（FR1.1） |
+
+### 2.4 派生路径
+
+RSI_HOME（环境变量，默认 ./var）下自动创建：`git/`（裸仓+worktrees）、`storage/{traces,artifacts,labs,recordings}/`、`logs/`、`STOP` 文件（外部停机开关，FR5.5）。存储路径不再是用户配置键。
+
+### 2.5 热更与重启
+
+动态键 4 个即时生效：`carrier.task_timeout_s`、`carrier.max_instances_per_host`、`logging.level`、`llm.defaults.judge.model`。其余用户键保存后标"待重启"（pending_restart）→ WEB「重启平台」按钮统一生效（POST /system:restart，进程管理器重新拉起）。
+
+### 2.6 兼容
+
+旧 yaml 的 `storage.*`、`git.repo.path`、`git.worktrees`、`security.*`、`env` 名等派生/内部/废弃键被静默忽略；旧 `orchestrator.budget.default_iteration` → `iteration_default`；`global`（代码字段 `global_`，yaml 键 `global`）。
 ```
 
 ---
@@ -210,4 +231,4 @@ llm_compare: {candidates: [claude-sonnet-4-6, glm-5]}   # switch_model 假设的
 
 ---
 
-> 修订记录：v1.6 — **沙箱连通性模型重构（ADR-25 预建模式，2026-11-09）**：sandbox.backends.* 键形态重写——删 host/ssh_port/ssh_user/agent_cmd/templates_dir，新 kind（ensp-pro|pnetlab|fake）/url（平台 Web 入口，URL 探活）/verify_tls（自签默认关）/api（P1/S11 预留）/subnets（保留）；新增 fake 默认后端；增注记「平台不可 SSH；设备 SSH 凭证在 env.yaml ssh_access 段定义（同 IP 不同端口复用，设备 IP 可与平台 IP 不同）」。v1.5 — v2.18 远端 Docker 主机支持（R1-R6）：carrier.hosts 多主机完整示例（本地 main + 远端 gpu-01/gpu-02 SSH 隧道）；新增 max_instances_per_host（全局默认 + host 级覆盖）；InstanceScheduler least-loaded 选主机。v1.4 — P0 多实例并行联动（ADR-24）：backends 示例键改 ensp-pro-1（多实例键 `<type>-<n>` P0 即用，每实例独立 VM/网络名字空间）；batch_concurrency 默认 1→2（并行可配）+ 新增 max_parallel_labs（含同 lab 任务互斥注记——lab 内共享设备状态）。v1.3 — 二轮交叉审查修复：smoke_verify 冒烟任务来源对齐 FR3.7 P0（P0 即绑定冒烟集，未含时降级首个任务）。v1.2 — 二次交叉审查修复：后端配置键与 env.yaml backend 枚举同名（ensp_pro→ensp-pro）并注明多实例键规则；carrier.hosts.main 补 subnets 字段（FR5.8/Q10）；新增 logging 配置段与 labs_dir/recordings_dir（对齐设计 5.2/2.3）；guards 补 high_risk_worsen（对齐 FR9.3/Selector 规则 2）；smoke_verify 注明 P0 冒烟任务来源；goals 注明加权综合分定义位置。v1.0 — 自主设计文档 v1.5 拆分建档（原设计文档 5.1/5.2 内容整体迁入，内容未变）。
+> 修订记录：v2.0 — **配置体系重构三层模型（ADR-26，C1-C2 落地，2026-11-05）**：§2 全量重写——部署环境变量（RSI_JWT_SECRET/RSI_MASTER_KEY/RSI_HOME）/用户 settings.yaml（参数页全键可编辑）/内部 settings-internal.yaml（~15 项，不进 WEB）三层分离；安全密钥仅环境变量；LLM api_key/base_url 内网明文直配（yaml）+ 专用半脱敏 LLM 配置接口；存储路径改由 RSI_HOME 派生（git/、storage/{traces,artifacts,labs,recordings}/、logs/、STOP）；对象注册（sandbox.backends.*/carrier.hosts.*）归对象页；动态键收缩为 4 个，其余标 pending_restart 经 POST /system:restart 统一生效；旧派生/内部键静默忽略，budget.default_iteration→iteration_default。v1.6 — **沙箱连通性模型重构（ADR-25 预建模式，2026-11-09）**：sandbox.backends.* 键形态重写——删 host/ssh_port/ssh_user/agent_cmd/templates_dir，新 kind（ensp-pro|pnetlab|fake）/url（平台 Web 入口，URL 探活）/verify_tls（自签默认关）/api（P1/S11 预留）/subnets（保留）；新增 fake 默认后端；增注记「平台不可 SSH；设备 SSH 凭证在 env.yaml ssh_access 段定义（同 IP 不同端口复用，设备 IP 可与平台 IP 不同）」。v1.5 — v2.18 远端 Docker 主机支持（R1-R6）：carrier.hosts 多主机完整示例（本地 main + 远端 gpu-01/gpu-02 SSH 隧道）；新增 max_instances_per_host（全局默认 + host 级覆盖）；InstanceScheduler least-loaded 选主机。v1.4 — P0 多实例并行联动（ADR-24）：backends 示例键改 ensp-pro-1（多实例键 `<type>-<n>` P0 即用，每实例独立 VM/网络名字空间）；batch_concurrency 默认 1→2（并行可配）+ 新增 max_parallel_labs（含同 lab 任务互斥注记——lab 内共享设备状态）。v1.3 — 二轮交叉审查修复：smoke_verify 冒烟任务来源对齐 FR3.7 P0（P0 即绑定冒烟集，未含时降级首个任务）。v1.2 — 二次交叉审查修复：后端配置键与 env.yaml backend 枚举同名（ensp_pro→ensp-pro）并注明多实例键规则；carrier.hosts.main 补 subnets 字段（FR5.8/Q10）；新增 logging 配置段与 labs_dir/recordings_dir（对齐设计 5.2/2.3）；guards 补 high_risk_worsen（对齐 FR9.3/Selector 规则 2）；smoke_verify 注明 P0 冒烟任务来源；goals 注明加权综合分定义位置。v1.0 — 自主设计文档 v1.5 拆分建档（原设计文档 5.1/5.2 内容整体迁入，内容未变）。

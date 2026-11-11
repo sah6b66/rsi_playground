@@ -183,7 +183,6 @@ async def test_bootstrap_post_batches_runs_real_evalset_tasks(tmp_path: Path, mo
     from rsi.bootstrap import build_services
 
     settings = Settings(
-        home=tmp_path,
         database=DatabaseSettings(url=f"sqlite:///{tmp_path/'t.db'}"),
     )
     services = build_services(settings)

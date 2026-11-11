@@ -656,7 +656,8 @@ class TestF10IterationEngineWiring:
 
         services = build_services(
             Settings(
-                home=tmp_path,
+                # C1: home derived from RSI_HOME env
+                # (kwarg dropped); point env at tmp first
                 database=DatabaseSettings(
                     url=f"sqlite:///{(tmp_path / 'wiring.db').as_posix()}"
                 ),
