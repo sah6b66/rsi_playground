@@ -118,7 +118,6 @@ def _env_parsed_of(es: dict) -> dict[str, Any] | None:
 
     ``devices``: [{name, type, version?, ip, port}]（ip/port 来自
     ssh_access；username/password/password_ref 绝不出现在输出）。
-    ``config_apis``: [{name, base_url}]（dict 或 list 两种 yaml 形态）。
     """
     env = _env_of(es)
     if env is None:
@@ -139,22 +138,10 @@ def _env_parsed_of(es: dict) -> dict[str, Any] | None:
             "ip": sa.get("ip"),
             "port": sa.get("port"),
         })
-    raw_apis = env.get("config_apis") or []
-    if isinstance(raw_apis, dict):
-        api_items = [{"name": k, **(v if isinstance(v, dict) else {})}
-                     for k, v in raw_apis.items()]
-    else:
-        api_items = [v if isinstance(v, dict) else {"name": str(v)}
-                     for v in raw_apis]
-    config_apis = [
-        {"name": a.get("name"), "base_url": a.get("base_url")}
-        for a in api_items
-    ]
     return {
         "name": env.get("name"),
         "backend": env.get("backend"),
         "devices": devices,
-        "config_apis": config_apis,
     }
 
 
@@ -425,14 +412,6 @@ class CloneOverrides(BaseModel):
         default_factory=dict,
         json_schema_extra={"example": {"R1": {"ip": "10.201.0.10", "port": 2222}}},
     )
-    config_apis: list[dict[str, Any]] | None = Field(
-        default=None,
-        json_schema_extra={
-            "example": [
-                {"name": "nms", "base_url": "http://10.201.0.20/api", "timeout_s": 30}
-            ]
-        },
-    )
     site_name: str | None = Field(default=None, json_schema_extra={"example": "site2"})
 
 
@@ -452,8 +431,6 @@ async def clone_evalset(
     """克隆评测集：复制源记录，仅 env 覆盖项可改（DD-14 §5.5）。
 
     - ``device_endpoints``：改写 env.yaml ``ssh_access.<dev>.ip/port``
-    - ``config_apis``：整表替换 env.yaml ``config_apis``（列表项以
-      ``name``（缺省 ``api-<序号>``）为映射键）
     - ``site_name``：非空时存为新记录 ``overrides.site_name``（站点覆盖
       条目——store 无既有 site_overrides 形态，P0 落 overrides 字段）
     - tasks/configs 复制（跨集可比性：任务集只读引用）
@@ -471,13 +448,6 @@ async def clone_evalset(
             sa["ip"] = over.ip
         if over.port is not None:
             sa["port"] = over.port
-    if body.overrides.config_apis is not None:
-        env["config_apis"] = {
-            str(item.get("name") or f"api-{i}"): {
-                k: v for k, v in item.items() if k != "name"
-            }
-            for i, item in enumerate(body.overrides.config_apis)
-        }
     env_yaml = (
         yaml.safe_dump(env, allow_unicode=True, sort_keys=False)
         if str(src.get("env_yaml") or "").strip() or env

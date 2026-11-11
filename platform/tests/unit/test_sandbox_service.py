@@ -5,15 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import httpx
 import pytest
-import respx
 
 from rsi.core.errors import DeviceError, EnvError
 from rsi.core.models import (
-    CallApiParams,
     CliEntry,
-    ConfigApi,
     DeviceSpec,
     EnvSpec,
     LinkSpec,
@@ -43,9 +39,6 @@ def _env(name: str = "lab-a") -> EnvSpec:
         ssh_access={
             "R1": SshAccess(ip="10.0.0.1", port=2001, username="admin", password="pw"),
             "R2": SshAccess(ip="10.0.0.2", port=2002, username="admin", password="pw"),
-        },
-        config_apis={
-            "nms": ConfigApi(base_url="http://nms.invalid/api"),
         },
     )
 
@@ -246,36 +239,6 @@ class TestServiceCycle:
         # backup was captured BEFORE prepare -> device back to pre-task state
         assert "sysname BEFORE" not in cfg
         assert "sysname BROKEN" not in cfg
-
-    @pytest.mark.asyncio
-    async def test_call_api_cycle(self, tmp_path: Path):
-        service = SandboxService(
-            backends={"fake-1": FakeSandboxBackend()}, labs_dir=tmp_path
-        )
-        env = _env()
-        lab = await service.build_lab(env)
-        action = PrepareAction(
-            action="call_api",
-            api="nms",
-            params=CallApiParams(
-                env_name=env.name,
-                scenario="sc",
-                devices=[CliEntry(device="R1", cli_lines=["snmp-agent community read public"])],
-            ),
-        )
-        with respx.mock:
-            route = respx.post("http://nms.invalid/api/apply").mock(
-                return_value=httpx.Response(200, json={"ok": True})
-            )
-            applied = await service.prepare(lab, "fault/link-01", [action])
-            assert route.called
-            body = json.loads(route.calls.last.request.content)
-            assert body["undo"] is False
-            # restore_task -> undo call
-            await service.restore_task(lab, applied)
-            assert route.call_count == 2
-            undo_body = json.loads(route.calls.last.request.content)
-            assert undo_body["undo"] is True
 
     @pytest.mark.asyncio
     async def test_exec_readonly_whitelist(self, service: SandboxService):

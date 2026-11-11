@@ -23,10 +23,6 @@ topology:
 ssh_access:
   R1: {ip: 10.0.0.1, port: 2001, username: admin, password: pw}
   R2: {ip: 10.0.0.2, port: 2002, username: admin, password: pw}
-config_apis:
-  nms:
-    base_url: http://10.0.0.9/api
-    timeout_s: 30
 """
 
 
@@ -222,9 +218,6 @@ class TestEvalsetEnvParsed:
         r1 = parsed["devices"][0]
         assert r1["type"] == "vrp" and r1["version"] == "8.180"
         assert r1["ip"] == "10.0.0.1" and r1["port"] == 2001
-        assert parsed["config_apis"] == [
-            {"name": "nms", "base_url": "http://10.0.0.9/api"}
-        ]
         # 凭证字段绝不出现（username/password/password_ref）
         import json as _json
 

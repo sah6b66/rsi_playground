@@ -13,7 +13,6 @@ import pytest
 from rsi.core.models import (
     CallApiParams,
     CliEntry,
-    ConfigApi,
     DeviceSpec,
     EnvSpec,
     LinkSpec,
@@ -48,7 +47,6 @@ def _env(name: str = "lab-m") -> EnvSpec:
             "R1": SshAccess(ip="10.1.0.1", port=2101, username="admin", password="pw"),
             "R2": SshAccess(ip="10.1.0.2", port=2102, username="admin", password="pw"),
         },
-        config_apis={"nms": ConfigApi(base_url="http://nms.invalid/api")},
     )
 
 
@@ -209,15 +207,14 @@ class TestConfigApiClientReuse:
             return client
 
         caller = ConfigApiCaller()
-        env = _env()
         import rsi.sandbox.config_api as ca
 
         orig = ca.httpx.AsyncClient
         ca.httpx.AsyncClient = counting_ctor
         try:
-            await caller.apply(env, "nms", _params())
+            await caller.apply("http://nms.invalid/api", _params())
             first = caller._client
-            await caller.apply(env, "nms", _params(), undo=True)
+            await caller.apply("http://nms.invalid/api", _params(), undo=True)
         finally:
             ca.httpx.AsyncClient = orig
         assert len(created) == 1
@@ -229,7 +226,7 @@ class TestConfigApiClientReuse:
     async def test_config_api_injected_client_not_closed(self):
         client = _mock_transport_client()
         caller = ConfigApiCaller(client=client)
-        await caller.apply(_env(), "nms", _params())
+        await caller.apply("http://nms.invalid/api", _params())
         await caller.aclose()
         # external client still usable (not closed by aclose)
         resp = await client.get("http://nms.invalid/healthz")

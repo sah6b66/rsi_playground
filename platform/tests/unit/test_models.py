@@ -10,10 +10,8 @@ from rsi.core.models import (
     AttributionReport,
     BatchStats,
     Budget,
-    CallApiParams,
     CheckItem,
     CliEntry,
-    ConfigApi,
     CostDelta,
     CriticalStep,
     Decision,
@@ -194,30 +192,6 @@ class TestPrepareAction:
     def test_exec_cli_requires_entries(self):
         with pytest.raises(ValidationError):
             PrepareAction(action="exec_cli")
-
-    def test_call_api(self):
-        pa = PrepareAction(
-            action="call_api",
-            api="cfg-api",
-            params={
-                "env_name": "test",
-                "scenario": "s1",
-                "devices": [{"device": "R1", "cli_lines": ["cmd"]}],
-            },
-        )
-        assert pa.params.env_name == "test"
-
-    def test_call_api_requires_api_and_params(self):
-        with pytest.raises(ValidationError):
-            PrepareAction(action="call_api", api="cfg-api")
-
-    def test_exec_cli_rejects_api(self):
-        with pytest.raises(ValidationError):
-            PrepareAction(
-                action="exec_cli",
-                entries=[CliEntry(device="R1", cli_lines=["x"])],
-                api="cfg-api",
-            )
 
 
 class TestCliEntry:
