@@ -11,15 +11,18 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import inspect
 import json
 import threading
+from types import SimpleNamespace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from rsi.core.enums import RunStatus
 from rsi.core.errors import BudgetExceeded, EnvError
 from rsi.core.models import (
+    ApiEvalsetTask,
     BatchStats,
     DeviceSpec,
     Efficiency,
@@ -42,7 +45,7 @@ from rsi.core.models import (
 from rsi.core.naming import new_id
 from rsi.log import get_logger
 
-__all__ = ["BatchRunner"]
+__all__ = ["BatchRunner", "api_task_to_task_record"]
 
 logger = get_logger(__name__)
 
@@ -161,6 +164,23 @@ def _env_failed_verdict() -> Verdict:
     )
 
 
+def api_task_to_task_record(at: ApiEvalsetTask) -> TaskRecord:
+    """Adapt an online API evalset task to the TaskRecord consumed by run_batch.
+
+    ADR-27 D4: ``prepare`` is empty — environment preparation is handled by
+    NetworkPrepClient via the carried ``network_env`` reference, not by CLI
+    prepare actions. ``task``/``expected`` pass through unchanged.
+    """
+    return TaskRecord(
+        task_id=at.task_id,
+        title=at.title,
+        prepare=[],
+        task=at.task,
+        expected=at.expected,
+        network_env=at.network_env,
+    )
+
+
 class BatchRunner:
     def __init__(
         self,
@@ -185,6 +205,7 @@ class BatchRunner:
         carrier_type: str = "opencode",
         batch_resolver: Callable[[dict], tuple[Any, list[TaskRecord], str, str]]
         | None = None,
+        netprep=None,
     ) -> None:
         # credential_resolver (audit T2-1/B-8): object exposing
         # ``resolve_env(env, permission)`` (CredentialResolver) whose result
@@ -233,6 +254,10 @@ class BatchRunner:
         # (env, tasks, config_version_id, image_ref). None -> offline default
         # (minimal fake env + one trivial task) so trigger() always works.
         self.batch_resolver = batch_resolver
+        # ADR-27 D4: NetworkPrepClient for prep_mode="api" batches; None keeps
+        # the runner CLI-only (an api batch then fails loudly at run_batch).
+        self.netprep = netprep
+        self._prep_mode: Literal["cli", "api"] = "cli"
         self._tasks: set[asyncio.Task] = set()
         self._envs: dict[str, Any] = {}
         # B-1: Instrumentor facade (DD-06 §6) — when wired, the exported config
@@ -335,7 +360,7 @@ class BatchRunner:
 
         try:
             env, tasks, config_version_id, image_ref = (
-                self._resolve_trigger_inputs(batch)
+                await self._resolve_trigger_inputs(batch)
             )
             stats = await self.run_batch(
                 batch_id,
@@ -344,6 +369,7 @@ class BatchRunner:
                 config_version_id,
                 image_ref,
                 bypass_cache=bypass_cache,
+                prep_mode=str(batch.get("prep_mode") or "cli"),
                 db_meta={
                     "evalset_id": str(batch.get("evalset_id", "")),
                     "sut_id": str(batch.get("sut_id", "")),
@@ -385,26 +411,35 @@ class BatchRunner:
             "finished_at": _utcnow_iso(),
         })
 
-    def _resolve_trigger_inputs(
+    async def _resolve_trigger_inputs(
         self, batch: dict
     ) -> tuple[Any, list[TaskRecord], str, str]:
         """Batch dict -> (env, tasks, config_version_id, image_ref).
 
         Uses the injected resolver when present; otherwise the offline
         default (minimal fake env + one trivial task) keeps the API path
-        functional in the offline assembly.
+        functional in the offline assembly. The resolver may be async (D4:
+        the api-prep path fetches tasks from the online Evalset API); the
+        returned awaitable is awaited here.
+        """
+        if self.batch_resolver is not None:
+            result = self.batch_resolver(batch)
+            if inspect.isawaitable(result):
+                result = await result
+            return result
+        return default_trigger_inputs(batch)
+
+    def resolve_inputs(self, batch: dict) -> tuple[Any, list[TaskRecord], str, str]:
+        """Sync public wrapper (sync resolvers only).
+
+        Production callers (noise-calibration bridge) resolve an API batch
+        dict without going through the trigger background-task machinery.
+        An async resolver (api-prep fetch) returns a coroutine here — the
+        caller is expected to await it.
         """
         if self.batch_resolver is not None:
             return self.batch_resolver(batch)
         return default_trigger_inputs(batch)
-
-    def resolve_inputs(self, batch: dict) -> tuple[Any, list[TaskRecord], str, str]:
-        """Public wrapper over ``_resolve_trigger_inputs``.
-
-        Production callers (noise-calibration bridge) resolve an API batch
-        dict without going through the trigger background-task machinery.
-        """
-        return self._resolve_trigger_inputs(batch)
 
     # -- batch loop (§5.1) ---------------------------------------------------
 
@@ -418,8 +453,24 @@ class BatchRunner:
         permission: str = "read-only",
         bypass_cache: bool | None = None,
         db_meta: dict[str, str] | None = None,
+        prep_mode: Literal["cli", "api"] = "cli",
         progress_fn: Callable[[int, int], None] | None = None,
     ) -> BatchStats:
+        # ADR-27 D4: prep_mode routes environment lifecycle. "cli" (default)
+        # keeps the SandboxService lab pipeline untouched; "api" skips the
+        # lab entirely (no build/wait_ready/snapshot/destroy) and prepares/
+        # restores the network environment per task via NetworkPrepClient.
+        self._prep_mode = prep_mode
+        if prep_mode == "api":
+            if self.netprep is None:
+                raise EnvError(
+                    "NetworkPrepClient not configured (prep_mode='api' "
+                    "requires settings.network_prep_api.url)",
+                    context={"batch_id": batch_id},
+                )
+            # env is intentionally ignored on this path; tasks carry their
+            # own network_env references.
+            env = None
         # W-B: optional per-task progress callback (done, total) so callers
         # (API trigger) can surface running-state progress; None keeps the
         # legacy completion-only notification.
@@ -457,7 +508,14 @@ class BatchRunner:
         pending = [t for t in tasks if t.task_id not in completed_task_ids]
 
         # 1-2. build lab once per batch (or reuse the checkpointed one), snap0
-        lab, snap0 = await self._build_or_reuse_lab(env, state)
+        # API mode (D4): no lab — placeholder handles only carry identifiers
+        # (run rows / trace events / checkpoints); every SandboxService call
+        # is skipped.
+        if self._prep_mode == "api":
+            lab = LabHandle(lab_id="", host=self.host, backend="api", endpoints={})
+            snap0 = SimpleNamespace(snapshot_id="")
+        else:
+            lab, snap0 = await self._build_or_reuse_lab(env, state)
         self._envs[batch_id] = env
 
         verdicts: list[Verdict] = []
@@ -670,8 +728,9 @@ class BatchRunner:
                 error=str(exc),
             )
         finally:
-            # 5. destroy lab (always, also on abort)
-            await self.sandbox.destroy(lab)
+            # 5. destroy lab (always, also on abort) — API mode has no lab
+            if self._prep_mode != "api":
+                await self.sandbox.destroy(lab)
             self._envs.pop(batch_id, None)
 
         self.last_status = status
@@ -709,34 +768,49 @@ class BatchRunner:
         # 1. prepare (backup + exec_cli/call_api), retry <= 2, then env_failed.
         #    DD-12 §5.2 order: restore_task -> prepare between attempts, so a
         #    partially applied prepare never leaks into the retry.
-        applied = []
+        #    API mode (D4): prepare goes through NetworkPrepClient using the
+        #    task's network_env reference; no sandbox lab involved.
+        applied: Any = []
         prepared = False
-        for _attempt in range(self.prepare_attempts):
-            try:
-                applied = await self.sandbox.prepare(lab, task.task_id, task.prepare)
-                prepared = True
-                break
-            except EnvError as exc:
-                logger.debug(
-                    "run_task.prepare_retry", task_id=task.task_id, exc_type=type(exc).__name__
-                )
-                # best-effort cleanup of the partial prepare before retrying
+        if self._prep_mode == "api":
+            prep_result = await self._netprep_prepare(batch_id, task)
+            if prep_result is None:
+                logger.debug("run_task.exit", run_id=run_id, status="env_failed")
+                return TaskResult(task_complete=False), _env_failed_verdict()
+            applied = prep_result
+            prepared = True
+        if not prepared:
+            for _attempt in range(self.prepare_attempts):
                 try:
-                    await self.sandbox.restore_task(lab, applied)
-                except Exception as cleanup_exc:  # noqa: BLE001 - retry anyway
+                    applied = await self.sandbox.prepare(lab, task.task_id, task.prepare)
+                    prepared = True
+                    break
+                except EnvError as exc:
                     logger.debug(
-                        "run_task.prepare_restore_failed",
-                        task_id=task.task_id,
-                        exc_type=type(cleanup_exc).__name__,
+                        "run_task.prepare_retry", task_id=task.task_id, exc_type=type(exc).__name__
                     )
-                continue
+                    # best-effort cleanup of the partial prepare before retrying
+                    try:
+                        await self.sandbox.restore_task(lab, applied)
+                    except Exception as cleanup_exc:  # noqa: BLE001 - retry anyway
+                        logger.debug(
+                            "run_task.prepare_restore_failed",
+                            task_id=task.task_id,
+                            exc_type=type(cleanup_exc).__name__,
+                        )
+                    continue
         if not prepared:
             logger.debug("run_task.exit", run_id=run_id, status="env_failed")
             result = TaskResult(task_complete=False)
             return result, _env_failed_verdict()
 
-        # 4. create SUT instance (P0: one instance per run)
-        cred = self._resolve_cred(batch_id, permission)
+        # 4. create SUT instance (P0: one instance per run).
+        #    API mode (D4): no device credentials — DEV_* is never injected;
+        #    the SUT talks to the network env through the prep API.
+        cred = (
+            None if self._prep_mode == "api"
+            else self._resolve_cred(batch_id, permission)
+        )
         effective_config = config_version_id
         # An empty/placeholder config_version_id must never resolve to cwd
         # (``Path("")`` is ``.``) — overlaying cwd would copy the whole tree.
@@ -806,7 +880,10 @@ class BatchRunner:
                 error=str(exc),
             )
             try:
-                await self.sandbox.restore_task(lab, applied)
+                if self._prep_mode == "api":
+                    await self._netprep_restore(task, applied)
+                else:
+                    await self.sandbox.restore_task(lab, applied)
             except Exception as cleanup_exc:  # noqa: BLE001 - degrading anyway
                 logger.debug(
                     "run_task.create_instance_restore_failed",
@@ -897,18 +974,37 @@ class BatchRunner:
             # TASK is scored env_failed (batch-level failure semantics, DD-12
             # §5.2) instead of killing the whole batch.
             restored = False
-            for _attempt in range(3):  # 1 initial + 2 retries (D-13)
-                try:
-                    await self.sandbox.restore_task(lab, applied)
-                    restored = True
-                    break
-                except EnvError as exc:
-                    logger.debug(
-                        "run_task.restore_retry",
-                        run_id=run_id,
-                        attempt=_attempt + 1,
-                        exc_type=type(exc).__name__,
-                    )
+            if self._prep_mode == "api":
+                # D4: API mode restore = netprep.restore(env_name, env_id,
+                # params) with the same retry policy; no L2 lab recovery
+                # exists (no lab) — persistent failure scores env_failed.
+                for _attempt in range(3):
+                    try:
+                        await self._netprep_restore(task, applied)
+                        restored = True
+                        break
+                    except EnvError as exc:
+                        logger.debug(
+                            "run_task.netprep_restore_retry",
+                            run_id=run_id,
+                            attempt=_attempt + 1,
+                            exc_type=type(exc).__name__,
+                        )
+                if not restored:
+                    return result, _env_failed_verdict()
+            else:
+                for _attempt in range(3):  # 1 initial + 2 retries (D-13)
+                    try:
+                        await self.sandbox.restore_task(lab, applied)
+                        restored = True
+                        break
+                    except EnvError as exc:
+                        logger.debug(
+                            "run_task.restore_retry",
+                            run_id=run_id,
+                            attempt=_attempt + 1,
+                            exc_type=type(exc).__name__,
+                        )
             if not restored:
                 try:
                     # L2 (B-24, DD-12 §5.2): environment-level recovery back
@@ -1202,6 +1298,42 @@ class BatchRunner:
         if "noise" in lower:
             return "noise_calibration"
         return "adhoc_eval"
+
+    async def _netprep_prepare(self, batch_id: str, task: TaskRecord):
+        """D4 API-mode prepare via NetworkPrepClient; None -> env_failed.
+
+        Retries follow the same prepare_attempts budget as the CLI path; a
+        failed external prepare leaves nothing to roll back locally.
+        """
+        env_ref = task.network_env
+        if env_ref is None:
+            logger.warning(
+                "run_task.netprep_no_env_ref", task_id=task.task_id,
+            )
+            return None
+        for _attempt in range(self.prepare_attempts):
+            try:
+                result = await self.netprep.prepare(
+                    env_ref.name, dict(env_ref.params), session_id=batch_id
+                )
+                return result
+            except EnvError as exc:
+                logger.debug(
+                    "run_task.netprep_prepare_retry",
+                    task_id=task.task_id,
+                    attempt=_attempt + 1,
+                    exc_type=type(exc).__name__,
+                )
+        return None
+
+    async def _netprep_restore(self, task: TaskRecord, prep_result: Any) -> None:
+        """D4 API-mode restore: netprep.restore(env_name, env_id, params)."""
+        env_ref = task.network_env
+        if env_ref is None or prep_result is None:
+            return
+        await self.netprep.restore(
+            env_ref.name, str(getattr(prep_result, "env_id", "")), dict(env_ref.params)
+        )
 
     def _resolve_cred(self, batch_id: str, permission: str) -> Any:
         """Resolve the per-run credential payload for create_instance (T2-1).

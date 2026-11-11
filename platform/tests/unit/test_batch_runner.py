@@ -105,7 +105,7 @@ class FakeJudge:
     async def judge_run(self, task, result, events, lab, sandbox, permission, **kw):
         self.calls.append(
             {
-                "task_id": task.task.task_id,
+                "task_id": task.task.task_id if task is not None else None,
                 "result": result,
                 "events": list(events),
                 "lab_id": lab.lab_id,

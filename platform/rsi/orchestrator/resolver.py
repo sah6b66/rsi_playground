@@ -30,14 +30,14 @@ from typing import Any, Callable
 
 import yaml
 
-from rsi.core.errors import NotFoundError, ValidationError
+from rsi.core.errors import ConfigError, NotFoundError, ValidationError
 from rsi.core.models import (
     ExpectedAnswer,
     TaskRecord,
     TaskSpec,
 )
 from rsi.log import get_logger
-from rsi.orchestrator.batch import default_trigger_inputs
+from rsi.orchestrator.batch import api_task_to_task_record, default_trigger_inputs
 
 __all__ = ["build_batch_resolver", "build_noise_run_batch_fn"]
 
@@ -151,15 +151,24 @@ def build_batch_resolver(
     gitstore=None,
     evalsets_store: dict | None = None,
     suts_store: dict | None = None,
+    evalset_fetcher=None,
 ) -> Callable[[dict], tuple[Any, list[TaskRecord], str, str]]:
     """Build the production ``resolve(batch)`` injected into BatchRunner.
 
     Offline-safe: construction never touches the stores/DB — lookup happens
     per resolve() call, and a missing evalset raises ``NotFoundError`` (the
     trigger containment path turns that into a failed batch, not a 500).
+
+    ADR-27 D4: a batch with ``prep_mode == "api"`` bypasses the local
+    evalset payload entirely — tasks come from the online Evalset API
+    (``api_evalset_name``) via ``evalset_fetcher.fetch_sync`` and are
+    adapted with ``api_task_to_task_record``; env is None and
+    config_version_id is "" (no local lab / config overlay on that path).
     """
 
     def resolve(batch: dict) -> tuple[Any, list[TaskRecord], str, str]:
+        if str(batch.get("prep_mode") or "cli") == "api":
+            return _resolve_api(batch)
         evalset_id = str(batch.get("evalset_id", ""))
         record = (evalsets_store or {}).get(evalset_id)
         if record is None and _db_evalset_exists(session_factory, evalset_id):
@@ -202,6 +211,31 @@ def build_batch_resolver(
             config_dir=bool(config_dir),
         )
         return env, tasks, config_dir, image_ref
+
+    def _resolve_api(batch: dict) -> tuple[Any, list[TaskRecord], str, str]:
+        """D4 api-prep resolution: online evalset -> adapted TaskRecords."""
+        if evalset_fetcher is None:
+            raise ConfigError(
+                "prep_mode='api' requires an EvalsetFetcher "
+                "(settings.evalset_api.url)",
+                context={"batch_id": batch.get("id")},
+            )
+        name = str(batch.get("api_evalset_name") or "").strip()
+        if not name:
+            raise ValidationError(
+                "prep_mode='api' requires api_evalset_name",
+                context={"batch_id": batch.get("id")},
+            )
+        api_tasks = evalset_fetcher.fetch_sync(name)
+        tasks = [api_task_to_task_record(t) for t in api_tasks]
+        image_ref = _image_ref(batch, {})
+        logger.info(
+            "resolver.resolved_api",
+            evalset_name=name,
+            tasks=len(tasks),
+            image_ref=image_ref,
+        )
+        return None, tasks, "", image_ref
 
     def _image_ref(batch: dict, record: dict) -> str:
         sut_id = str(batch.get("sut_id", ""))

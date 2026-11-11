@@ -23,6 +23,41 @@ BODY_SUMMARY_LEN = 300
 logger = get_logger(__name__)
 
 
+def _tasks_from_payload(
+    data: object, name: str, url: str
+) -> list[ApiEvalsetTask]:
+    """Shared response parsing for fetch()/fetch_sync() (D4)."""
+    if not isinstance(data, dict):
+        raise EnvError(
+            f"evalset fetch failed for {name}: response is not an object",
+            context={"name": name, "url": url},
+        )
+    raw_tasks = data.get("tasks") or []
+    if not isinstance(raw_tasks, list):
+        raise EnvError(
+            f"evalset fetch failed for {name}: 'tasks' is not a list",
+            context={"name": name, "url": url},
+        )
+    tasks: list[ApiEvalsetTask] = []
+    for i, task in enumerate(raw_tasks):
+        task_id = task.get("task_id", f"#{i}") if isinstance(task, dict) else f"#{i}"
+        try:
+            tasks.append(ApiEvalsetTask.model_validate(task))
+        except PydanticValidationError as exc:
+            logger.warning(
+                "evalset_fetcher.invalid_task",
+                evalset=name,
+                task_id=task_id,
+                index=i,
+            )
+            raise ValidationError(
+                f"evalset {name!r}: invalid task {task_id!r} "
+                f"(index {i}): {exc}",
+                context={"name": name, "task_id": task_id, "index": i},
+            ) from exc
+    return tasks
+
+
 class EvalsetFetcher:
     """Online Evalset API v1 client — one lazily-created ``httpx.AsyncClient``.
 
@@ -73,30 +108,43 @@ class EvalsetFetcher:
                 f"evalset fetch failed for {name}: response is not an object",
                 context={"name": name, "url": url},
             )
-        raw_tasks = data.get("tasks") or []
-        if not isinstance(raw_tasks, list):
+        return _tasks_from_payload(data, name, url)
+
+    def fetch_sync(self, name: str) -> list[ApiEvalsetTask]:
+        """Sync variant of fetch() for the (sync) batch resolver (D4).
+
+        Uses a short-lived ``httpx.Client`` per call — the sync resolver path
+        runs at most once per batch, so pooling buys nothing. Same error
+        contract as the async fetch (404 → NotFoundError etc.).
+        """
+        url = f"{self.base_url}/evalsets/{name}"
+        try:
+            with httpx.Client(timeout=self.timeout_s) as client:
+                resp = client.get(url)
+        except httpx.HTTPError as exc:
             raise EnvError(
-                f"evalset fetch failed for {name}: 'tasks' is not a list",
-                context={"name": name, "url": url},
+                f"evalset fetch failed for {name}: {exc}",
+                context={"name": name, "url": url, "exc": type(exc).__name__},
+            ) from exc
+        if resp.status_code == 404:
+            raise NotFoundError(
+                f"evalset {name!r} not found on online API",
+                context={"name": name, "url": url, "status_code": 404},
             )
-        tasks: list[ApiEvalsetTask] = []
-        for i, task in enumerate(raw_tasks):
-            task_id = task.get("task_id", f"#{i}") if isinstance(task, dict) else f"#{i}"
-            try:
-                tasks.append(ApiEvalsetTask.model_validate(task))
-            except PydanticValidationError as exc:
-                logger.warning(
-                    "evalset_fetcher.invalid_task",
-                    evalset=name,
-                    task_id=task_id,
-                    index=i,
-                )
-                raise ValidationError(
-                    f"evalset {name!r}: invalid task {task_id!r} "
-                    f"(index {i}): {exc}",
-                    context={"name": name, "task_id": task_id, "index": i},
-                ) from exc
-        return tasks
+        if resp.status_code != 200:
+            summary = resp.text[:BODY_SUMMARY_LEN]
+            raise EnvError(
+                f"evalset fetch failed for {name}: HTTP {resp.status_code}: {summary}",
+                context={"name": name, "url": url, "status_code": resp.status_code},
+            )
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise EnvError(
+                f"evalset fetch failed for {name}: invalid JSON: {exc}",
+                context={"name": name, "url": url},
+            ) from exc
+        return _tasks_from_payload(data, name, url)
 
     async def aclose(self) -> None:
         """Close the owned client; reset so a later call recreates one."""

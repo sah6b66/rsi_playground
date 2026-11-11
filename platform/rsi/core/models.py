@@ -305,6 +305,10 @@ class TaskRecord(_M):
     task: TaskSpec
     expected: ExpectedAnswer
     metrics: list[MetricDef] = []
+    # ADR-27 D4: API-prep tasks carry their network env reference so the
+    # API prep path (NetworkPrepClient) knows what to prepare/restore.
+    # CLI tasks keep None (env prep is per-task CLI prepare actions).
+    network_env: NetworkEnvRef | None = None
 
 
 # ---------------------------------------------------------------------------
