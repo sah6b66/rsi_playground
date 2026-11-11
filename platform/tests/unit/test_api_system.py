@@ -87,6 +87,11 @@ class TestSystem:
         assert resp.status_code == 200
         items = resp.json()["items"]
         assert items and all("path" in i for i in items)
+        # 参数页可见性：评估集在线 API / 网络准备 API 配置段必须在列
+        paths = {i["path"] for i in items}
+        assert "evalset_api.url" in paths
+        assert "network_prep_api.url" in paths
+        assert "network_prep_api.timeout_s" in paths
 
     async def test_settings_update(self, client):
         h = await admin_headers(client)

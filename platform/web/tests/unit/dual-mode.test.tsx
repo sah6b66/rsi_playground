@@ -49,7 +49,7 @@ test('向导默认 CLI 模式；切 API 模式 → 评估集 Input+预览按钮 
   ).not.toBeInTheDocument();
 
   // 切 API 模式
-  await userEvent.click(screen.getByText('API 模式（在线评估集 + 网络准备 API）'));
+  await userEvent.click(screen.getByText('API 模式'));
   expect(
     screen.queryByRole('combobox', { name: '运行环境' }),
   ).not.toBeInTheDocument();
@@ -57,7 +57,7 @@ test('向导默认 CLI 模式；切 API 模式 → 评估集 Input+预览按钮 
   expect(screen.getByTestId('online-preview-btn')).toBeInTheDocument();
 
   // 切回 CLI：恢复离线 Select
-  await userEvent.click(screen.getByText('CLI 模式（离线评估集 + 平台 SSH 环境准备）'));
+  await userEvent.click(screen.getByText('CLI 模式'));
   expect(screen.getByRole('combobox', { name: '运行环境' })).toBeInTheDocument();
   expect(screen.getByRole('combobox', { name: '评测集' })).toBeInTheDocument();
 });
@@ -67,7 +67,7 @@ test('API 模式在线预览：输入名称 → Alert 显示任务数', async ()
   await waitFor(() =>
     expect(screen.getByRole('textbox', { name: /会话标识/ })).toBeInTheDocument(),
   );
-  await userEvent.click(screen.getByText('API 模式（在线评估集 + 网络准备 API）'));
+  await userEvent.click(screen.getByText('API 模式'));
   await userEvent.type(screen.getByTestId('api-evalset-input'), 'bgp-faults-v2');
   await userEvent.click(screen.getByTestId('online-preview-btn'));
   const alert = await screen.findByTestId('online-preview-result');
@@ -80,7 +80,7 @@ test('API 模式在线预览失败：行内错误', async () => {
   await waitFor(() =>
     expect(screen.getByRole('textbox', { name: /会话标识/ })).toBeInTheDocument(),
   );
-  await userEvent.click(screen.getByText('API 模式（在线评估集 + 网络准备 API）'));
+  await userEvent.click(screen.getByText('API 模式'));
   await userEvent.type(screen.getByTestId('api-evalset-input'), 'not-found-set');
   await userEvent.click(screen.getByTestId('online-preview-btn'));
   const err = await screen.findByTestId('online-preview-error');
@@ -98,7 +98,7 @@ test('提交 API 模式：body 含 prep_mode=api + api_evalset_name', async () =
   );
   await userEvent.click(screen.getByRole('combobox', { name: '网络Agent' }));
   await userEvent.click(await screen.findByText('ipops-agent-1'));
-  await userEvent.click(screen.getByText('API 模式（在线评估集 + 网络准备 API）'));
+  await userEvent.click(screen.getByText('API 模式'));
   await userEvent.type(screen.getByTestId('api-evalset-input'), 'bgp-faults-v2');
   await userEvent.click(screen.getByText('下一步'));
   await userEvent.click(screen.getByText('下一步'));

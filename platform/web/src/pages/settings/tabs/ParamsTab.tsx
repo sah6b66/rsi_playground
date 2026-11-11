@@ -187,7 +187,6 @@ function LlmProviderRow({
   const [baseUrl, setBaseUrl] = useState(provider.base_url);
   return (
     <Space wrap data-testid={`llm-provider-${provider.name}`}>
-      <Tag color="geekblue">{provider.name}</Tag>
       <Tooltip title="留空表示不修改；当前密钥仅显示尾 3 位">
         <Input.Password
           data-testid={`llm-key-${provider.name}`}
@@ -233,15 +232,26 @@ export function ParamsTab() {
   const restart = useRestartPlatform();
   const role = useUiStore((s) => s.user?.role);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  // 当前活跃提供商（接口类型）：默认第一个，切换 Select 即切换编辑目标
+  const providers = llm.data?.providers ?? [];
+  const [activeName, setActiveName] = useState<string>();
+  const activeProvider =
+    providers.find((p) => p.name === activeName) ?? providers[0];
+
+  // hidden 键（费用预算/内部演示占位）不在参数页展示
+  const visibleItems = useMemo(
+    () => (data?.items ?? []).filter((it) => !settingLabel(it.path).hidden),
+    [data],
+  );
 
   const pendingCount = useMemo(
-    () => (data?.items ?? []).filter((it) => it.pending_restart).length,
-    [data],
+    () => visibleItems.filter((it) => it.pending_restart).length,
+    [visibleItems],
   );
 
   const groups = useMemo(() => {
     const byGroup = new Map<string, SettingItem[]>();
-    (data?.items ?? []).forEach((it) => {
+    visibleItems.forEach((it) => {
       const g = groupOf(it.path);
       byGroup.set(g, [...(byGroup.get(g) ?? []), it]);
     });
@@ -253,7 +263,7 @@ export function ParamsTab() {
       ordered.push({ key: 'other', group: 'other', items: byGroup.get('other')! });
     }
     return ordered;
-  }, [data]);
+  }, [visibleItems]);
 
   const doRestart = () => {
     setConfirmOpen(false);
@@ -397,18 +407,20 @@ export function ParamsTab() {
         rowKey="name"
         size="small"
         loading={llm.isLoading}
-        dataSource={llm.data?.providers ?? []}
+        dataSource={activeProvider ? [activeProvider] : []}
         pagination={false}
         columns={[
           {
-            title: '模型服务提供商',
-            render: (_, r: LlmProviderDto) => (
-              <span data-testid={`llm-label-${r.name}`}>
-                <b>模型服务</b>
-                <span style={{ display: 'block', fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
-                  直连密钥与地址（半脱敏显示；留空密钥表示不修改）
-                </span>
-              </span>
+            title: '接口类型',
+            width: 180,
+            render: () => (
+              <Select
+                data-testid="llm-provider-select"
+                style={{ width: 170 }}
+                value={activeProvider?.name}
+                onChange={(v) => setActiveName(v)}
+                options={providers.map((p) => ({ value: p.name, label: p.name }))}
+              />
             ),
           },
           {

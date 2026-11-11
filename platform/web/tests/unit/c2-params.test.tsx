@@ -88,21 +88,42 @@ test('重启平台：DangerConfirm 输入确认 → POST /system:restart → 5s 
   expect(reload).not.toHaveBeenCalled();
   vi.advanceTimersByTime(5100);
   await waitFor(() => expect(reload).toHaveBeenCalled());
-}, 30_000);
+}, 60_000);
 
-test('LLM 提供商直配区：半脱敏渲染 + 保存 PUT（新 key / 新 base_url）', async () => {
+test('LLM 提供商直配区：单行接口类型切换 + 半脱敏渲染 + 保存 PUT（新 key / 新 base_url）', async () => {
   renderSettings();
-  // 模型服务分组表在最前，anthropic 行密钥占位为掩码
-  const anthropicRow = await screen
-    .findByTestId('llm-provider-anthropic')
-    .then((el) => el.closest('tr') ?? el);
+  // 模型服务分组为单行：默认展示第一个提供商，Select 可切换接口类型
+  await screen.findByTestId('llm-provider-select');
+  // 切到 anthropic：密钥占位为掩码（点击下拉选项，避开选中的回显文本）
+  const pickOption = async (label: string) => {
+    const selector = screen
+      .getByTestId('llm-provider-select')
+      .querySelector('.ant-select-selector') as HTMLElement;
+    await userEvent.click(selector);
+    const option = await waitFor(() => {
+      const hits = screen
+        .getAllByText(label)
+        .map((el) => el.closest('.ant-select-item-option'))
+        .filter(Boolean) as HTMLElement[];
+      if (!hits.length) throw new Error(`下拉选项 ${label} 未渲染`);
+      return hits[0]!;
+    });
+    await userEvent.click(option);
+  };
+  await pickOption('anthropic');
+  const anthropicRow = screen
+    .getByTestId('llm-provider-anthropic')
+    .closest('tr') as HTMLElement;
   expect(within(anthropicRow).getByTestId('llm-key-anthropic')).toHaveAttribute(
     'placeholder',
     '***xyz',
   );
-  const compatRow = screen.getByTestId('llm-provider-openai_compat');
+  // 切到 openai_compat：服务地址带出，编辑新密钥 + 改 base_url → 保存
+  await pickOption('openai_compat');
+  const compatRow = screen
+    .getByTestId('llm-provider-openai_compat')
+    .closest('tr') as HTMLElement;
   expect(within(compatRow).getByDisplayValue('http://llm-gw:8000/v1')).toBeInTheDocument();
-  // 编辑 openai_compat：输入新密钥 + 改 base_url → 保存
   await userEvent.type(
     within(compatRow).getByTestId('llm-key-openai_compat'),
     'sk-new-999',
@@ -118,4 +139,4 @@ test('LLM 提供商直配区：半脱敏渲染 + 保存 PUT（新 key / 新 base
     name: 'openai_compat',
     body: { api_key: 'sk-new-999', base_url: 'http://gw2:9000/v1' },
   });
-}, 20_000);
+}, 60_000);

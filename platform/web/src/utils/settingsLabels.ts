@@ -9,6 +9,8 @@ export interface SettingLabel {
   name: string;
   desc?: string;
   def?: string | number | boolean | null | unknown[];
+  // hidden=true：不在参数页展示（内部键/演示占位键/内网不关注的费用预算）
+  hidden?: boolean;
   // 适用层级：
   // system=平台级；agent=面向优化对象（网络Agent）的缺省；session=RSSI 会话级缺省
   scope?: SettingScope;
@@ -43,7 +45,11 @@ export const SETTINGS_LABELS: Record<string, SettingLabel> = {
   'llm.defaults.hypothesis.temperature': { name: '假设采样温度', desc: '留空使用服务端缺省', def: null },
   'llm.defaults.critic.model': { name: '自动评审模型', desc: '自动评审变更方案的模型', def: '' },
   'llm.defaults.critic.temperature': { name: '评审采样温度', desc: '留空使用服务端缺省', def: null },
-  'llm.cassette_mode': { name: '调用回放模式', desc: 'replay 回放录像 / record 录制 / off 真实调用', def: 'replay' },
+  'llm.cassette_mode': {
+    name: '调用回放模式（高级）',
+    desc: 'LLM 调用录制/回放模式（用于测试可复现）：off=直连真实模型；replay=回放已录制的调用（默认，离线测试）；record=录制真实调用供后续回放',
+    def: 'replay',
+  },
   'llm.max_concurrent_calls': { name: '模型并发上限', desc: '同时进行的模型调用数上限', def: 4 },
   // ── 评估集与网络准备 API（ADR-27）──
   'evalset_api.url': { name: '评估集在线 API 地址', desc: '留空=不启用 API 模式', def: '' },
@@ -68,10 +74,10 @@ export const SETTINGS_LABELS: Record<string, SettingLabel> = {
   'orchestrator.health_monitor_interval_s': { name: '健康巡检间隔（秒）', desc: '巡检运行环境健康状态的周期', def: 30 },
   'orchestrator.budget.iteration_default.max_tokens': { name: '单会话 Token 预算', desc: '每个 RSI 会话缺省 Token 上限', def: 50_000_000 },
   'orchestrator.budget.iteration_default.max_wall_hours': { name: '单会话时长预算（小时）', desc: '每个 RSI 会话缺省墙上时长上限', def: 8 },
-  'orchestrator.budget.iteration_default.max_cost_usd': { name: '单会话费用预算（美元）', desc: '每个 RSI 会话缺省费用上限', def: 200 },
+  'orchestrator.budget.iteration_default.max_cost_usd': { name: '单会话费用预算（美元）', desc: '每个 RSI 会话缺省费用上限', def: 200, hidden: true },
   'orchestrator.budget.global_.max_tokens': { name: '全局 Token 预算上限', desc: '全平台累计 Token 消耗上限', def: 100_000_000 },
   'orchestrator.budget.global_.max_wall_hours': { name: '全局时长预算（小时）', desc: '0 表示不限制', def: 0 },
-  'orchestrator.budget.global_.max_cost_usd': { name: '全局费用预算（美元）', desc: '全平台累计费用上限', def: 400 },
+  'orchestrator.budget.global_.max_cost_usd': { name: '全局费用预算（美元）', desc: '全平台累计费用上限', def: 400, hidden: true },
   // ── Agent 承载（carrier）缺省 ──
   'carrier.task_timeout_s': { name: '单任务超时（秒）', desc: 'Agent 单个任务的最长执行时间', def: 1800 },
   'carrier.max_instances_per_host': { name: '每主机实例上限', desc: '未单独配置的主机使用的缺省上限', def: 10 },
@@ -89,7 +95,7 @@ export const SETTINGS_LABELS: Record<string, SettingLabel> = {
   'seed.master': { name: '随机种子', desc: '保证评测可复现：相同种子与相同输入得到相同的采样与裁决顺序', def: 20261102 },
   // ── 运行时键（default_stores 暴露，无 Settings 字段） ──
   'budget.llm.daily': { name: '每日模型调用上限', desc: '单日模型调用量预算（仅运行时生效，不落盘）', def: 100 },
-  'platform.static_item': { name: '静态配置示例项', desc: '不可在线修改的静态项示例' },
+  'platform.static_item': { name: '静态配置示例项', desc: '不可在线修改的静态项示例', hidden: true },
 };
 
 // 分组 key → 中文名（ParamsTab 分组标题）
