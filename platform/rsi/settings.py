@@ -68,6 +68,8 @@ USER_CONFIG_PREFIXES: tuple[str, ...] = (
     "logging.level",
     "logging.retention_days",
     "logging.error_split",
+    "evalset_api.",
+    "network_prep_api.",
     "seed.",
 )
 

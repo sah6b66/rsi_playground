@@ -135,11 +135,14 @@ export function CreateSessionWizard() {
                 aria-label="工作模式"
                 data-testid="prep-mode-radio"
               >
-                <Radio value="cli">
-                  CLI 模式（离线评估集 + 平台 SSH 环境准备）
-                </Radio>
-                <Radio value="api">API 模式（在线评估集 + 网络准备 API）</Radio>
+                <Radio value="cli">CLI 模式</Radio>
+                <Radio value="api">API 模式</Radio>
               </Radio.Group>
+              <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
+                {basics.prep_mode === 'cli'
+                  ? 'CLI：离线评估集 + 平台 SSH 环境准备'
+                  : 'API：在线评估集 + 网络准备 API'}
+              </div>
             </FieldWithHints>
             {/* U7a 会话标识：必选 */}
             <FieldWithHints

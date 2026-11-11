@@ -89,8 +89,8 @@ test('ParamsTab：动态编辑保存热生效 + 静态项锁', async () => {
   expect(put.body.value).toBe(200);
   // invalidate 后编辑器重挂载显示新值 200（key=value 强制刷新）
   await waitFor(() => expect(num).toHaveValue('200'));
-  // 数字型可编辑项共 29 个（C2 全量键 fixture），只读项无输入框
-  expect(screen.getAllByRole('spinbutton').length).toBe(29);
+  // 数字型可编辑项共 27 个（费用预算 2 项已隐藏）（C2 全量键 fixture），只读项无输入框
+  expect(screen.getAllByRole('spinbutton').length).toBe(27);
 }, 20_000);
 
 // ② UsersTab：创建 Modal（用户名/角色 5 选/密码 ≥8 位）→ POST body；

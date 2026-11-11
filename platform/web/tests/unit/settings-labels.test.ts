@@ -24,6 +24,7 @@ const BACKEND_SETTING_KEYS = [
   'decision.no_gain_rounds_default',
   'decision.noise.factor',
   'decision.noise.k_repeats',
+  'evalset_api.url',
   'judge.det_timeout_s',
   'judge.llm.model',
   'judge.llm_retry',
@@ -41,6 +42,8 @@ const BACKEND_SETTING_KEYS = [
   'logging.error_split',
   'logging.level',
   'logging.retention_days',
+  'network_prep_api.timeout_s',
+  'network_prep_api.url',
   'optimizer.critic_max_repair_rounds',
   'optimizer.sft.min_samples',
   'optimizer.sft.no_gain_rounds',
@@ -63,8 +66,8 @@ const BACKEND_SETTING_KEYS = [
   'tracing.redact.enabled',
 ];
 
-test('SETTINGS_LABELS 覆盖后端 default_stores 全部键（45 项快照）', () => {
-  expect(BACKEND_SETTING_KEYS.length).toBe(45);
+test('SETTINGS_LABELS 覆盖后端 default_stores 全部键（48 项快照）', () => {
+  expect(BACKEND_SETTING_KEYS.length).toBe(48);
   BACKEND_SETTING_KEYS.forEach((k) => {
     const label = SETTINGS_LABELS[k];
     expect(label, `缺少键 ${k} 的中文名`).toBeDefined();
@@ -163,6 +166,16 @@ test('seed 键名与组名符合第 4 轮反馈', () => {
   expect(SETTINGS_LABELS['seed.master']!.name).toBe('随机种子');
   expect(SETTINGS_LABELS['seed.master']!.desc).toContain('可复现');
   expect(GROUP_LABELS.seed).toBe('调度与随机种子');
+});
+
+test('费用预算与演示占位键标记为 hidden（参数页不展示，label 保留）', () => {
+  [
+    'orchestrator.budget.iteration_default.max_cost_usd',
+    'orchestrator.budget.global_.max_cost_usd',
+    'platform.static_item',
+  ].forEach((k) => expect(SETTINGS_LABELS[k]!.hidden, `${k} 应为 hidden`).toBe(true));
+  // 其余键默认可见
+  expect(SETTINGS_LABELS['seed.master']!.hidden).toBeUndefined();
 });
 
 test('settingScope：judge=session / optimizer=agent / 其余 system', () => {

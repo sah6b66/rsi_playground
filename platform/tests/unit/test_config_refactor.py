@@ -150,13 +150,15 @@ async def test_settings_page_user_subset(client):
     items = resp.json()["items"]
     paths = {i["path"] for i in items}
     # 42 Settings-backed user keys + 3 legacy runtime knobs (judge.llm.model
-    # alias, budget.llm.daily, platform.static_item). The spec's ~35/≤40
-    # estimate undercounted the llm.defaults role expansion; llm.providers.*
-    # (api_key secrets) is excluded from the page entirely.
-    assert len(paths) <= 45
+    # alias, budget.llm.daily, platform.static_item) + 3 dual-mode API keys
+    # (evalset_api.url, network_prep_api.url, network_prep_api.timeout_s).
+    # llm.providers.* (api_key secrets) is excluded from the page entirely.
+    assert len(paths) <= 48
     assert "server.port" in paths
     assert "judge.det_timeout_s" in paths
     assert "seed.master" in paths
+    assert "evalset_api.url" in paths
+    assert "network_prep_api.url" in paths
     assert "orchestrator.budget.iteration_default.max_tokens" in paths
     # excluded tiers
     assert not any(p.startswith("llm.providers") for p in paths)
