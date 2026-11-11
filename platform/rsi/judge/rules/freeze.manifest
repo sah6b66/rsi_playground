@@ -1,6 +1,6 @@
 {
-  "prompts/consistency.v1.md": "7eef61f984ae9a3f8a6983fcec8915104651e0bba52c46b3ecde30cb6c301a2d",
-  "prompts/path_quality.v1.md": "14ed1a6df932238fb8fbdc41a22c38d3cc076263bf44d24c864ef39659bae764",
-  "prompts/root_cause.v1.md": "13bd0956dcbb33023c85d0a8fc847a9b51081c73b93cf29e5ed44c2dae1757f7",
+  "prompts/checklist.v1.md": "e44e66173888fec7f6142fb4a66c0ac1c03d64d57ac5ab8af0ca64c5470c20fa",
+  "prompts/path_quality.v1.md": "427f1fa18e5fcca19e4d4a61aa0591e2c3947ec8dd51c21e5e3d95a87abeecbd",
+  "prompts/root_cause.v1.md": "4ae71a3339dddf0ee9ad1162a692c61bd69917095d671cc0bac37737e3715a03",
   "rules/safety_rules.yaml": "a5d1639f4f228f97b4b53b4ab901c995a318d5b79f6610d6505f10961e59dd3f"
 }

@@ -7,8 +7,10 @@ never hard-fail on a missing prompt.
 
 Templates can also come from a template directory (C-6 frozen domain): a file
 ``<dir>/<name>.v<N>.md`` registers under the component given at load time
-(defaults to ``judge``), so frozen ``.md`` files take priority over inline
-entries while the fallback concatenation stays as last resort.
+(defaults to ``judge``); :meth:`load_root` scans the unified platform tree
+``<root>/<component>/<name>.v<N>.md`` (DD-02 §2, ``rsi/llm/prompts/``), so
+frozen ``.md`` files take priority over inline entries while the fallback
+concatenation stays as last resort.
 
 ``hash_of`` implements the DD-08 §5.1/§5.4 prompt-fingerprint:
 ``sha256("<name>@<version>|<model>|<temperature>")``.
@@ -54,7 +56,7 @@ class PromptLibrary:
             self.load_dir(template_dir, component=component)
 
     def load_dir(self, template_dir: Path | str, *, component: str = "judge") -> int:
-        """Register ``<name>.v<N>.md`` files from a directory.
+        """Register ``<name>.v<N>.md`` files from a single-component directory.
 
         Returns the number of templates registered. Missing directory is a
         no-op (deployment compatibility: the inline/fallback path still works).
@@ -75,6 +77,21 @@ class PromptLibrary:
                 continue
         return loaded
 
+    def load_root(self, template_root: Path | str) -> int:
+        """Register ``<root>/<component>/<name>.v<N>.md`` files (DD-02 §2).
+
+        Each subdirectory name is the component (judge/attribution/
+        hypothesis/critic/sft). Returns the number of templates registered;
+        a missing root is a no-op.
+        """
+        root = Path(template_root)
+        if not root.is_dir():
+            return 0
+        loaded = 0
+        for comp_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+            loaded += self.load_dir(comp_dir, component=comp_dir.name)
+        return loaded
+
     def render(self, component: str, name: str, vars: dict[str, Any]) -> str:
         """Find latest version of component/name, format with vars.
 
@@ -87,7 +104,7 @@ class PromptLibrary:
         if best is None:
             # Fallback: return a generic prompt
             return (
-                f"Component: {component}, Task: {name}\n"
+                f"组件: {component}，任务: {name}\n"
                 + "\n".join(f"{k}: {v}" for k, v in vars.items())
             )
         required = _placeholders(self._templates[best])

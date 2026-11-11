@@ -325,16 +325,22 @@ class TestFrozenDomain:
         assert freeze_check.verify(bad) is False
 
         # tamper: manifest written for an unmodified copy, then a file changes
-        tampered_root = tmp_path / "judge"
-        tampered_root.mkdir()
-        shutil.copytree(freeze_check.JUDGE_ROOT / "rules", tampered_root / "rules")
-        shutil.copytree(freeze_check.JUDGE_ROOT / "prompts", tampered_root / "prompts")
-        manifest_path = tampered_root / "rules" / "freeze.manifest"
-        freeze_check.write_manifest(manifest_path, root=tampered_root)
-        assert freeze_check.verify(manifest_path, root=tampered_root) is True
-        target = tampered_root / first
+        rules_root = tmp_path / "judge"
+        prompts_root = tmp_path / "prompts_judge"
+        shutil.copytree(freeze_check.JUDGE_ROOT / "rules", rules_root / "rules")
+        shutil.copytree(freeze_check.PROMPTS_ROOT, prompts_root)
+        manifest_path = rules_root / "rules" / "freeze.manifest"
+        freeze_check.write_manifest(
+            manifest_path, rules_root=rules_root, prompts_root=prompts_root
+        )
+        assert freeze_check.verify(
+            manifest_path, rules_root=rules_root, prompts_root=prompts_root
+        )
+        target = prompts_root / first.removeprefix("prompts/")
         target.write_text(target.read_text(encoding="utf-8") + "\n# tampered", encoding="utf-8")
-        assert freeze_check.verify(manifest_path, root=tampered_root) is False
+        assert freeze_check.verify(
+            manifest_path, rules_root=rules_root, prompts_root=prompts_root
+        ) is False
 
     def test_yaml_rules_match_builtin_fallback(self):
         from rsi.judge.safety import _FALLBACK, load_rules
@@ -361,7 +367,11 @@ class TestFrozenDomain:
 
     def test_prompt_library_loads_frozen_templates(self):
         lib = PromptLibrary(
-            template_dir=Path(__file__).resolve().parents[2] / "rsi" / "judge" / "prompts",
+            template_dir=Path(__file__).resolve().parents[2]
+            / "rsi"
+            / "llm"
+            / "prompts"
+            / "judge",
             component="judge",
         )
         assert lib.latest_version("judge", "root_cause") == 1
@@ -376,7 +386,7 @@ class TestFrozenDomain:
                 "match_hints": "h",
             },
         )
-        assert "root-cause judge" in out
+        assert "根因裁判" in out
         assert "t" in out
 
 

@@ -480,23 +480,26 @@ class TestEngineBridge:
 
 
 class TestFreeze:
-    def _make_root(self, tmp_path: Path) -> Path:
-        root = tmp_path / "judge"
-        (root / "rules").mkdir(parents=True)
-        (root / "prompts").mkdir()
-        (root / "rules" / "safety_rules.yaml").write_text("rules: 1\n")
-        (root / "prompts" / "root_cause.v1.md").write_text("prompt v1\n")
-        freeze_check.write_manifest(root=root)
-        return root
+    def _make_roots(self, tmp_path: Path) -> tuple[Path, Path]:
+        rules_root = tmp_path / "judge"
+        prompts_root = tmp_path / "prompts_judge"
+        (rules_root / "rules").mkdir(parents=True)
+        prompts_root.mkdir()
+        (rules_root / "rules" / "safety_rules.yaml").write_text("rules: 1\n")
+        (prompts_root / "root_cause.v1.md").write_text("prompt v1\n")
+        freeze_check.write_manifest(rules_root=rules_root, prompts_root=prompts_root)
+        return rules_root, prompts_root
 
     def test_unlisted_v2_file_fails_verify(self, tmp_path: Path):
-        root = self._make_root(tmp_path)
-        assert freeze_check.verify(root=root)
+        rules_root, prompts_root = self._make_roots(tmp_path)
+        assert freeze_check.verify(rules_root=rules_root, prompts_root=prompts_root)
         # an unregistered new prompt version must fail the freeze check
-        (root / "prompts" / "root_cause.v2.md").write_text("prompt v2\n")
-        assert not freeze_check.verify(root=root)
-        (root / "prompts" / "root_cause.v2.md").unlink()
-        assert freeze_check.verify(root=root)
+        (prompts_root / "root_cause.v2.md").write_text("prompt v2\n")
+        assert not freeze_check.verify(
+            rules_root=rules_root, prompts_root=prompts_root
+        )
+        (prompts_root / "root_cause.v2.md").unlink()
+        assert freeze_check.verify(rules_root=rules_root, prompts_root=prompts_root)
 
     async def test_doctor_includes_freeze_check(self):
         from rsi.doctor import Doctor

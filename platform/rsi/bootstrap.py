@@ -181,8 +181,9 @@ def build_services(
     # -- LLM (offline mock handler; real providers plug in via handler) ---
     from pathlib import Path as _Path
 
-    _prompts_dir = _Path(__file__).parent / "judge" / "prompts"
-    prompt_library = PromptLibrary(template_dir=_prompts_dir, component="judge")
+    _prompts_root = _Path(__file__).parent / "llm" / "prompts"
+    prompt_library = PromptLibrary()
+    prompt_library.load_root(_prompts_root)
     accountant = Accountant(session_factory=session_factory)  # C-7: llm_calls rows
     judge_cfg = settings.llm.defaults.get("judge")
     llm_client = LLMClient(
