@@ -32,7 +32,8 @@ export const DEP_LABELS: Record<string, string> = {
   git: 'Git 代码库',
   db: '数据库',
   collector: '轨迹采集器',
-  config_api: '网络环境准备API',
+  evalset_api: '评估集在线 API',
+  network_prep: '网络环境准备API',
 };
 
 export function depLabel(name: string): string {

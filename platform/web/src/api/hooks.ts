@@ -174,7 +174,6 @@ export interface EvalsetEnv {
   backend?: string;
   devices?: { name: string; type?: string }[];
   ssh_access?: Record<string, { ip: string; port: number; username?: string }>;
-  config_apis?: Record<string, Record<string, unknown>>;
   [k: string]: unknown;
 }
 
@@ -189,7 +188,6 @@ export interface EvalsetEnvParsed {
     ip?: string | null;
     port?: number | null;
   }[];
-  config_apis: { name?: string | null; base_url?: string | null }[];
 }
 
 export interface Evalset {
@@ -264,6 +262,32 @@ export interface CreateSessionBody {
   profile?: Record<string, unknown>;
   // U7a 会话标识（1-64 字符，中文可用）
   label?: string;
+  // ADR-27 双模式：CLI（离线评估集+SSH 环境准备）/ API（在线评估集+网络准备 API）
+  prep_mode?: 'cli' | 'api';
+  api_evalset_name?: string;
+}
+
+// D3 GET /evalsets/online/{name} 在线评估集预览（ADR-27）
+export interface OnlineEvalsetPreview {
+  name: string;
+  task_count: number;
+  tasks: { task_id: string; title: string; network_env_name: string }[];
+  api_url: string;
+}
+
+export function useOnlineEvalset(
+  name: string,
+): UseQueryResult<OnlineEvalsetPreview, Error> {
+  return useQuery({
+    queryKey: ['evalset-online', name],
+    queryFn: () =>
+      apiFetch<OnlineEvalsetPreview>(
+        'GET',
+        `/evalsets/online/${encodeURIComponent(name)}`,
+      ),
+    enabled: !!name,
+    staleTime: 30_000,
+  });
 }
 
 export function useCreateSession() {
@@ -587,7 +611,6 @@ export function useDeleteEvalset() {
 // POST /evalsets/{id}:clone（evalsets.py CloneBody）
 export interface CloneOverrides {
   device_endpoints?: Record<string, { ip?: string; port?: number }>;
-  config_apis?: { name?: string; base_url: string; [k: string]: unknown }[];
   site_name?: string;
 }
 

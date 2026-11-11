@@ -85,15 +85,6 @@ export function EvalsetDetailPage() {
             <Descriptions.Item label="设备数">
               {parsed.devices.length}
             </Descriptions.Item>
-            <Descriptions.Item label="网络环境准备API">
-              {parsed.config_apis.length === 0
-                ? '未定义'
-                : parsed.config_apis.map((a, i) => (
-                    <div key={i}>
-                      {a.name || '未命名'}：{a.base_url || '未定义'}
-                    </div>
-                  ))}
-            </Descriptions.Item>
           </Descriptions>
         ) : (
           <Alert type="info" showIcon message="该评测集未携带 env.yaml" />

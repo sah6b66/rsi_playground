@@ -100,11 +100,11 @@ class TestHealthMonitorUnit:
         checkers = build_checkers({})
         assert set(checkers) == {
             "docker", "lab", "instances", "llm", "git", "db", "collector",
-            "config_api", "platform",
+            "evalset_api", "network_prep", "platform",
         }
         mon = HealthMonitor(checkers)
         results = mon.check_all()
-        assert len(results) == 9
+        assert len(results) == 10
 
     async def test_build_checkers_on_bootstrap_services(self):
         import time
@@ -122,7 +122,7 @@ class TestHealthMonitorUnit:
         results = mon.check_all()
         assert set(results) == {
             "docker", "lab", "instances", "llm", "git", "db", "collector",
-            "config_api",
+            "evalset_api", "network_prep",
         } | {f"platform:{k}" for k in services["platform_probes"]}
         # offline assembly: stub pool is up, llm detected as the offline mock
         assert results["docker"].ok is True
@@ -130,6 +130,75 @@ class TestHealthMonitorUnit:
         assert all(
             results[f"platform:{k}"].ok is True for k in services["platform_probes"]
         )
+
+
+class TestDualModeCheckers:
+    """D5: evalset_api / network_prep URL 探活 checker（ADR-27）."""
+
+    async def test_evalset_api_url_configured_ok(self):
+        import respx
+        from httpx import Response
+
+        from rsi.sandbox.evalset_fetcher import EvalsetFetcher
+
+        services = {"evalset_fetcher": EvalsetFetcher("http://eval-api.test")}
+        with respx.mock:
+            respx.get("http://eval-api.test/health").mock(
+                return_value=Response(200, json={"ok": True})
+            )
+            result = build_checkers(services)["evalset_api"]()
+        assert result.ok is True
+        assert "200" in result.detail
+
+    async def test_evalset_api_url_empty_not_configured(self):
+        from rsi.sandbox.evalset_fetcher import EvalsetFetcher
+
+        services = {"evalset_fetcher": EvalsetFetcher("")}
+        result = build_checkers(services)["evalset_api"]()
+        assert result.ok is None
+        assert result.detail == "not_configured"
+
+    async def test_evalset_api_missing_service_not_configured(self):
+        result = build_checkers({})["evalset_api"]()
+        assert result.ok is None
+
+    async def test_network_prep_url_configured_ok(self):
+        import respx
+        from httpx import Response
+
+        from rsi.sandbox.netprep import NetworkPrepClient
+
+        services = {
+            "netprep": NetworkPrepClient("http://netprep.test")
+        }
+        with respx.mock:
+            # /health 404 → 回落 / 探活成功
+            respx.get("http://netprep.test/health").mock(
+                return_value=Response(404)
+            )
+            respx.get("http://netprep.test/").mock(return_value=Response(200))
+            result = build_checkers(services)["network_prep"]()
+        assert result.ok is True
+        assert "200" in result.detail
+
+    async def test_network_prep_url_empty_not_configured(self):
+        # 空 URL → 服务不存在 → not_configured
+        result = build_checkers({})["network_prep"]()
+        assert result.ok is None
+        assert result.detail == "not_configured"
+
+    async def test_network_prep_unreachable_down(self):
+        import respx
+        from httpx import Response
+
+        from rsi.sandbox.netprep import NetworkPrepClient
+
+        services = {"netprep": NetworkPrepClient("http://netprep.test")}
+        route = respx.get("http://netprep.test/health")
+        with respx.mock:
+            route.side_effect = ConnectionError("refused")
+            result = build_checkers(services)["network_prep"]()
+        assert result.ok is False
 
 
 class TestDependenciesEndpoint:

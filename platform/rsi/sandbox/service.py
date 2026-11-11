@@ -1,11 +1,13 @@
 """SandboxService (DD-04 §4.1) — the seven-operation sandbox facade.
 
 Orchestrates a backend adapter (lab lifecycle + device exec) with the
-ConfigApiCaller (call_api prepare/undo), the readiness check and an ops
-journal (``labs_dir/<lab_id>/ops.jsonl``) that records every applied action
-for audit and L2 recovery replay. Recovery follows ADR-20: L1 per-task
-(backup replay / API undo) with <=2 retries, then the caller escalates to
-L2 (lab reset + snap0 restore).
+readiness check and an ops journal (``labs_dir/<lab_id>/ops.jsonl``) that
+records every applied action for audit and L2 recovery replay. Recovery
+follows ADR-20: L1 per-task (backup replay) with <=2 retries, then the
+caller escalates to L2 (lab reset + snap0 restore). The call_api prepare
+path was removed by ADR-27 (system-level NetworkPrepClient supersedes the
+per-evalset ConfigApiCaller; the constructor injection is kept for
+backward compatibility only).
 """
 
 from __future__ import annotations
@@ -331,10 +333,7 @@ class SandboxService:
         env = self._require_env(lab)
         applied: list[AppliedAction] = []
         for action in actions:
-            if action.action == "exec_cli":
-                applied.append(await self._prepare_exec_cli(lab, task_id, env, action))
-            else:
-                applied.append(await self._prepare_call_api(lab, task_id, env, action))
+            applied.append(await self._prepare_exec_cli(lab, task_id, env, action))
         logger.debug("prepare.exit", applied_count=len(applied))
         return applied
 
@@ -372,26 +371,6 @@ class SandboxService:
             action="exec_cli",
             entries=list(action.entries),
             backup_files=backups,
-            applied_at=_utcnow_iso(),
-        )
-        self._journal(lab).append(
-            {"record": "applied", "task_id": task_id, "applied": applied.model_dump()}
-        )
-        return applied
-
-    async def _prepare_call_api(
-        self,
-        lab: LabHandle,
-        task_id: str,
-        env: EnvSpec,
-        action: PrepareAction,
-    ) -> AppliedAction:
-        assert action.api is not None and action.params is not None
-        await self._config_api.apply(env, action.api, action.params, undo=False)
-        applied = AppliedAction(
-            action="call_api",
-            api=action.api,
-            params=action.params,
             applied_at=_utcnow_iso(),
         )
         self._journal(lab).append(
@@ -524,38 +503,32 @@ class SandboxService:
                 # no pooled session for every device — legacy whole-lab reset
                 await backend.reset(lab)
         for action in reversed(applied):
-            if action.action == "call_api":
-                assert action.api is not None and action.params is not None
-                await self._config_api.apply(
-                    env, action.api, action.params, undo=True
-                )
-            else:
-                for device, path in action.backup_files.items():
-                    backup = Path(path)
-                    if not backup.is_file():
-                        raise EnvError(
-                            f"backup file {path!r} missing for device {device!r}",
-                            context={"device": device, "path": path},
-                        )
-                    for line in backup.read_text(encoding="utf-8").splitlines():
-                        if not line.strip() or line.startswith("#"):
-                            continue
-                        session = self._pool_session(lab, device)
-                        if session is not None:
-                            result = _run_sync(session.exec_config([line]))
-                            if not result.ok:
-                                raise EnvError(
-                                    f"backup replay failed on {device}: {line!r} "
-                                    f"-> {result.matched_errors}",
-                                    context={"device": device, "cli": line},
-                                )
-                        else:
-                            output = backend.exec(lab, device, line)
-                            if output.startswith(_ERROR_OUTPUT_PREFIX):
-                                raise EnvError(
-                                    f"backup replay failed on {device}: {line!r} -> {output}",
-                                    context={"device": device, "cli": line},
-                                )
+            for device, path in action.backup_files.items():
+                backup = Path(path)
+                if not backup.is_file():
+                    raise EnvError(
+                        f"backup file {path!r} missing for device {device!r}",
+                        context={"device": device, "path": path},
+                    )
+                for line in backup.read_text(encoding="utf-8").splitlines():
+                    if not line.strip() or line.startswith("#"):
+                        continue
+                    session = self._pool_session(lab, device)
+                    if session is not None:
+                        result = _run_sync(session.exec_config([line]))
+                        if not result.ok:
+                            raise EnvError(
+                                f"backup replay failed on {device}: {line!r} "
+                                f"-> {result.matched_errors}",
+                                context={"device": device, "cli": line},
+                            )
+                    else:
+                        output = backend.exec(lab, device, line)
+                        if output.startswith(_ERROR_OUTPUT_PREFIX):
+                            raise EnvError(
+                                f"backup replay failed on {device}: {line!r} -> {output}",
+                                context={"device": device, "cli": line},
+                            )
         # B-6: post-replay equivalence spot check — the captured running
         # config must match the backup (normalized) or the restore counts as
         # failed and the retry path runs.

@@ -20,9 +20,10 @@ __all__ = [
     "LinkSpec",
     "Topology",
     "ReadyCheck",
-    "ConfigApi",
     "ExternalDep",
     "EnvSpec",
+    "NetworkEnvRef",
+    "ApiEvalsetTask",
     "CliEntry",
     "CallApiParams",
     "PrepareAction",
@@ -129,14 +130,6 @@ class ReadyCheck(_M):
         return self
 
 
-class ConfigApi(_M):
-    """External configuration API endpoint (ADR-20 call_api vehicle)."""
-
-    base_url: str  # http(s)://...
-    auth_ref: str | None = None  # CredentialStore name; None = no auth
-    timeout_s: int = 60
-
-
 class ExternalDep(_M):
     """P2 NMS endpoint declaration."""
 
@@ -152,7 +145,6 @@ class EnvSpec(_M):
     topology: Topology
     ssh_access: dict[str, SshAccess]  # keys == device names
     ready_checks: list[ReadyCheck] = []  # default: all devices ssh_reachable
-    config_apis: dict[str, ConfigApi] = {}
     external_deps: list[ExternalDep] = []
 
     @model_validator(mode="after")
@@ -207,23 +199,15 @@ class CallApiParams(_M):
 
 
 class PrepareAction(_M):
-    action: Literal["exec_cli", "call_api"]
+    """Prepare step (ADR-20; call_api removed by ADR-27 — exec_cli only)."""
+
+    action: Literal["exec_cli"]
     entries: list[CliEntry] | None = None  # required for exec_cli
-    api: str | None = None  # required for call_api: env.config_apis key
-    params: CallApiParams | None = None  # required for call_api
 
     @model_validator(mode="after")
     def _action_fields(self) -> "PrepareAction":
-        if self.action == "exec_cli":
-            if self.entries is None:
-                raise ValueError("exec_cli requires entries")
-            if self.api is not None or self.params is not None:
-                raise ValueError("exec_cli forbids api/params")
-        else:  # call_api
-            if self.api is None or self.params is None:
-                raise ValueError("call_api requires api and params")
-            if self.entries is not None:
-                raise ValueError("call_api forbids entries")
+        if self.entries is None:
+            raise ValueError("exec_cli requires entries")
         return self
 
 
@@ -277,6 +261,28 @@ class ExpectedAnswer(_M):
     critical_steps: list[CriticalStep] | None = None
 
 
+class NetworkEnvRef(_M):
+    """API 模式下任务关联的网络环境引用（ADR-27）."""
+
+    name: str = Field(json_schema_extra={"example": "lab-bgp-3node"})
+    params: dict[str, Any] = Field(
+        default_factory=dict,
+        json_schema_extra={
+            "example": {"topology": "triangle", "fault_type": "bgp_peer_down"}
+        },
+    )
+
+
+class ApiEvalsetTask(_M):
+    """API 类评估集中的单个评测任务（在线获取，ADR-27）."""
+
+    task_id: str
+    title: str = ""
+    network_env: NetworkEnvRef
+    task: TaskSpec
+    expected: ExpectedAnswer
+
+
 class MetricDef(_M):
     name: Literal[
         "root_cause_accuracy",
@@ -299,6 +305,10 @@ class TaskRecord(_M):
     task: TaskSpec
     expected: ExpectedAnswer
     metrics: list[MetricDef] = []
+    # ADR-27 D4: API-prep tasks carry their network env reference so the
+    # API prep path (NetworkPrepClient) knows what to prepare/restore.
+    # CLI tasks keep None (env prep is per-task CLI prepare actions).
+    network_env: NetworkEnvRef | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -582,12 +592,15 @@ class LabHandle(_M):
 
 
 class AppliedAction(_M):
-    """Prepare execution record (restore_task input / ops.jsonl line)."""
+    """Prepare execution record (restore_task input / ops.jsonl line).
 
-    action: Literal["exec_cli", "call_api"]
+    call_api fields removed by ADR-27 (superseded by system-level
+    NetworkPrepClient); only exec_cli records are produced now. Legacy
+    journals containing call_api records are skipped by the replay path.
+    """
+
+    action: Literal["exec_cli"]
     entries: list[CliEntry] | None = None
-    api: str | None = None
-    params: CallApiParams | None = None
     backup_files: dict[str, str] = {}  # device -> backups/<task>/<dev>.cfg path
     applied_at: str
 

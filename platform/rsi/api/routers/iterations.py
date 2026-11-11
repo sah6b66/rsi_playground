@@ -66,6 +66,12 @@ class IterationCreate(BaseModel):
         default=None, min_length=1, max_length=64,
         json_schema_extra={"example": "BGP排障优化-第一轮"},
     )
+    # ADR-27 D4：环境准备模式。cli（默认）走 SandboxService lab 管道；
+    # api 走系统级 Network Prep API（须给 api_evalset_name 在线评测集）
+    prep_mode: str = Field(default="cli", json_schema_extra={"example": "api"})
+    api_evalset_name: str | None = Field(
+        default=None, json_schema_extra={"example": "lab-bgp-weekly"}
+    )
 
 
 class IterationOut(BaseModel):
@@ -83,6 +89,8 @@ class IterationOut(BaseModel):
     created_at: str
     evalset_id: str | None = None
     profile: dict[str, Any] | None = None
+    prep_mode: str = "cli"
+    api_evalset_name: str | None = None
 
 
 class IterationPage(BaseModel):
@@ -133,6 +141,8 @@ def _out(it: dict) -> IterationOut:
         created_at=it["created_at"],
         evalset_id=it.get("evalset_id"), profile=it.get("profile"),
         label=it.get("label"),
+        prep_mode=it.get("prep_mode", "cli"),
+        api_evalset_name=it.get("api_evalset_name"),
     )
 
 
@@ -160,6 +170,17 @@ async def create_iteration(
         raise NotFoundError(
             f"sut {body.sut_id!r} not found", context={"sut_id": body.sut_id}
         )
+    # ADR-27 D4: prep_mode 校验 —— api 模式必须指名在线评测集
+    if body.prep_mode not in ("cli", "api"):
+        raise ValidationError(
+            f"invalid prep_mode {body.prep_mode!r}: expected 'cli' or 'api'",
+            context={"prep_mode": body.prep_mode},
+        )
+    if body.prep_mode == "api" and not (body.api_evalset_name or "").strip():
+        raise ValidationError(
+            "prep_mode='api' requires api_evalset_name",
+            context={"prep_mode": body.prep_mode},
+        )
     # v2.14 迭代互斥：同一 sut_id 存在活跃迭代 → 409
     for other in store.values():
         if (
@@ -179,6 +200,8 @@ async def create_iteration(
         "profile_id": body.profile_id or f"prof-{uuid.uuid4().hex[:8]}",
         "evalset_id": body.evalset_id,
         "profile": body.profile,
+        "prep_mode": body.prep_mode,
+        "api_evalset_name": body.api_evalset_name,
         "mode": body.mode,
         "state": IterationState.ATTRIBUTING.value,
         "current_step": "awaiting_direction",

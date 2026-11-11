@@ -102,7 +102,8 @@ test('EvalsetDetailPage：组网环境/设备清单/任务列表，无用户名�
   expect(screen.getByText('netops-bgp-triage')).toBeInTheDocument();
   // 组网环境
   expect(screen.getByText('ensp-pro')).toBeInTheDocument();
-  expect(screen.getByText('nms：http://10.0.0.9/api')).toBeInTheDocument();
+  // D6：config_apis 已按 ADR-27 全链路删除，详情页不再展示
+  expect(screen.queryByText(/config_apis|nms：/)).not.toBeInTheDocument();
   // 设备清单：名称/类型/版本/IP/端口
   expect(screen.getByText('R1')).toBeInTheDocument();
   expect(screen.getByText('8.180')).toBeInTheDocument();

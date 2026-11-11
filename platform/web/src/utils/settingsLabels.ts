@@ -45,6 +45,10 @@ export const SETTINGS_LABELS: Record<string, SettingLabel> = {
   'llm.defaults.critic.temperature': { name: '评审采样温度', desc: '留空使用服务端缺省', def: null },
   'llm.cassette_mode': { name: '调用回放模式', desc: 'replay 回放录像 / record 录制 / off 真实调用', def: 'replay' },
   'llm.max_concurrent_calls': { name: '模型并发上限', desc: '同时进行的模型调用数上限', def: 4 },
+  // ── 评估集与网络准备 API（ADR-27）──
+  'evalset_api.url': { name: '评估集在线 API 地址', desc: '留空=不启用 API 模式', def: '' },
+  'network_prep_api.url': { name: '网络准备 API 地址', desc: 'API 模式必填', def: '' },
+  'network_prep_api.timeout_s': { name: '超时秒数', desc: '准备/恢复调用超时（秒）', def: 120 },
   // ── 裁判（judge） ──
   'judge.det_timeout_s': { name: '确定性评审超时（秒）', desc: '规则型评审单次执行的最长时间', def: 120 },
   'judge.llm_retry': { name: '模型评审重试次数', desc: '模型评审失败后的重试次数', def: 2 },

@@ -1,7 +1,12 @@
-"""ConfigApiCaller (DD-04 §5.5) — call_api vehicle for prepare/restore_task.
+"""DEPRECATED (ADR-27): per-evalset ConfigApiCaller superseded by
+system-level NetworkPrepClient (netprep.py). Do not add new consumers.
+
+ConfigApiCaller (DD-04 §5.5) — call_api vehicle for prepare/restore_task.
 
 POSTs a JSON body to ``<base_url>/apply``; ``undo=True`` re-invokes the same
 API for L1 recovery (ADR-20 — the external API contract is idempotent).
+The per-evalset ``env.config_apis`` table was removed by ADR-27, so ``apply``
+now takes the endpoint fields (base_url/auth_ref/timeout_s) directly.
 """
 
 from __future__ import annotations
@@ -12,7 +17,7 @@ import httpx
 
 from rsi.core.errors import EnvError
 from rsi.log import get_logger
-from rsi.core.models import CallApiParams, EnvSpec
+from rsi.core.models import CallApiParams
 from rsi.security.credentials import CredentialStore
 
 __all__ = ["ConfigApiCaller"]
@@ -36,24 +41,18 @@ class ConfigApiCaller:
 
     async def apply(
         self,
-        env: EnvSpec,
-        api_key: str,
+        base_url: str,
         params: CallApiParams,
+        auth_ref: str | None = None,
+        timeout_s: int = 60,
         undo: bool = False,
     ) -> dict[str, Any]:
         logger.debug(
-            "apply.entry", env=env.name, api=api_key, undo=undo, devices=len(params.devices)
+            "apply.entry", base_url=base_url, undo=undo, devices=len(params.devices)
         )
-        try:
-            cfg = env.config_apis[api_key]
-        except KeyError:
-            logger.debug("apply.error", exc_type="EnvError", api=api_key)
-            raise EnvError(
-                f"config api {api_key!r} not declared in env {env.name!r}",
-                context={"api": api_key, "env": env.name},
-            ) from None
+        api_key = base_url
 
-        headers = self._auth_headers(cfg.auth_ref)
+        headers = self._auth_headers(auth_ref)
         body = {
             "env_name": params.env_name,
             "scenario": params.scenario,
@@ -63,7 +62,7 @@ class ConfigApiCaller:
             ],
             "undo": undo,
         }
-        url = cfg.base_url.rstrip("/") + "/apply"
+        url = base_url.rstrip("/") + "/apply"
 
         client = self._client
         if client is None:
@@ -71,7 +70,7 @@ class ConfigApiCaller:
             self._client = client
         try:
             resp = await client.post(
-                url, json=body, headers=headers, timeout=cfg.timeout_s
+                url, json=body, headers=headers, timeout=timeout_s
             )
         except httpx.HTTPError as exc:
             logger.debug("apply.error", exc_type=type(exc).__name__, api=api_key)

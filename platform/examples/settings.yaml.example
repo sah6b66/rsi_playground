@@ -1,0 +1,11 @@
+# RSI Platform settings.yaml 示例（节选——ADR-27 双模式相关段）。
+# 完整键位见 rsi/settings.py；放至 <RSI_HOME>/settings.yaml 生效。
+
+llm: {}
+
+# ── 评估集与网络准备 API（ADR-27）──
+evalset_api:
+  url: ""                              # 评估集在线 API 地址（如 http://10.0.0.1:9090）；留空=不启用 API 模式
+network_prep_api:
+  url: ""                              # 网络环境准备 API 地址（如 http://10.0.0.2:9090）；API 模式必填
+  timeout_s: 120                       # 准备/恢复调用超时（秒），缺省 120，范围 10–600

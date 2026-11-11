@@ -104,7 +104,6 @@ interface EvalsetFixture {
       ip: string;
       port: number;
     }[];
-    config_apis: { name: string; base_url: string }[];
   } | null;
 }
 const baseEvalsets = (): EvalsetFixture[] => [
@@ -129,7 +128,6 @@ const baseEvalsets = (): EvalsetFixture[] => [
       devices: [
         { name: 'R1', type: 'vrp', version: '8.180', ip: '192.168.56.10', port: 22 },
       ],
-      config_apis: [{ name: 'nms', base_url: 'http://10.0.0.9/api' }],
     },
   },
   {
@@ -714,11 +712,37 @@ export const resourcesHandlers = [
         devices: [
           { name: 'R1', type: 'vrp', version: null, ip: '10.201.0.10', port: 2222 },
         ],
-        config_apis: [],
       },
     };
     evalsetData = [...evalsets(), clone];
     return HttpResponse.json(clone, { status: 201 });
+  }),
+  // D3 GET /evalsets/online/{name}（ADR-27 在线评估集预览 fixture：2 任务摘要）
+  http.get('/api/v1/evalsets/online/:name', ({ params }) => {
+    const name = String(params.name);
+    if (name === 'not-found-set') {
+      return HttpResponse.json(
+        { code: 'NOT_FOUND', message: `evalset '${name}' not found` },
+        { status: 404 },
+      );
+    }
+    return HttpResponse.json({
+      name,
+      task_count: 2,
+      tasks: [
+        {
+          task_id: 'online-t1',
+          title: 'BGP 邻居中断排障',
+          network_env_name: 'bgp-env-a',
+        },
+        {
+          task_id: 'online-t2',
+          title: 'OSPF 区域路由泄露处置',
+          network_env_name: 'bgp-env-a',
+        },
+      ],
+      api_url: `http://eval-api.test/evalsets/${name}`,
+    });
   }),
   http.post('/api/v1/evalsets:import', async ({ request }) => {
     const form = await request.formData();

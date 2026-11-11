@@ -47,7 +47,6 @@ export function EvalsetListPage() {
   const [cloneForm] = Form.useForm<{
     new_name: string;
     endpoints: EndpointRow[];
-    config_apis: string;
   }>();
 
   const openClone = (es: Evalset) => {
@@ -59,7 +58,6 @@ export function EvalsetListPage() {
         ip: sa.ip,
         port: sa.port,
       })),
-      config_apis: '',
     });
     setCloneTarget(es);
   };
@@ -223,7 +221,7 @@ export function EvalsetListPage() {
         )}
       </Modal>
 
-      {/* 克隆：仅开放环境覆盖项（设备 ip/port / config_apis） */}
+      {/* 克隆：仅开放环境覆盖项（设备 ip/port） */}
       <Modal
         open={!!cloneTarget}
         title={`克隆评测集：${cloneTarget?.name ?? ''}`}
@@ -238,22 +236,12 @@ export function EvalsetListPage() {
               device_endpoints[row.dev] = { ip: row.ip, port: row.port };
             }
           });
-          let config_apis: { name: string; base_url: string }[] | undefined;
-          if (v.config_apis && v.config_apis.trim()) {
-            try {
-              config_apis = JSON.parse(v.config_apis);
-            } catch {
-              setCloneError('config_apis 需为 JSON 数组');
-              return;
-            }
-          }
           try {
             await cloneMut.mutateAsync({
               id: cloneTarget!.id,
               new_name: v.new_name,
               overrides: {
                 ...(Object.keys(device_endpoints).length ? { device_endpoints } : {}),
-                ...(config_apis ? { config_apis } : {}),
               },
             });
           } catch (e) {
@@ -312,14 +300,6 @@ export function EvalsetListPage() {
               )}
             </Form.List>
           ) : null}
-          <FieldWithHints
-            label="网络环境准备API（可选）"
-            name="config_apis"
-            extra='JSON 数组，如 [{"name":"nms","base_url":"http://10.0.0.20/api"}]；留空不改'
-            tooltip="用于评测集任务执行前准备网络环境（如网管 API 预置状态）；保存后将整体替换该评测集的 API 清单；留空表示沿用原值"
-          >
-            <Input.TextArea rows={3} />
-          </FieldWithHints>
         </Form>
       </Modal>
 

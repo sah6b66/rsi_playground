@@ -56,6 +56,8 @@ from rsi.sandbox.backends.base import SandboxBackend
 from rsi.sandbox.backends.fake import FakeSandboxBackend
 from rsi.sandbox.backends.prebuilt import PrebuiltBackend
 from rsi.sandbox.config_api import ConfigApiCaller
+from rsi.sandbox.evalset_fetcher import EvalsetFetcher
+from rsi.sandbox.netprep import NetworkPrepClient
 from rsi.sandbox.platform_probe import PlatformProbe
 from rsi.sandbox.readiness import ReadinessChecker
 from rsi.sandbox.scheduler import LabScheduler
@@ -340,6 +342,18 @@ def build_services(
         gitstore=git_store,
         evalsets_store=stores["evalsets"],
         suts_store=stores["suts"],
+        evalset_fetcher=EvalsetFetcher(settings.evalset_api.url, timeout_s=30),
+    )
+    # ADR-27 D4: NetworkPrepClient for api-prep batches — only assembled when
+    # the API url is configured (empty url raises at construction; a None
+    # netprep makes prep_mode='api' batches fail loudly at run_batch).
+    netprep_client = (
+        NetworkPrepClient(
+            settings.network_prep_api.url,
+            timeout_s=settings.network_prep_api.timeout_s,
+        )
+        if settings.network_prep_api.url
+        else None
     )
     batch_runner = BatchRunner(
         sandbox=sandbox_service,
@@ -357,6 +371,7 @@ def build_services(
         session_factory=session_factory,
         carrier_type="opencode",
         batch_resolver=batch_resolver,
+        netprep=netprep_client,
     )
     # N-3 (audit4): noise-calibration run_batch_fn factory — the
     # /dashboard/noise-bands:calibrate endpoint calls it per (evalset, sut).
@@ -426,6 +441,12 @@ def build_services(
         "net_policy": net_policy,
         # sandbox
         "sandbox_service": sandbox_service,
+        # ADR-27 D3: online evalset fetcher (empty url still constructed —
+        # fetch fails then; probes/monitoring can reference the instance)
+        "evalset_fetcher": EvalsetFetcher(settings.evalset_api.url, timeout_s=30),
+        # ADR-27 D4: system-level network prep client (api prep_mode); None
+        # when unconfigured — services consumers must treat it as optional.
+        "netprep": netprep_client,
         "ssh_pool": ssh_pool,
         # T4: platform URL probes per backend key (health / doctor share these)
         "platform_probes": platform_probes,

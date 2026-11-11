@@ -592,7 +592,25 @@ class LlmSettings(BaseModel):
     max_concurrent_calls: int = 4
 
 
-# ══════ ⑪ scheduler & seed (config doc §2 ⑫) ══════
+# ══════ ⑪ evalset / network-prep API (ADR-27, config doc §2 ⑪) ══════
+
+
+class EvalsetApiSettings(BaseModel):
+    """评估集在线 API（ADR-27）——系统级，与具体会话和评测集无关."""
+
+    model_config = _C
+    url: str = ""
+
+
+class NetworkPrepApiSettings(BaseModel):
+    """网络环境准备 API（ADR-27）——系统级."""
+
+    model_config = _C
+    url: str = ""
+    timeout_s: int = 120
+
+
+# ══════ ⑫ scheduler & seed (config doc §2 ⑫) ══════
 
 
 class SchedulerSettings(BaseModel):
@@ -634,6 +652,8 @@ class Settings(BaseSettings):
     decision: DecisionSettings = DecisionSettings()
     orchestrator: OrchestratorSettings = OrchestratorSettings()
     llm: LlmSettings = LlmSettings()
+    evalset_api: EvalsetApiSettings = EvalsetApiSettings()
+    network_prep_api: NetworkPrepApiSettings = NetworkPrepApiSettings()
     scheduler: SchedulerSettings = SchedulerSettings()
     seed: SeedSettings = SeedSettings()
 

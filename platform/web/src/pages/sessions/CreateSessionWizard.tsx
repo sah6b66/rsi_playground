@@ -1,5 +1,16 @@
-// 创建会话向导（DD-14 §5.3）：Steps 3 步 → POST /iterations → 跳列表。
-import { Alert, Button, Card, Descriptions, Input, Select, Space, Steps, Tag } from 'antd';
+// 创建会话向导（DD-14 §5.3 + ADR-27 双模式）：Steps 3 步 → POST /iterations → 跳列表。
+import {
+  Alert,
+  Button,
+  Card,
+  Descriptions,
+  Input,
+  Radio,
+  Select,
+  Space,
+  Steps,
+  Tag,
+} from 'antd';
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ApiError } from '../../api/client';
@@ -7,6 +18,7 @@ import {
   useCreateSession,
   useEnvironments,
   useEvalsets,
+  useOnlineEvalset,
   useSuts,
 } from '../../api/hooks';
 import { ProfileForm, defaultProfile, type ProfileDraft } from '../../components/ProfileForm';
@@ -14,11 +26,15 @@ import { FieldWithHints } from '../../components/FieldWithHints';
 import { modeLabel } from '../../utils/labels';
 import { scoreFormula } from '../../components/WeightEditor';
 
+type PrepMode = 'cli' | 'api';
+
 interface Basics {
   label: string;
   sut_id: string | null;
   environment: string | null;
   evalset_id: string | null;
+  prep_mode: PrepMode;
+  api_evalset_name: string;
 }
 
 const DEFAULT_BASICS: Basics = {
@@ -26,6 +42,8 @@ const DEFAULT_BASICS: Basics = {
   sut_id: null,
   environment: null,
   evalset_id: null,
+  prep_mode: 'cli',
+  api_evalset_name: '',
 };
 
 export function CreateSessionWizard() {
@@ -34,11 +52,17 @@ export function CreateSessionWizard() {
   const [basics, setBasics] = useState<Basics>(DEFAULT_BASICS);
   const [profile, setProfile] = useState<ProfileDraft>(defaultProfile());
   const [error, setError] = useState<string | null>(null);
+  const [previewName, setPreviewName] = useState('');
+  const [previewError, setPreviewError] = useState<string | null>(null);
   const create = useCreateSession();
 
   const suts = useSuts();
   const envs = useEnvironments();
   const evalsets = useEvalsets();
+  // 在线预览仅在用户点击「在线预览」后触发（previewName 非空）
+  const online = useOnlineEvalset(previewName);
+
+  const isApiMode = basics.prep_mode === 'api';
 
   const sutOptions = (suts.data?.items ?? []).map((s) => ({
     value: s.id,
@@ -56,8 +80,9 @@ export function CreateSessionWizard() {
   const step1Valid =
     basics.label.trim().length > 0 &&
     basics.sut_id &&
-    basics.environment &&
-    basics.evalset_id;
+    (isApiMode
+      ? basics.api_evalset_name.trim().length > 0
+      : basics.environment && basics.evalset_id);
   const sutName =
     suts.data?.items.find((s) => s.id === basics.sut_id)?.name ?? basics.sut_id;
 
@@ -67,8 +92,12 @@ export function CreateSessionWizard() {
       await create.mutateAsync({
         sut_id: basics.sut_id!,
         label: basics.label.trim(),
-        evalset_id: basics.evalset_id ?? undefined,
+        evalset_id: isApiMode ? undefined : basics.evalset_id ?? undefined,
         mode: profile.mode,
+        prep_mode: basics.prep_mode,
+        ...(isApiMode
+          ? { api_evalset_name: basics.api_evalset_name.trim() }
+          : {}),
         profile: {
           goals: profile.goals,
           guards: profile.guards,
@@ -92,7 +121,27 @@ export function CreateSessionWizard() {
       <div style={{ marginTop: 16 }}>
         {step === 0 && (
           <Space direction="vertical" size="middle" style={{ width: 360 }}>
-            {/* U7a 会话标识：首字段、必选 */}
+            {/* 双模式（ADR 文档）首字段：工作模式（CLI 离线 / API 在线） */}
+            <FieldWithHints
+              label="工作模式"
+              required
+              tooltip="CLI 模式：离线评估集 + 平台 SSH 环境准备（现有管道）；API 模式：在线评估集 + 网络准备 API，不在平台选择运行环境"
+            >
+              <Radio.Group
+                value={basics.prep_mode}
+                onChange={(e) =>
+                  setBasics({ ...basics, prep_mode: e.target.value as PrepMode })
+                }
+                aria-label="工作模式"
+                data-testid="prep-mode-radio"
+              >
+                <Radio value="cli">
+                  CLI 模式（离线评估集 + 平台 SSH 环境准备）
+                </Radio>
+                <Radio value="api">API 模式（在线评估集 + 网络准备 API）</Radio>
+              </Radio.Group>
+            </FieldWithHints>
+            {/* U7a 会话标识：必选 */}
             <FieldWithHints
               label="会话标识"
               required
@@ -120,32 +169,99 @@ export function CreateSessionWizard() {
                 {suts.data?.items.find((s) => s.id === basics.sut_id)?.image_ref}
               </span>
             )}
-            <Select
-              placeholder="运行环境 *"
-              value={basics.environment ?? undefined}
-              options={envOptions}
-              onChange={(v) => setBasics({ ...basics, environment: v })}
-              aria-label="运行环境"
-            />
-            <Select
-              placeholder="迭代评测集 *"
-              value={basics.evalset_id ?? undefined}
-              options={evalOptions}
-              onChange={(v) => setBasics({ ...basics, evalset_id: v })}
-              aria-label="评测集"
-            />
+            {/* API 模式不选运行环境（由网络准备 API 管理） */}
+            {!isApiMode && (
+              <Select
+                placeholder="运行环境 *"
+                value={basics.environment ?? undefined}
+                options={envOptions}
+                onChange={(v) => setBasics({ ...basics, environment: v })}
+                aria-label="运行环境"
+              />
+            )}
+            {isApiMode ? (
+              <FieldWithHints
+                label="在线评估集名称"
+                required
+                example="bgp-faults-v2"
+                tooltip="输入评估集名称，将从在线 API 获取"
+              >
+                <Space.Compact style={{ width: '100%' }}>
+                  <Input
+                    value={basics.api_evalset_name}
+                    placeholder="bgp-faults-v2"
+                    aria-label="在线评估集名称"
+                    data-testid="api-evalset-input"
+                    onChange={(e) => {
+                      setBasics({
+                        ...basics,
+                        api_evalset_name: e.target.value,
+                      });
+                      setPreviewError(null);
+                      if (previewName) setPreviewName('');
+                    }}
+                  />
+                  <Button
+                    data-testid="online-preview-btn"
+                    disabled={!basics.api_evalset_name.trim()}
+                    loading={online.isFetching}
+                    onClick={() => {
+                      setPreviewError(null);
+                      setPreviewName(basics.api_evalset_name.trim());
+                    }}
+                  >
+                    在线预览
+                  </Button>
+                </Space.Compact>
+              </FieldWithHints>
+            ) : (
+              <Select
+                placeholder="迭代评测集 *"
+                value={basics.evalset_id ?? undefined}
+                options={evalOptions}
+                onChange={(v) => setBasics({ ...basics, evalset_id: v })}
+                aria-label="评测集"
+              />
+            )}
+            {isApiMode && online.isError && previewName && (
+              <Alert
+                type="error"
+                showIcon
+                data-testid="online-preview-error"
+                message={`在线预览失败：${
+                  online.error instanceof Error ? online.error.message : '未知错误'
+                }`}
+              />
+            )}
+            {isApiMode && online.data && previewName === basics.api_evalset_name.trim() && (
+              <Alert
+                type="success"
+                showIcon
+                data-testid="online-preview-result"
+                message={`任务数 ${online.data.task_count} · 环境 ${
+                  new Set(online.data.tasks.map((t) => t.network_env_name)).size
+                } 个 · 首任务 ${
+                  online.data.tasks[0]?.title || online.data.tasks[0]?.task_id || '—'
+                }`}
+              />
+            )}
           </Space>
         )}
         {step === 1 && <ProfileForm value={profile} onChange={setProfile} />}
         {step === 2 && (
           <Descriptions bordered size="small" column={1}>
+            <Descriptions.Item label="工作模式">
+              <Tag>{basics.prep_mode === 'api' ? 'API 模式' : 'CLI 模式'}</Tag>
+            </Descriptions.Item>
             <Descriptions.Item label="会话标识">{basics.label}</Descriptions.Item>
             <Descriptions.Item label="网络Agent">{sutName}</Descriptions.Item>
-            <Descriptions.Item label="运行环境">
-              {basics.environment}
-            </Descriptions.Item>
+            {!isApiMode && (
+              <Descriptions.Item label="运行环境">
+                {basics.environment}
+              </Descriptions.Item>
+            )}
             <Descriptions.Item label="评测集">
-              {basics.evalset_id}
+              {isApiMode ? basics.api_evalset_name : basics.evalset_id}
             </Descriptions.Item>
             <Descriptions.Item label="模式">
               <Tag>{modeLabel(profile.mode)}</Tag>

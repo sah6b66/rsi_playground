@@ -391,8 +391,6 @@ devices:
   - {name: R1, type: vrp, config: configs/R1.cfg}
 ssh_access:
   R1: {ip: 192.168.56.10, port: 22, username: admin}
-config_apis:
-  nms: {base_url: http://192.168.56.20/api, timeout_s: 60}
 """
 
 
@@ -424,10 +422,6 @@ class TestEvalsetClone:
                 "new_name": "netops-bgp-site2",
                 "overrides": {
                     "device_endpoints": {"R1": {"ip": "10.201.0.10", "port": 2222}},
-                    "config_apis": [
-                        {"name": "nms", "base_url": "http://10.201.0.20/api",
-                         "timeout_s": 30}
-                    ],
                     "site_name": "site2",
                 },
             },
@@ -446,7 +440,6 @@ class TestEvalsetClone:
         env = yaml.safe_load(new["env_yaml"])
         assert env["ssh_access"]["R1"]["ip"] == "10.201.0.10"
         assert env["ssh_access"]["R1"]["port"] == 2222
-        assert env["config_apis"]["nms"]["base_url"] == "http://10.201.0.20/api"
         assert new["configs"] == {"R1.cfg": "sysname R1"}  # configs 复制
         assert new.get("overrides", {}).get("site_name") == "site2"
         # 源记录不被修改
