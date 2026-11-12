@@ -86,3 +86,53 @@ def test_sshpool_factory_receives_access(monkeypatch):
         pool.device(SessionKey(access.ip, 22, "lab-1"), access, "vrp")
     )
     assert isinstance(session, NetmikoDeviceSession)
+
+
+class _FlakyConn:
+    """前 N 次 connect 被 RST（eNSP banner 10054 实测形态），之后成功."""
+
+    calls = 0
+
+    def __init__(self, *a, **kw):
+        type(self).calls += 1
+        if type(self).calls <= 1:
+            import paramiko
+
+            raise paramiko.ssh_exception.SSHException(
+                "Error reading SSH protocol banner"
+            )
+        self.sent = []
+
+    def send_command(self, cli, **kw):
+        self.sent.append(cli)
+        return f"OK<{cli}>"
+
+    def is_alive(self):
+        return True
+
+    def disconnect(self):
+        pass
+
+
+def test_connect_retries_on_banner_reset(monkeypatch):
+    """E2 实测：eNSP SSH 对快速重连 RST——_connect 必须带退避重试."""
+    import asyncio
+    import types
+
+    import netmiko  # real dep since A3
+
+    monkeypatch.setattr(netmiko, "ConnectHandler", _FlakyConn)
+    from rsi.core.models import SshAccess
+    from rsi.sandbox.netmiko_session import NetmikoDeviceSession, _RETRY_DELAYS
+    from rsi.sandbox.sshpool import SessionKey
+    from rsi.sandbox.vendor import VENDOR_MAP
+
+    s = NetmikoDeviceSession(
+        SessionKey("192.168.96.11", 22, "lab"), VENDOR_MAP["vrp"],
+        SshAccess(ip="192.168.96.11", username="CLI_Agent", password="x"),
+    )
+    monkeypatch.setattr("rsi.sandbox.netmiko_session._sleep", lambda s: None)
+    out = asyncio.run(s.exec_cli("display version"))
+    assert out.ok and out.output == "OK<display version>"
+    assert _FlakyConn.calls == 2  # 第一次 RST，重试成功
+    assert len(_RETRY_DELAYS) >= 2
