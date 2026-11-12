@@ -286,7 +286,13 @@ def build_services(
     # Now each settings backend is dispatched on its ``kind``; prebuilt
     # platform backends (ensp-pro / pnetlab) share one SshPool +
     # ReadinessChecker with SandboxService (same (ip, port) session keys).
-    ssh_pool = SshPool()  # default factory = MockDeviceSession (offline)
+    if settings.sandbox.ssh_backend == "netmiko":
+        from rsi.sandbox.netmiko_session import netmiko_session_factory
+
+        ssh_pool = SshPool(session_factory=netmiko_session_factory)
+        logger.info("bootstrap.ssh_netmiko_pool")
+    else:
+        ssh_pool = SshPool()  # default factory = MockDeviceSession (offline)
     readiness_checker = ReadinessChecker(pool=ssh_pool)
     backends: dict[str, SandboxBackend] = {"fake": FakeSandboxBackend()}
     platform_probes: dict[str, PlatformProbe] = {}

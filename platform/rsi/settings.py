@@ -382,6 +382,8 @@ class SandboxSettings(BaseModel):
     })
     build_retry: int = 2
     ready_timeout_s: int = 600
+    # S11 真实后端开关：mock=罐头会话（离线）；netmiko=真实 SSH 设备会话
+    ssh_backend: Literal["mock", "netmiko"] = "mock"
 
 
 # ══════ ③ carrier (config doc §2 ③) ══════

@@ -197,7 +197,7 @@ class TestSshPool:
     async def test_custom_factory(self):
         made: list[SessionKey] = []
 
-        def factory(key, profile):
+        def factory(key, profile, access=None):
             made.append(key)
             return MockDeviceSession(key, profile, {"ping 1.1.1.1": "5 packet(s) transmitted"})
 
