@@ -96,10 +96,17 @@ class Doctor:
     """Self-diagnostic engine. All checks are non-fatal by design."""
 
     def __init__(self, settings_path: Path | None = None) -> None:
-        self.settings_path = (
-            settings_path
-            or Path(os.environ.get("RSI_SETTINGS", "settings.yaml"))
-        )
+        if settings_path is None:
+            from rsi.settings import settings_yaml_path
+
+            override = os.environ.get("RSI_SETTINGS")
+            self.settings_path = (
+                Path(override)
+                if override
+                else settings_yaml_path()
+            )
+        else:
+            self.settings_path = settings_path
         self._raw_settings: dict[str, Any] | None = None
         self._settings_load_error: str | None = None
 
@@ -266,9 +273,13 @@ class Doctor:
                 message=f"server.port = {port!r} 不在 1-65534 范围",
                 fix_hint="设置 server.port 为 1-65534 之间的整数"))
 
-        # database.url
+        # database.url（空串=文档默认：落 <RSI_HOME>/platform.db）
         db_url = (cfg.get("database") or {}).get("url", "")
-        if str(db_url).startswith(("sqlite://", "postgresql://")):
+        if not str(db_url).strip():
+            results.append(CheckResult(
+                category="config", name="database.url", status="pass",
+                message="database.url 为空（默认 <RSI_HOME>/platform.db）"))
+        elif str(db_url).startswith(("sqlite://", "postgresql://")):
             results.append(CheckResult(
                 category="config", name="database.url", status="pass",
                 message=f"database.url 前缀合法"))
@@ -456,16 +467,25 @@ class Doctor:
                     message="RSI_MASTER_KEY 不是合法的 base64 32 字节",
                     fix_hint="export RSI_MASTER_KEY=$(openssl rand -base64 32)"))
 
+        providers = (self._load_settings().get("llm") or {}).get("providers") or {}
+        yaml_key = any(
+            str((p or {}).get("api_key") or "").strip()
+            for p in providers.values()
+            if isinstance(p, dict)
+        )
         if not (os.environ.get("ANTHROPIC_API_KEY")
-                or os.environ.get("OPENAI_COMPAT_API_KEY")):
+                or os.environ.get("OPENAI_COMPAT_API_KEY")
+                or yaml_key):
             results.append(CheckResult(
                 category="config", name="LLM API Key", status="warn",
-                message="未设置 ANTHROPIC_API_KEY 或 OPENAI_COMPAT_API_KEY",
+                message="未设置 ANTHROPIC_API_KEY / OPENAI_COMPAT_API_KEY，"
+                        "settings.yaml 也未配置 llm.providers.*.api_key",
                 fix_hint="设置其一以启用 LLM 评测 (judge/critic)"))
         else:
+            source = "settings.yaml" if yaml_key else "环境变量"
             results.append(CheckResult(
                 category="config", name="LLM API Key", status="pass",
-                message="至少一个 LLM API Key 已设置"))
+                message=f"至少一个 LLM API Key 已设置（{source}）"))
         return results
 
     # ── Category 3: External ─────────────────────────────────────────
@@ -506,13 +526,24 @@ class Doctor:
                 fix_hint="git config --global user.name …; "
                          "git config --global user.email …"))
 
-        # Docker
+        # Docker（本机不可达但配置了远端 carrier 主机时不算告警）
+        cfg_carrier = self._load_settings().get("carrier") or {}
+        has_remote_host = any(
+            str((h or {}).get("docker", "local")) != "local"
+            for h in (cfg_carrier.get("hosts") or {}).values()
+        )
         docker_ver = self._docker_version()
         if docker_ver is None:
-            results.append(CheckResult(
-                category="external", name="Docker", status="warn",
-                message="Docker 不可达",
-                fix_hint="启动 Docker Desktop 并等待就绪"))
+            if has_remote_host:
+                results.append(CheckResult(
+                    category="external", name="Docker", status="pass",
+                    message="本机 Docker 不可达（已配置远端 carrier 主机，"
+                            "SUT 容器不在本机运行）"))
+            else:
+                results.append(CheckResult(
+                    category="external", name="Docker", status="warn",
+                    message="Docker 不可达",
+                    fix_hint="启动 Docker Desktop 并等待就绪"))
         else:
             results.append(CheckResult(
                 category="external", name="Docker", status="pass",
@@ -543,24 +574,32 @@ class Doctor:
                     fix_hint="检查平台虚机是否启动、Web 入口是否开放"
                              "（平台是网页入口，不可 SSH）"))
 
-        # remote carrier hosts (docker starts with ssh://)
+        # remote carrier hosts (docker 非本机：ssh:// 或 tcp://)
         for hname, h in ((cfg.get("carrier") or {}).get("hosts") or {}).items():
             docker = str((h or {}).get("docker", "local"))
-            if docker.startswith("ssh://"):
-                host_port = docker[len("ssh://"):].split(":", 1)
-                host = host_port[0]
-                port = int(host_port[1]) if len(host_port) > 1 else 22
-                if self._tcp_reachable(host, port):
-                    results.append(CheckResult(
-                        category="external", name=f"Carrier 主机 {hname}",
-                        status="pass",
-                        message=f"carrier.hosts.{hname} SSH 可达"))
-                else:
-                    results.append(CheckResult(
-                        category="external", name=f"Carrier 主机 {hname}",
-                        status="warn",
-                        message=f"carrier.hosts.{hname} ({host}:{port}) SSH 不可达",
-                        fix_hint="检查远程 Docker 主机 SSH 是否开放"))
+            proto = "ssh" if docker.startswith("ssh://") else (
+                "tcp" if docker.startswith("tcp://") else ""
+            )
+            if not proto:
+                continue
+            rest = docker[len(proto) + 3:]
+            userinfo, _, hostport = rest.rpartition("@")
+            host_part = hostport or userinfo
+            host, _, port_s = host_part.partition(":")
+            default_port = 22 if proto == "ssh" else 2375
+            port = int(port_s) if port_s.isdigit() else default_port
+            label = "SSH" if proto == "ssh" else "dockerd"
+            if self._tcp_reachable(host, port):
+                results.append(CheckResult(
+                    category="external", name=f"Carrier 主机 {hname}",
+                    status="pass",
+                    message=f"carrier.hosts.{hname} {label} 可达 ({host}:{port})"))
+            else:
+                results.append(CheckResult(
+                    category="external", name=f"Carrier 主机 {hname}",
+                    status="warn",
+                    message=f"carrier.hosts.{hname} ({host}:{port}) {label} 不可达",
+                    fix_hint="检查远程 Docker 主机端口是否开放"))
         return results
 
     @staticmethod

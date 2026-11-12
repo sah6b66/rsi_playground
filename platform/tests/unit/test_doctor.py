@@ -334,3 +334,72 @@ class TestInternal:
         rs = d.check_internal()
         r = next(x for x in rs if "API" in x.name)
         assert r.status == "pass"
+
+
+class TestS11DoctorFixes:
+    """B3 发现：默认 settings 路径应走 <RSI_HOME>/settings.yaml；空 url 合法."""
+
+    def test_default_path_resolves_rsi_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RSI_HOME", str(tmp_path))
+        monkeypatch.delenv("RSI_SETTINGS", raising=False)
+        _write_settings(tmp_path, VALID_SETTINGS)
+        d = Doctor()  # 不传 settings_path，不 chdir
+        assert d.settings_path == tmp_path / "settings.yaml"
+        rs = d.check_config()
+        r = next(x for x in rs if x.name == "settings.yaml 存在")
+        assert r.status == "pass"
+
+    def test_rsi_settings_env_still_wins(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("RSI_HOME", str(tmp_path))
+        monkeypatch.setenv("RSI_SETTINGS", str(tmp_path / "custom.yaml"))
+        d = Doctor()
+        assert d.settings_path == tmp_path / "custom.yaml"
+
+    def test_empty_database_url_passes(self, tmp_path):
+        _write_settings(tmp_path, VALID_SETTINGS.replace(
+            "url: sqlite:///platform.db", "url: \"\""))
+        d = Doctor(settings_path=tmp_path / "settings.yaml")
+        rs = d.check_config()
+        r = next(x for x in rs if "database" in x.name.lower())
+        assert r.status == "pass"
+
+
+class TestS11DoctorRealEnv:
+    """B3 真实环境：settings.yaml 内联 LLM key / 远端 tcp docker 主机."""
+
+    def test_llm_key_in_settings_yaml_passes(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_COMPAT_API_KEY", raising=False)
+        _write_settings(tmp_path, VALID_SETTINGS.replace(
+            "api_key_env: ANTHROPIC_API_KEY",
+            'api_key: "sk-inline"'))
+        d = Doctor(settings_path=tmp_path / "settings.yaml")
+        rs = d.check_config()
+        r = next(x for x in rs if "LLM API Key" in x.name)
+        assert r.status == "pass"
+
+    def test_docker_local_down_with_remote_host_is_not_warn(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Doctor, "_docker_version", staticmethod(lambda: None))
+        _write_settings(tmp_path, VALID_SETTINGS.replace(
+            "docker: local",
+            'docker: "tcp://192.168.96.7:2375"'))
+        d = Doctor(settings_path=tmp_path / "settings.yaml")
+        rs = d.check_external()
+        r = next(x for x in rs if x.name == "Docker")
+        assert r.status == "pass"
+        assert "远端" in r.message or "remote" in r.message.lower()
+
+    def test_tcp_carrier_host_probed(self, tmp_path, monkeypatch):
+        _write_settings(tmp_path, VALID_SETTINGS.replace(
+            "docker: local",
+            'docker: "tcp://192.168.96.7:2375"'))
+        probed = {}
+        monkeypatch.setattr(
+            Doctor, "_tcp_reachable",
+            lambda self, host, port: probed.update(host=host, port=port) or True,
+        )
+        d = Doctor(settings_path=tmp_path / "settings.yaml")
+        rs = d.check_external()
+        r = next(x for x in rs if x.name.startswith("Carrier 主机"))
+        assert r.status == "pass"
+        assert probed == {"host": "192.168.96.7", "port": 2375}
