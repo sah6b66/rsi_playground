@@ -136,3 +136,45 @@ def test_connect_retries_on_banner_reset(monkeypatch):
     assert out.ok and out.output == "OK<display version>"
     assert _FlakyConn.calls == 2  # 第一次 RST，重试成功
     assert len(_RETRY_DELAYS) >= 2
+
+
+class _ConfigConn:
+    def __init__(self, *a, **kw):
+        self.config_batches = []
+        self.commands = []
+
+    def send_command(self, cli, **kw):
+        self.commands.append(cli)
+        return f"OUT<{cli}>"
+
+    def send_config_set(self, lines, **kw):
+        self.config_batches.append(list(lines))
+        return "[config] " + " | ".join(lines)
+
+    def is_alive(self):
+        return True
+
+    def disconnect(self):
+        pass
+
+
+def test_exec_config_uses_send_config_set(monkeypatch):
+    """E2 实测：exec_cli 逐行下发配置命令不进系统视图必失败——exec_config
+    必须经 netmiko send_config_set 成批下发。"""
+    import asyncio
+
+    import netmiko
+
+    monkeypatch.setattr(netmiko, "ConnectHandler", _ConfigConn)
+    from rsi.core.models import SshAccess
+    from rsi.sandbox.netmiko_session import netmiko_session_factory
+    from rsi.sandbox.sshpool import SessionKey
+    from rsi.sandbox.vendor import VENDOR_MAP
+
+    s = netmiko_session_factory(
+        SessionKey("1.2.3.4", 22, "l"), VENDOR_MAP["vrp"],
+        SshAccess(ip="1.2.3.4", username="u", password="p"),
+    )
+    result = asyncio.run(s.exec_config(["interface GE1/0/1", "shutdown"]))
+    assert result.ok
+    assert s._conn.config_batches == [["interface GE1/0/1", "shutdown"]]

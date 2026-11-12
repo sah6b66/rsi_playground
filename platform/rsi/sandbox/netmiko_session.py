@@ -77,6 +77,33 @@ class NetmikoDeviceSession(DeviceSession):
         conn = self._connect()
         return str(conn.send_command(cli, read_timeout=max(read_timeout_s, 10)))
 
+    def _exec_config_sync(self, lines: list[str]) -> str:
+        """配置批经 netmiko send_config_set（自动 system-view/return）。
+
+        E2 实测：逐行 send_command 不进系统视图，配置命令必失败。
+        """
+        conn = self._connect()
+        return str(conn.send_config_set(lines))
+
+    async def exec_config(self, lines: list[str]):
+        from rsi.sandbox.sshpool import ExecResult
+
+        async with self.lock:
+            import time as _time
+
+            start = _time.perf_counter()
+            output = await asyncio.to_thread(self._exec_config_sync, list(lines))
+            duration_ms = int((_time.perf_counter() - start) * 1000)
+            from rsi.sandbox.sshpool import match_errors
+
+            matched = match_errors(output, self.vendor)
+            return ExecResult(
+                ok=not matched and "timed out" not in output,
+                output=output,
+                matched_errors=matched,
+                duration_ms=duration_ms,
+            )
+
     async def _send(self, cli: str, read_timeout_s: int) -> str:
         return await asyncio.to_thread(self._send_sync, cli, read_timeout_s)
 

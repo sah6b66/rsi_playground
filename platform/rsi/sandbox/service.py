@@ -355,18 +355,36 @@ class SandboxService:
             path = backup_dir / f"{device}.cfg"
             path.write_text(backup_text, encoding="utf-8")
             backups[device] = str(path)
-            for line in entry.cli_lines:
-                output = backend.exec(lab, device, line)
-                if output.startswith(_ERROR_OUTPUT_PREFIX):
+            # E2 实测：配置批必须整体进系统视图（netmiko send_config_set）；
+            # 逐行用户视图下发配置命令在真实 VRP 上必失败。池化会话不可用
+            # 时保持 backend.exec 逐行（Fake 后端语义）。
+            session = self._pool_session(lab, device)
+            if session is not None:
+                result = _run_sync(session.exec_config(list(entry.cli_lines)))
+                if not result.ok:
                     raise EnvError(
-                        f"prepare exec_cli failed on {device}: {line!r} -> {output}",
+                        f"prepare exec_cli failed on {device}: "
+                        f"{entry.cli_lines} -> {result.matched_errors or result.output[:120]}",
                         context={
                             "device": device,
-                            "cli": line,
-                            "output": output,
+                            "cli": "; ".join(entry.cli_lines),
+                            "output": result.output[:400],
                             "task_id": task_id,
                         },
                     )
+            else:
+                for line in entry.cli_lines:
+                    output = backend.exec(lab, device, line)
+                    if output.startswith(_ERROR_OUTPUT_PREFIX):
+                        raise EnvError(
+                            f"prepare exec_cli failed on {device}: {line!r} -> {output}",
+                            context={
+                                "device": device,
+                                "cli": line,
+                                "output": output,
+                                "task_id": task_id,
+                            },
+                        )
         applied = AppliedAction(
             action="exec_cli",
             entries=list(action.entries),

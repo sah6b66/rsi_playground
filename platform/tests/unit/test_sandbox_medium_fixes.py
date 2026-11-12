@@ -331,3 +331,72 @@ class TestCloseIndependence:
         )
         service.close()  # must not raise
         assert caller._client is None
+
+
+class TestS11PrepareConfigBatch:
+    """E2 实测：prepare 配置批必须经池化会话 exec_config（system-view）。"""
+
+    def test_prepare_uses_pooled_exec_config(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from rsi.core.models import EnvSpec, LabHandle, PrepareAction, SshAccess
+        from rsi.sandbox.backends.fake import FakeSandboxBackend
+        from rsi.sandbox.service import SandboxService
+        from rsi.sandbox.sshpool import SshPool
+
+        lab = LabHandle(
+            lab_id="L1", host="main", backend="fake",
+            endpoints={"Leaf-01": SshAccess(ip="10.0.0.1", username="admin")},
+        )
+        from rsi.core.models import DeviceSpec, LinkSpec, Topology
+
+        env = EnvSpec(
+            name="e", backend="fake",
+            devices=[DeviceSpec(name="Leaf-01", type="vrp", config="configs/L.cfg")],
+            topology=Topology(links=[]),
+            ssh_access={"Leaf-01": SshAccess(
+                ip="10.0.0.1", username="admin", password="p")},
+        )
+        from rsi.sandbox.service import SandboxService as SS
+
+        svc = SS(
+            backends={"fake": FakeSandboxBackend()}, ssh_pool=SshPool(),
+            labs_dir=tmp_path,
+        )
+        recorded: list[tuple[str, list[str]]] = []
+
+        class _FakeSession:
+            lock = asyncio.Lock()
+
+            async def exec_config(self, lines):
+                recorded.append(("exec_config", list(lines)))
+                from rsi.sandbox.sshpool import ExecResult
+
+                return ExecResult(ok=True, output="", matched_errors=[],
+                                  duration_ms=1)
+
+            async def exec_cli(self, cli, read_timeout_s=120):
+                recorded.append(("exec_cli", [cli]))
+                from rsi.sandbox.sshpool import ExecResult
+
+                return ExecResult(ok=True, output=f"OUT<{cli}>",
+                                  matched_errors=[], duration_ms=1)
+
+        class _StubBackend:
+            def exec(self, lab, device, cli):
+                return f"OUT<{cli}>"
+
+        monkeypatch.setattr(svc, "_pool_session", lambda lab, device: _FakeSession())
+        monkeypatch.setattr(svc, "_backend", lambda lab: _StubBackend())
+        svc._envs[lab.lab_id] = env
+        from rsi.sandbox.service import OpsJournal
+
+        svc._journals[lab.lab_id] = OpsJournal(tmp_path, lab.lab_id)
+        action = PrepareAction.model_validate({
+            "action": "exec_cli",
+            "entries": [{"device": "Leaf-01",
+                         "cli_lines": ["interface GE1/0/1", "shutdown"]}],
+        })
+        applied = asyncio.run(svc.prepare(lab, "t1", [action]))
+        assert applied
+        assert ("exec_config", ["interface GE1/0/1", "shutdown"]) in recorded
