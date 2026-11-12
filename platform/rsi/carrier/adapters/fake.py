@@ -58,6 +58,22 @@ class CarrierAdapter(ABC):
     def trace_channels(self, instance: "InstanceHandle") -> TraceChannels:
         """Locate the carrier's trace output streams for an instance."""
 
+    def start_instance(
+        self,
+        image_ref: str,
+        config_dir: Any,
+        permission: str,
+        cred: Any,
+        host: str,
+        run_id: str,
+    ) -> str | None:
+        """S11 真实容器启动；返回 container_id，None=无真实容器（沿用占位 id）。"""
+        return None
+
+    def destroy_instance(self, instance: "InstanceHandle") -> None:
+        """S11 真实容器回收；默认 no-op。"""
+        return None
+
 
 class FakeCarrier(CarrierAdapter):
     """Offline scripted carrier: task prompt -> canned stdout."""

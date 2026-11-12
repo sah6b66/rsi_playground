@@ -18,6 +18,7 @@ import functools
 import json
 import os
 from functools import partial
+from pathlib import Path
 from typing import Any, Callable
 
 from rsi.carrier.adapters.fake import FakeCarrier
@@ -269,10 +270,25 @@ def build_services(
     except Exception:  # noqa: BLE001 - e.g. docker SDK absent
         host_pool = HostPool()
     net_policy = NetPolicy(host_pool)
+    # S11: opencode adapter 按配置切真实 docker 模式（默认 offline 不变）
+    oc_cfg = settings.carrier.adapters.get("opencode")
     adapters: dict[str, Any] = {
-        "opencode": OpenCodeAdapter(),
+        "opencode": OpenCodeAdapter(
+            real=bool(oc_cfg and oc_cfg.real),
+            host_pool=host_pool,
+            trace_root=(
+                Path(settings.carrier_trace_dir) if (oc_cfg and oc_cfg.real) else None
+            ),
+            extra_env=(oc_cfg.env if (oc_cfg and oc_cfg.env) else None),
+        ),
         "fake": FakeCarrier(),
     }
+    if oc_cfg and oc_cfg.real:
+        logger.info(
+            "bootstrap.opencode_real",
+            trace_dir=str(settings.carrier_trace_dir),
+            extra_env_keys=sorted(oc_cfg.env),
+        )
     host_service = HostService(
         host_pool=host_pool,
         net_policy=net_policy,
