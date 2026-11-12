@@ -192,7 +192,10 @@ def build_services(
         audit_log=audit_log,
     )
 
-    # -- Versioning (constructed, NOT initialized: no git init here) ------
+    # -- Versioning -------------------------------------------------------
+    # E1 实测修复：生产链路（rsi.init 建库 -> uvicorn 装配）此前无人调
+    # init()，SUT 文件写/快照/config 导出全部 500。装配时加载（仓库已由
+    # rsi.init 创建则直接打开；失败降级告警不阻断启动——离线一致性保持）。
     target_registry = TargetRegistry()
     git_store = GitStore(
         repo_path=settings.git_repo_path,
@@ -201,6 +204,13 @@ def build_services(
         audit_log=audit_log,
         target_registry=target_registry,
     )
+    try:
+        git_store.init()
+        logger.info("bootstrap.gitstore_ready", repo=str(settings.git_repo_path))
+    except Exception as exc:  # noqa: BLE001 - git 缺失等环境降级
+        logger.warning(
+            "bootstrap.gitstore_init_failed", error=str(exc)
+        )
 
     # -- Tracing (collector <-> store circular dep via attach_store) ------
     collector = TraceCollector(SeqAllocator(), None)

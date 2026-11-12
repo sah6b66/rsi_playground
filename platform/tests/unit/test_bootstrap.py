@@ -264,3 +264,21 @@ async def test_batch_runner_has_cred_resolver(tmp_path: Path) -> None:
     assert env_vars["DEV_R1_USER"] == "admin"
     assert env_vars["DEV_R1_HOST"] == "10.0.0.1"
     assert env_vars["DEV_R1_PORT"] == "2001"
+
+
+def test_gitstore_initialized_at_bootstrap(tmp_path, monkeypatch):
+    """E1 实测：生产链路（init -> uvicorn）GitStore 必须在装配时加载
+    （否则 SUT 文件写/快照/config 导出全部 500）。"""
+    import base64
+
+    from rsi.bootstrap import build_services
+
+    monkeypatch.setenv("RSI_HOME", str(tmp_path))
+    monkeypatch.setenv("RSI_JWT_SECRET", "s" * 64)
+    monkeypatch.setenv(
+        "RSI_MASTER_KEY", base64.b64encode(b"\x00" * 32).decode()
+    )
+    services = build_services()
+    git_store = services["git_store"]
+    assert git_store.repo is not None, "bootstrap must init() the GitStore"
+    assert (git_store.repo_path / "HEAD").exists()
