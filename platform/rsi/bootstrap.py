@@ -206,16 +206,31 @@ def build_services(
     trace_store = TraceStore(collector)
     collector.attach_store(trace_store)
 
-    # -- LLM (offline mock handler; real providers plug in via handler) ---
+    # -- LLM (cassette off + 配了 anthropic key → 真实 handler；否则离线 mock) --
     from pathlib import Path as _Path
+
+    from rsi.llm.providers import AnthropicCompatHandler
 
     _prompts_root = _Path(__file__).parent / "llm" / "prompts"
     prompt_library = PromptLibrary()
     prompt_library.load_root(_prompts_root)
     accountant = Accountant(session_factory=session_factory)  # C-7: llm_calls rows
     judge_cfg = settings.llm.defaults.get("judge")
+    handler: Callable[..., str] = _offline_llm_handler
+    _anth = settings.llm.providers.get("anthropic")
+    if settings.llm.cassette_mode == "off" and _anth is not None and _anth.api_key:
+        handler = AnthropicCompatHandler(
+            api_key=_anth.api_key,
+            base_url=_anth.base_url,
+            model=(judge_cfg.model if judge_cfg and judge_cfg.model else "glm-5.1"),
+        )
+        logger.info(
+            "bootstrap.llm_real_provider",
+            base_url=_anth.base_url or "default",
+            model=(judge_cfg.model if judge_cfg and judge_cfg.model else "glm-5.1"),
+        )
     llm_client = LLMClient(
-        handler=_offline_llm_handler,
+        handler=handler,
         max_concurrent_calls=settings.llm.max_concurrent_calls,
         # 本地 settings.yaml 可能只写 judge 的部分键（如仅 model）——
         # temperature/model 缺省回退，避免 None 进入 float()/LLM 调用。
