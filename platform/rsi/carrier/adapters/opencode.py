@@ -305,7 +305,8 @@ class OpenCodeAdapter(CarrierAdapter):
         container = client.containers.create(**kw)
         container.start()
         if remote:
-            container.put_archive(self._tar_dir(Path(config_dir)), "/agent-config")
+            # docker-py put_archive(path, data)——path 在前（E2 实测参数序）
+            container.put_archive("/agent-config", self._tar_dir(Path(config_dir)))
         self._containers[run_id] = (container.id, host)
         logger.info(
             "opencode.container_started",

@@ -54,7 +54,7 @@ class FakeContainer:
         stdout = b'<FINAL_JSON>{"task_complete": true}</FINAL_JSON>'
         return (0, (stdout, b"")) if demux else (0, stdout)
 
-    def put_archive(self, data, path):
+    def put_archive(self, path, data):
         self.puts.append((data, path))
         return True
 
