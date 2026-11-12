@@ -165,3 +165,36 @@ class TestScheduler:
         pool.increment("a")
         with pytest.raises(CarrierError):
             sched.select()
+
+
+class TestTcpUrlSupport:
+    """A6 (S11): tcp:// docker URLs — remote dockerd in the SUT VM."""
+
+    def test_tcp_url_creates_docker_client(self, monkeypatch) -> None:
+        import docker
+
+        captured: dict[str, str] = {}
+
+        class _FakeDockerClient:
+            def __init__(self, base_url=None) -> None:
+                captured["base_url"] = base_url
+
+        monkeypatch.setattr(docker, "DockerClient", _FakeDockerClient)
+        pool = HostPool({"sut-vm": {"docker": "tcp://192.168.96.7:2375"}})
+        client = pool.client("sut-vm")
+        assert isinstance(client, _FakeDockerClient)
+        assert captured["base_url"] == "tcp://192.168.96.7:2375"
+
+    def test_ssh_url_still_supported(self, monkeypatch) -> None:
+        import docker
+
+        captured: dict[str, str] = {}
+
+        class _FakeDockerClient:
+            def __init__(self, base_url=None) -> None:
+                captured["base_url"] = base_url
+
+        monkeypatch.setattr(docker, "DockerClient", _FakeDockerClient)
+        pool = HostPool({"r": {"docker": "ssh://u@h"}})
+        pool.client("r")
+        assert captured["base_url"] == "ssh://u@h"

@@ -172,7 +172,56 @@ class OpenCodeAdapter(CarrierAdapter):
             exit_code=handle.exit_code,
             stdout_len=len(handle.stdout),
         )
+        self._pull_trace(container, handle.run_id)
         return handle.stdout
+
+    def _pull_trace(self, container: Any, run_id: str) -> None:
+        """远端模式：exec 后回收容器 /trace/wiretap 到本地 trace_root/<run_id>."""
+        if not (self.trace_root and self._remote_run(run_id)):
+            return
+        target = self.trace_root / run_id
+        try:
+            stream, _stat = container.get_archive("/trace/wiretap")
+            data = b"".join(stream)
+            import io
+            import tarfile
+
+            target.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(fileobj=io.BytesIO(data)) as tf:
+                tf.extractall(target, filter="data")
+            logger.debug("opencode.trace_pulled", run_id=run_id, target=str(target))
+        except Exception as exc:  # noqa: BLE001 - trace 回收失败不阻断结果
+            logger.warning(
+                "opencode.trace_pull_failed", run_id=run_id, error=str(exc)
+            )
+
+    @staticmethod
+    def _tar_dir(src: Path) -> bytes:
+        """目录内容打包为 tar（成员为相对路径，供 put_archive 解到目标下）。"""
+        import io
+        import tarfile
+
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tf:
+            for p in sorted(Path(src).rglob("*")):
+                if p.is_file():
+                    tf.add(p, arcname=p.relative_to(src).as_posix())
+        return buf.getvalue()
+
+    def _remote_host(self, host: str) -> bool:
+        """docker 主机是否远端（非 local URL → bind mount 不可用）。"""
+        try:
+            url = str(self.host_pool.config(host).docker)
+        except Exception:  # noqa: BLE001 - 无 config 视为本地
+            return False
+        return url != "local"
+
+    def _remote_run(self, run_id: str) -> bool:
+        entry = self._containers.get(run_id)
+        if entry is None:
+            return False
+        _, host = entry
+        return self._remote_host(host)
 
     # -- S11 real container lifecycle -------------------------------------
 
@@ -204,27 +253,46 @@ class OpenCodeAdapter(CarrierAdapter):
         env: dict[str, str] = {"RSI_RUN_ID": run_id}
         env.update(self._last_env)
         env.update(self.extra_env)
-        def _bind(src: Path, target: str) -> dict[str, Any]:
-            return {
-                "Type": "bind",
-                "Source": str(src.resolve()),
-                "Target": target,
-                "ReadOnly": False,
+        remote = self._remote_host(host)
+        if remote:
+            # 远端 dockerd（SUT VM）：bind mount 的 Source 是本机路径，跨主机
+            # 不可用——改为 put_archive 注入 config，trace 经 get_archive 回收。
+            command: list[str] = [
+                "sh", "-c", "mkdir -p /trace/wiretap /workspace && exec sleep infinity",
+            ]
+            kw: dict[str, Any] = {
+                "image": image_ref,
+                "command": command,
+                "detach": True,
+                "environment": env,
+                "name": f"rsi-{run_id}",
+                "labels": {"rsi.run_id": run_id},
             }
+        else:
+            def _bind(src: Path, target: str) -> dict[str, Any]:
+                return {
+                    "Type": "bind",
+                    "Source": str(src.resolve()),
+                    "Target": target,
+                    "ReadOnly": False,
+                }
 
-        mounts = [_bind(Path(config_dir), "/agent-config")]
-        if trace_dir is not None:
-            mounts.append(_bind(trace_dir, "/trace"))
-        container = client.containers.create(
-            image=image_ref,
-            command=["sleep", "infinity"],
-            detach=True,
-            environment=env,
-            mounts=mounts,
-            name=f"rsi-{run_id}",
-            labels={"rsi.run_id": run_id},
-        )
+            mounts = [_bind(Path(config_dir), "/agent-config")]
+            if trace_dir is not None:
+                mounts.append(_bind(trace_dir, "/trace"))
+            kw = {
+                "image": image_ref,
+                "command": ["sleep", "infinity"],
+                "detach": True,
+                "environment": env,
+                "mounts": mounts,
+                "name": f"rsi-{run_id}",
+                "labels": {"rsi.run_id": run_id},
+            }
+        container = client.containers.create(**kw)
         container.start()
+        if remote:
+            container.put_archive(self._tar_dir(Path(config_dir)), "/agent-config")
         self._containers[run_id] = (container.id, host)
         logger.info(
             "opencode.container_started",
@@ -232,6 +300,7 @@ class OpenCodeAdapter(CarrierAdapter):
             container=container.id,
             image=image_ref,
             host=host,
+            remote=remote,
         )
         return container.id
 

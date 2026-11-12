@@ -73,7 +73,7 @@ class HostPool:
             url = self._configs[host].docker
             if url == "local":
                 self._clients[host] = docker.from_env()
-            elif url.startswith("ssh://"):
+            elif url.startswith("ssh://") or url.startswith("tcp://"):
                 self._clients[host] = docker.DockerClient(base_url=url)
             else:
                 logger.debug("client.error", exc_type="CarrierError", host=host, url=url)
