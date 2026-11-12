@@ -60,7 +60,7 @@ def _mock_responses() -> dict[str, str]:
 def _pool() -> tuple[SshPool, list[MockDeviceSession]]:
     made: list[MockDeviceSession] = []
 
-    def factory(key: SessionKey, vendor: VendorProfile) -> MockDeviceSession:
+    def factory(key: SessionKey, vendor: VendorProfile, access=None) -> MockDeviceSession:
         session = MockDeviceSession(key, vendor, responses=_mock_responses())
         made.append(session)
         return session
@@ -160,7 +160,7 @@ class TestHealthCheck:
 
     @pytest.mark.asyncio
     async def test_health_check_via_pool_failure(self, tmp_path):
-        def factory(key, vendor):
+        def factory(key, vendor, access=None):
             return MockDeviceSession(key, vendor, responses={}, default_response="Error: down")
 
         service = SandboxService(

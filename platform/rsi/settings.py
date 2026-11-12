@@ -382,6 +382,8 @@ class SandboxSettings(BaseModel):
     })
     build_retry: int = 2
     ready_timeout_s: int = 600
+    # S11 真实后端开关：mock=罐头会话（离线）；netmiko=真实 SSH 设备会话
+    ssh_backend: Literal["mock", "netmiko"] = "mock"
 
 
 # ══════ ③ carrier (config doc §2 ③) ══════
@@ -392,6 +394,10 @@ class CarrierAdapterSettings(BaseModel):
 
     model_config = _C
     image_base: str = ""
+    # S11 真实后端开关：real=true 时 OpenCodeAdapter 走真实 docker 生命周期
+    real: bool = False
+    # 注入容器的额外 env（LLM 网关 token/base_url 等）
+    env: dict[str, str] = Field(default_factory=dict)
 
 
 class CarrierHostSettings(BaseModel):
@@ -409,6 +415,8 @@ class CarrierSettings(BaseModel):
     model_config = _C
     task_timeout_s: int = 1800
     max_instances_per_host: int = 10  # scheduler default (per-host override wins)
+    # S11: 容器 trace 挂载根目录；空 -> <RSI_HOME>/carrier-trace
+    trace_dir: str = ""
     adapters: dict[str, CarrierAdapterSettings] = Field(default_factory=lambda: {
         "claude_code": CarrierAdapterSettings(image_base="rsi/claude-code-runtime:1.x"),
         "opencode": CarrierAdapterSettings(image_base="rsi/opencode-runtime:1.x"),
@@ -734,6 +742,13 @@ class Settings(BaseSettings):
     @property
     def labs_dir(self) -> Path:
         return self.home / "storage" / "labs"
+
+    @property
+    def carrier_trace_dir(self) -> Path:
+        """S11: 容器 /trace 挂载根目录（真实 carrier 模式）。"""
+        if self.carrier.trace_dir.strip():
+            return self.resolve(self.carrier.trace_dir)
+        return self.home / "carrier-trace"
 
     @property
     def recordings_dir(self) -> Path:

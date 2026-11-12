@@ -29,12 +29,32 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 
 
 class OpenCodeAdapter(CarrierAdapter):
-    """P0 preferred carrier (ADR-22). Offline config/command generation only."""
+    """P0 preferred carrier (ADR-22). Offline config/command generation only.
 
-    def __init__(self) -> None:
+    ``real=True``（S11）时另走真实 Docker 生命周期：start_instance 创建
+    sleep-infinity 容器（挂 /agent-config + /trace），collect_result 在容器
+    内 exec opencode CLI 采集 stdout/exit_code，destroy_instance 回收容器。
+    """
+
+    def __init__(
+        self,
+        real: bool = False,
+        host_pool: Any = None,
+        trace_root: Path | None = None,
+        extra_env: dict[str, str] | None = None,
+    ) -> None:
         # Per-container env (cred-derived DEV_* / OPENCODE_API_KEY), keyed by
         # container_id, for the service layer to read when spawning.
         self.env_for: dict[str, dict[str, str]] = {}
+        self.real = real
+        self.host_pool = host_pool
+        self.trace_root = Path(trace_root) if trace_root else None
+        self.extra_env = dict(extra_env or {})
+        # run_id -> (container_id, host)
+        self._containers: dict[str, tuple[str, str]] = {}
+        # instance_id -> InstanceHandle.env（collect 时叠加进 exec env）
+        self._instance_env: dict[str, dict[str, str]] = {}
+        self._last_env: dict[str, str] = {}
 
     def build_image(self, sut_id: str, config_dir: Any) -> str:
         logger.debug("opencode.build_image", sut_id=sut_id, image=IMAGE_REF)
@@ -78,6 +98,7 @@ class OpenCodeAdapter(CarrierAdapter):
         from rsi.carrier.service import build_dev_env
 
         self.env_for[container_id] = build_dev_env(cred)
+        self._last_env = dict(self.env_for[container_id])
         logger.debug(
             "opencode.start",
             container_id=container_id,
@@ -106,6 +127,9 @@ class OpenCodeAdapter(CarrierAdapter):
         }
         container_id = getattr(instance, "container_id", None) or instance.instance_id
         env.update(self.env_for.get(container_id, {}))
+        self._instance_env[instance.instance_id] = dict(
+            getattr(instance, "env", {}) or {}
+        )
         handle = RunHandle(
             run_id=instance.run_id,
             instance_id=instance.instance_id,
@@ -118,12 +142,125 @@ class OpenCodeAdapter(CarrierAdapter):
     def collect_result(self, handle: RunHandle, timeout_s: float) -> str:
         if handle.stdout is not None:
             return handle.stdout
-        logger.warning(
-            "opencode.collect_result.offline_stub",
-            run_id=handle.run_id,
-            timeout_s=timeout_s,
+        if not self.real:
+            logger.warning(
+                "opencode.collect_result.offline_stub",
+                run_id=handle.run_id,
+                timeout_s=timeout_s,
+            )
+            return ""
+        client, cid = self._resolve_run(handle.run_id)
+        if client is None or cid is None:
+            logger.warning(
+                "opencode.collect_result.no_container", run_id=handle.run_id
+            )
+            return ""
+        container = client.containers.get(cid)
+        env = dict(handle.env)
+        env.update(self._instance_env.get(handle.instance_id, {}))
+        # exec 继承容器 create 时的 environment（DEV_*/LLM 网关），此处仅
+        # 追加 per-run wiretap 等；demux 分离 stdout/stderr，阻塞至退出。
+        exit_code, out = container.exec_run(
+            handle.cmd, environment=env, workdir="/workspace", demux=True
         )
-        return ""
+        stdout_bytes = out[0] if isinstance(out, tuple) else out
+        handle.stdout = (stdout_bytes or b"").decode("utf-8", "replace")
+        handle.exit_code = int(exit_code or 0)
+        logger.info(
+            "opencode.exec_done",
+            run_id=handle.run_id,
+            exit_code=handle.exit_code,
+            stdout_len=len(handle.stdout),
+        )
+        return handle.stdout
+
+    # -- S11 real container lifecycle -------------------------------------
+
+    def start_instance(
+        self,
+        image_ref: str,
+        config_dir: Any,
+        permission: str,
+        cred: Any,
+        host: str,
+        run_id: str,
+    ) -> str | None:
+        """Create + start the real SUT container; None = 保持占位 id."""
+        if not self.real or self.host_pool is None:
+            return None
+        try:
+            client = self.host_pool.client(host)
+        except Exception as exc:  # noqa: BLE001 - host 未配置等
+            logger.warning("opencode.start_instance.no_client", host=host, error=str(exc))
+            return None
+        if client is None:
+            logger.warning("opencode.start_instance.offline_pool", host=host)
+            return None
+        # 复用 start()：写 opencode.json + 记录 DEV_* env（_last_env）
+        self.start(image_ref, config_dir, permission, cred)
+        trace_dir = self.trace_root / run_id if self.trace_root else None
+        if trace_dir is not None:
+            (trace_dir / "wiretap").mkdir(parents=True, exist_ok=True)
+        env: dict[str, str] = {"RSI_RUN_ID": run_id}
+        env.update(self._last_env)
+        env.update(self.extra_env)
+        def _bind(src: Path, target: str) -> dict[str, Any]:
+            return {
+                "Type": "bind",
+                "Source": str(src.resolve()),
+                "Target": target,
+                "ReadOnly": False,
+            }
+
+        mounts = [_bind(Path(config_dir), "/agent-config")]
+        if trace_dir is not None:
+            mounts.append(_bind(trace_dir, "/trace"))
+        container = client.containers.create(
+            image=image_ref,
+            command=["sleep", "infinity"],
+            detach=True,
+            environment=env,
+            mounts=mounts,
+            name=f"rsi-{run_id}",
+            labels={"rsi.run_id": run_id},
+        )
+        container.start()
+        self._containers[run_id] = (container.id, host)
+        logger.info(
+            "opencode.container_started",
+            run_id=run_id,
+            container=container.id,
+            image=image_ref,
+            host=host,
+        )
+        return container.id
+
+    def destroy_instance(self, instance: Any) -> None:
+        if not self.real:
+            return
+        run_id = getattr(instance, "run_id", "")
+        entry = self._containers.pop(run_id, None)
+        if entry is None:
+            return
+        cid, host = entry
+        try:
+            client = self.host_pool.client(host)
+            container = client.containers.get(cid)
+            container.stop(timeout=10)
+            container.remove()
+            logger.info("opencode.container_removed", run_id=run_id, container=cid)
+        except Exception as exc:  # noqa: BLE001 - 清理尽力而为
+            logger.warning("opencode.destroy_failed", container=cid, error=str(exc))
+
+    def _resolve_run(self, run_id: str) -> tuple[Any, str | None]:
+        entry = self._containers.get(run_id)
+        if entry is None:
+            return None, None
+        cid, host = entry
+        try:
+            return self.host_pool.client(host), cid
+        except Exception:  # noqa: BLE001
+            return None, cid
 
     def trace_channels(self, instance: "InstanceHandle") -> TraceChannels:
         return TraceChannels(

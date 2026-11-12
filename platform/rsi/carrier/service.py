@@ -7,6 +7,7 @@ path placeholder), no real containers — adapter/fake drives everything.
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +62,8 @@ def build_dev_env(cred: Any) -> dict[str, str]:
     Accepted shape: ``{"api_key": ..., "devices": {"R1": {"user": ...,
     "pass": ..., "host": ..., "port": ...}}}`` (CredentialResolver output).
     Missing keys are skipped; unknown cred types yield an empty env.
+    Device names are normalized exactly like CredentialResolver._env_name
+    (non-alphanumeric -> '_') so "Spine-01" yields DEV_SPINE_01_*.
     """
     if not isinstance(cred, dict):
         return {}
@@ -70,7 +73,7 @@ def build_dev_env(cred: Any) -> dict[str, str]:
         for name, dev in devices.items():
             if not isinstance(dev, dict):
                 continue
-            prefix = f"DEV_{str(name).upper()}_"
+            prefix = f"DEV_{re.sub(r'[^A-Z0-9]', '_', str(name).upper())}_"
             for key, suffix in (
                 ("user", "USER"),
                 ("pass", "PASS"),
@@ -162,12 +165,31 @@ class HostService:
             logger.debug("create_instance.overlay", source=str(config_dir))
             config_dir = OverlayBuilder.build(config_dir)
             overlay_built = True
+        # S11: adapter 真实容器启动（real 模式）；None=占位 id（offline 形态）
+        container_id = instance_id
+        start_instance = getattr(
+            self._adapter_for(carrier_type), "start_instance", None
+        )
+        if callable(start_instance):
+            try:
+                real_cid = start_instance(
+                    image_ref, config_dir, permission, cred, selected_host, run_id
+                )
+                if real_cid:
+                    container_id = real_cid
+            except Exception as exc:  # noqa: BLE001 - 容器失败即 run 级错误
+                if overlay_built:
+                    try:
+                        OverlayBuilder.cleanup(config_dir)
+                    except Exception:  # noqa: BLE001
+                        pass
+                raise
         handle = InstanceHandle(
             instance_id=instance_id,
             sut_id=image_ref,
             run_id=run_id,
             host=selected_host,
-            container_id=instance_id,
+            container_id=container_id,
             status="running",
             config_dir=config_dir,
             env={"RSI_LAB_ID": lab.lab_id, "RSI_RUN_ID": run_id, **build_dev_env(cred)},
@@ -185,6 +207,11 @@ class HostService:
             logger.warning(
                 "create_instance.cleanup_after_failure", instance_id=instance_id
             )
+            if callable(start_instance):
+                try:
+                    self._adapter_for(carrier_type).destroy_instance(handle)
+                except Exception:  # noqa: BLE001 - best effort during cleanup
+                    pass
             try:
                 self.net_policy.detach(handle.container_id)
             except Exception:  # noqa: BLE001 - best effort during cleanup
@@ -295,6 +322,15 @@ class HostService:
     def destroy(self, instance: InstanceHandle) -> None:
         """Detach networks, release the host slot and stop tracking."""
         logger.debug("destroy.entry", instance_id=instance.instance_id, host=instance.host)
+        # S11: 真实容器回收先行（失败不阻断记账清理）
+        try:
+            self._adapter_for(instance.carrier).destroy_instance(instance)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "destroy.adapter_cleanup_failed",
+                instance_id=instance.instance_id,
+                error=str(exc),
+            )
         self.net_policy.detach(instance.container_id)
         self.host_pool.decrement(instance.host)
         self._instances.pop(instance.instance_id, None)

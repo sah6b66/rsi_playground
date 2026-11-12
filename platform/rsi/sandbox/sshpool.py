@@ -154,8 +154,10 @@ class SshPool:
     """Get-or-create pool of DeviceSessions keyed by (ip, port, lab_id)."""
 
     def __init__(self, session_factory=None) -> None:
-        # P0: injectable factory keeps the pool offline-mockable; the S11
-        # slice swaps in a netmiko ConnectHandler-backed factory.
+        # Injectable factory keeps the pool offline-mockable; the S11 real
+        # backend swaps in the netmiko factory (rsi.sandbox.netmiko_session).
+        # Factory contract (S11): ``factory(key, profile, access) -> DeviceSession``
+        # where access carries username/password (the P0 mock ignores it).
         # internal key = (ip, port): lab_id must not split sessions for the
         # same endpoint (ADR-24; SessionKey.lab_id is tracing only)
         self._sessions: dict[tuple[str, int], DeviceSession] = {}
@@ -181,7 +183,7 @@ class SshPool:
                 pass
         profile = VENDOR_MAP[vendor]
         session = (
-            self._factory(key, profile)
+            self._factory(key, profile, access)
             if self._factory is not None
             else MockDeviceSession(key, profile)
         )

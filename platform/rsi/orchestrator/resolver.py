@@ -33,6 +33,7 @@ import yaml
 from rsi.core.errors import ConfigError, NotFoundError, ValidationError
 from rsi.core.models import (
     ExpectedAnswer,
+    MetricDef,
     TaskRecord,
     TaskSpec,
 )
@@ -88,27 +89,46 @@ def _parse_env(env_yaml: str, evalset_id: str):
 def _parse_tasks(raw_tasks: list[dict], evalset_id: str) -> list[TaskRecord] | None:
     """tasks.jsonl rows -> TaskRecord list; None when no rows are available.
 
-    Row contract (mirrors the ``:import`` zip format): ``id`` (TaskRecord
-    task_id), ``prompt`` (TaskSpec.prompt); optional ``title``/``prepare``/
-    ``expected`` mapped onto the TaskRecord fields. A bad row fails the
-    whole resolution with the offending line number listed.
+    Two accepted row shapes (A1 fix — the ``:import`` store keeps raw
+    tasks.jsonl lines):
+    * TaskRecord shape: ``task_id``/``title``/``prepare``/
+      ``task{prompt,context,tool_constraints}``/``expected``/``metrics``
+      (examples/evalsets/* and ``:export`` symmetry);
+    * flat shape: ``id`` (task_id) + ``prompt`` + optional ``title``/
+      ``prepare``/``expected``.
+    A bad row fails the whole resolution with the offending line listed.
     """
     if not raw_tasks:
         return None
     records: list[TaskRecord] = []
     for i, t in enumerate(raw_tasks):
         try:
+            task_id = str(t.get("task_id") or t.get("id") or "")
+            if not task_id:
+                raise KeyError("task_id/id")
+            raw_task = t.get("task")
+            spec = (
+                TaskSpec.model_validate(raw_task)
+                if isinstance(raw_task, dict)
+                else TaskSpec(prompt=str(t.get("prompt", "")))
+            )
             records.append(
                 TaskRecord(
-                    task_id=str(t["id"]),
-                    title=str(t.get("title") or t["id"]),
+                    task_id=task_id,
+                    title=str(t.get("title") or task_id),
                     prepare=list(t.get("prepare") or []),
-                    task=TaskSpec(prompt=str(t.get("prompt", ""))),
+                    task=spec,
                     expected=(
                         ExpectedAnswer.model_validate(t["expected"])
                         if t.get("expected") is not None
                         else ExpectedAnswer()
                     ),
+                    # tasks.jsonl 里 metrics 是字符串缩写（"root_cause_accuracy"），
+                    # TaskRecord 要 MetricDef 模型——两种形状都归一
+                    metrics=[
+                        m if isinstance(m, dict) else {"name": str(m)}
+                        for m in (t.get("metrics") or [])
+                    ],
                 )
             )
         except Exception as exc:  # noqa: BLE001 - aggregated below

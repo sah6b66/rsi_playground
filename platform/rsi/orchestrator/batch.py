@@ -368,6 +368,9 @@ class BatchRunner:
                 tasks,
                 config_version_id,
                 image_ref,
+                # API 批可按 params 显式提权（S11 真实故障修复任务需要
+                # read-write：DEV_RW 注入 + judge 安全语义随权限走）
+                permission=str(params.get("permission") or "read-only"),
                 bypass_cache=bypass_cache,
                 prep_mode=str(batch.get("prep_mode") or "cli"),
                 db_meta={

@@ -18,6 +18,7 @@ import functools
 import json
 import os
 from functools import partial
+from pathlib import Path
 from typing import Any, Callable
 
 from rsi.carrier.adapters.fake import FakeCarrier
@@ -206,16 +207,31 @@ def build_services(
     trace_store = TraceStore(collector)
     collector.attach_store(trace_store)
 
-    # -- LLM (offline mock handler; real providers plug in via handler) ---
+    # -- LLM (cassette off + 配了 anthropic key → 真实 handler；否则离线 mock) --
     from pathlib import Path as _Path
+
+    from rsi.llm.providers import AnthropicCompatHandler
 
     _prompts_root = _Path(__file__).parent / "llm" / "prompts"
     prompt_library = PromptLibrary()
     prompt_library.load_root(_prompts_root)
     accountant = Accountant(session_factory=session_factory)  # C-7: llm_calls rows
     judge_cfg = settings.llm.defaults.get("judge")
+    handler: Callable[..., str] = _offline_llm_handler
+    _anth = settings.llm.providers.get("anthropic")
+    if settings.llm.cassette_mode == "off" and _anth is not None and _anth.api_key:
+        handler = AnthropicCompatHandler(
+            api_key=_anth.api_key,
+            base_url=_anth.base_url,
+            model=(judge_cfg.model if judge_cfg and judge_cfg.model else "glm-5.1"),
+        )
+        logger.info(
+            "bootstrap.llm_real_provider",
+            base_url=_anth.base_url or "default",
+            model=(judge_cfg.model if judge_cfg and judge_cfg.model else "glm-5.1"),
+        )
     llm_client = LLMClient(
-        handler=_offline_llm_handler,
+        handler=handler,
         max_concurrent_calls=settings.llm.max_concurrent_calls,
         # 本地 settings.yaml 可能只写 judge 的部分键（如仅 model）——
         # temperature/model 缺省回退，避免 None 进入 float()/LLM 调用。
@@ -254,10 +270,25 @@ def build_services(
     except Exception:  # noqa: BLE001 - e.g. docker SDK absent
         host_pool = HostPool()
     net_policy = NetPolicy(host_pool)
+    # S11: opencode adapter 按配置切真实 docker 模式（默认 offline 不变）
+    oc_cfg = settings.carrier.adapters.get("opencode")
     adapters: dict[str, Any] = {
-        "opencode": OpenCodeAdapter(),
+        "opencode": OpenCodeAdapter(
+            real=bool(oc_cfg and oc_cfg.real),
+            host_pool=host_pool,
+            trace_root=(
+                Path(settings.carrier_trace_dir) if (oc_cfg and oc_cfg.real) else None
+            ),
+            extra_env=(oc_cfg.env if (oc_cfg and oc_cfg.env) else None),
+        ),
         "fake": FakeCarrier(),
     }
+    if oc_cfg and oc_cfg.real:
+        logger.info(
+            "bootstrap.opencode_real",
+            trace_dir=str(settings.carrier_trace_dir),
+            extra_env_keys=sorted(oc_cfg.env),
+        )
     host_service = HostService(
         host_pool=host_pool,
         net_policy=net_policy,
@@ -271,7 +302,13 @@ def build_services(
     # Now each settings backend is dispatched on its ``kind``; prebuilt
     # platform backends (ensp-pro / pnetlab) share one SshPool +
     # ReadinessChecker with SandboxService (same (ip, port) session keys).
-    ssh_pool = SshPool()  # default factory = MockDeviceSession (offline)
+    if settings.sandbox.ssh_backend == "netmiko":
+        from rsi.sandbox.netmiko_session import netmiko_session_factory
+
+        ssh_pool = SshPool(session_factory=netmiko_session_factory)
+        logger.info("bootstrap.ssh_netmiko_pool")
+    else:
+        ssh_pool = SshPool()  # default factory = MockDeviceSession (offline)
     readiness_checker = ReadinessChecker(pool=ssh_pool)
     backends: dict[str, SandboxBackend] = {"fake": FakeSandboxBackend()}
     platform_probes: dict[str, PlatformProbe] = {}

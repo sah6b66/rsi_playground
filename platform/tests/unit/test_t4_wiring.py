@@ -352,7 +352,7 @@ class TestPrebuiltClosedLoop:
         # offline device pool: scripted mock sessions (the default
         # readiness check would TCP-probe unroutable IPs; a cli_match
         # ready-check exercises the same pool the batch exec uses)
-        services["ssh_pool"]._factory = lambda key, profile: MockDeviceSession(
+        services["ssh_pool"]._factory = lambda key, profile, access=None: MockDeviceSession(
             key, profile, responses={"display clock": "2026-01-01 00:00:00 UTC"}
         )
         from rsi.core.models import ReadyCheck

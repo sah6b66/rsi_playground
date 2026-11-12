@@ -100,7 +100,7 @@ class TestCliMatch:
         )
         responses = {"display version": "Huawei Versatile Routing Platform, Version 8.180"}
         pool = SshPool(
-            session_factory=lambda key, vendor: MockDeviceSession(
+            session_factory=lambda key, vendor, access: MockDeviceSession(
                 key, vendor, responses=responses if vendor.netmiko_device_type == "huawei" else {}
             )
         )
@@ -116,7 +116,7 @@ class TestCliMatch:
         # exec_cli ok=False (device error) must fail the check
         env = _env([ReadyCheck(type="cli_match", device="R1", cli="bad cmd", expect="x")])
         pool = SshPool(
-            session_factory=lambda key, vendor: MockDeviceSession(key, vendor, responses={"bad cmd": "Error: unrecognized command"})
+            session_factory=lambda key, vendor, access: MockDeviceSession(key, vendor, responses={"bad cmd": "Error: unrecognized command"})
         )
         checker = ReadinessChecker(pool=pool, tcp_probe=_ok_probe)
         report = await checker.check(env, _endpoints(env), timeout_s=5)

@@ -310,7 +310,7 @@ class TestB4SshPoolAlive:
     def test_dead_session_is_rebuilt(self):
         made: list[MockDeviceSession] = []
 
-        def factory(key, vendor):
+        def factory(key, vendor, access=None):
             session = MockDeviceSession(key, vendor)
             made.append(session)
             return session
@@ -329,7 +329,7 @@ class TestB4SshPoolAlive:
     def test_alive_session_is_reused(self):
         made: list[MockDeviceSession] = []
 
-        def factory(key, vendor):
+        def factory(key, vendor, access=None):
             s = MockDeviceSession(key, vendor)
             made.append(s)
             return s
