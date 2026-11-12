@@ -195,3 +195,22 @@ class TestRemoteHostArchiveTransfer:
         wiretap = tmp_path / "trace" / "run-r1" / "wiretap" / "run-r1.ndjson"
         assert wiretap.exists()
         assert "prompt" in wiretap.read_text(encoding="utf-8")
+
+
+def test_tar_dir_gnu_format_no_pax_headers(tmp_path):
+    """E2 实测：docker put_archive 拒绝 PAX 头（./@PaxHeader 被判路径穿越）."""
+    import io
+    import tarfile
+
+    from rsi.carrier.adapters.opencode import OpenCodeAdapter
+
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    (cfg / "model.json").write_text("{}", encoding="utf-8")
+    (cfg / "skills" / "network-ops").mkdir(parents=True)
+    (cfg / "skills" / "network-ops" / "SKILL.md").write_text("x", encoding="utf-8")
+    data = OpenCodeAdapter._tar_dir(cfg)
+    assert b"PaxHeader" not in data and b"pax_global_header" not in data
+    with tarfile.open(fileobj=io.BytesIO(data)) as tf:
+        assert "model.json" in tf.getnames()
+        assert "skills/network-ops/SKILL.md" in tf.getnames()

@@ -198,15 +198,27 @@ class OpenCodeAdapter(CarrierAdapter):
 
     @staticmethod
     def _tar_dir(src: Path) -> bytes:
-        """目录内容打包为 tar（成员为相对路径，供 put_archive 解到目标下）。"""
+        """目录内容打包为 tar（成员为相对路径，供 put_archive 解到目标下）。
+
+        必须用 GNU 格式且整数 mtime：默认 PAX 格式会为高精度 mtime 生成
+        ``./@PaxHeader`` 成员，docker daemon 的 archive 端点将其判为路径
+        穿越并 500（E2 实测）。
+        """
         import io
         import tarfile
 
         buf = io.BytesIO()
-        with tarfile.open(fileobj=buf, mode="w") as tf:
+        with tarfile.open(fileobj=buf, mode="w", format=tarfile.GNU_FORMAT) as tf:
             for p in sorted(Path(src).rglob("*")):
                 if p.is_file():
-                    tf.add(p, arcname=p.relative_to(src).as_posix())
+                    info = tf.gettarinfo(str(p), arcname=p.relative_to(src).as_posix())
+                    info.mtime = int(info.mtime)
+                    info.uid = 0
+                    info.gid = 0
+                    info.uname = ""
+                    info.gname = ""
+                    with open(p, "rb") as fh:
+                        tf.addfile(info, fh)
         return buf.getvalue()
 
     def _remote_host(self, host: str) -> bool:
