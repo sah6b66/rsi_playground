@@ -77,13 +77,10 @@ class OpenCodeAdapter(CarrierAdapter):
     ) -> str:
         """Write opencode.json into the mounted config dir; record env; offline."""
         provider, model = self._read_model_config(config_dir)
-        # Wiretap file uses a session-level default in the shared
-        # /agent-config mount; per-run attribution is closed out at
-        # submit_task time via RunHandle.env["OPENCODE_WIRETAP_FILE"],
-        # which the S11 real executor injects into the task process env.
+        # 工程配置 schema：模型选择必须是 "<provider>/<model>"（顶层
+        # "provider" 字符串键在 opencode 1.19.5 校验失败——C2 实测）。
         opencode_config = {
-            "provider": provider,
-            "model": model,
+            "model": f"{provider}/{model}",
             "plugins": {
                 "opencode-prompt-logger": {
                     "file": "/trace/wiretap/session.ndjson",
@@ -110,13 +107,17 @@ class OpenCodeAdapter(CarrierAdapter):
 
     def submit_task(self, instance: "InstanceHandle", task: Any) -> RunHandle:
         prompt = task if isinstance(task, str) else task.prompt
+        # opencode 1.19.5 实测（C2）：--format json 是事件流（FINAL_JSON 不可
+        # 直接解析）；--session 仅限续接已有 ses_* 会话；--auto 非交互放行
+        # 工具调用；--title 以 run_id 命名会话便于归属。
         cmd = [
             "opencode",
             "run",
             "--format",
-            "json",
+            "default",
             "--print-logs",
-            "--session",
+            "--auto",
+            "--title",
             instance.run_id,
             prompt,
         ]

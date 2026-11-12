@@ -45,8 +45,8 @@ class TestStart:
         assert plugin["file"].startswith("/trace/wiretap/")
         assert plugin["rotateBytes"] is False
         assert plugin["http"] is True
-        assert oc["provider"] == "openai"
-        assert oc["model"] == "gpt-5"
+        assert oc["model"] == "openai/gpt-5"
+        assert "provider" not in oc
 
     def test_start_model_json_missing_uses_defaults(self, tmp_path) -> None:
         cfg = tmp_path / "sut"
@@ -54,8 +54,7 @@ class TestStart:
         adapter = OpenCodeAdapter()
         adapter.start("rsi-opencode-runtime:1.0", cfg, "restricted", None)
         oc = json.loads((cfg / "opencode.json").read_text(encoding="utf-8"))
-        assert oc["provider"] == "anthropic"
-        assert oc["model"] == "claude-sonnet-4-6"
+        assert oc["model"] == "anthropic/claude-sonnet-4-6"
 
     def test_start_records_dev_env(self, tmp_path) -> None:
         cfg = tmp_path / "sut"
@@ -81,10 +80,10 @@ class TestSubmitAndTrace:
         cid = adapter.start("rsi-opencode-runtime:1.0", cfg, "restricted", None)
         inst = SimpleNamespace(run_id="run-42", instance_id=cid)
         h1 = adapter.submit_task(inst, "do the thing")
-        assert "--format" in h1.cmd and "json" in h1.cmd
+        assert "--format" in h1.cmd and "default" in h1.cmd
         assert "--print-logs" in h1.cmd
-        assert "--session" in h1.cmd
-        assert h1.cmd[h1.cmd.index("--session") + 1] == "run-42"
+        assert "--auto" in h1.cmd
+        assert h1.cmd[h1.cmd.index("--title") + 1] == "run-42"
         assert h1.stdout is None
         # .prompt attribute object also works
         h2 = adapter.submit_task(inst, SimpleNamespace(prompt="another"))
@@ -189,3 +188,34 @@ class TestServiceEnvInjection:
         assert handle.env["DEV_R1_PORT"] == "22"
         assert handle.env["OPENCODE_API_KEY"] == "sk-z"
         assert handle.env["RSI_RUN_ID"] == "run-9"
+
+
+class TestS11CmdShape:
+    """C2 实测驱动：opencode 1.19.5 真实 CLI 形状 + 工程配置 model 格式."""
+
+    def test_start_writes_model_slash_format(self, tmp_path) -> None:
+        cfg = tmp_path / "sut"
+        cfg.mkdir()
+        (cfg / "model.json").write_text(
+            json.dumps({"provider": "zhipuai-coding-plan", "model": "glm-5.3-flash"}),
+            encoding="utf-8",
+        )
+        adapter = OpenCodeAdapter()
+        adapter.start("img", cfg, "restricted", None)
+        oc = json.loads((cfg / "opencode.json").read_text(encoding="utf-8"))
+        assert oc["model"] == "zhipuai-coding-plan/glm-5.3-flash"
+        assert "provider" not in oc  # 工程配置不允许顶层 provider 字符串键
+
+    def test_submit_task_cmd_real_flags(self, tmp_path) -> None:
+        adapter = OpenCodeAdapter()
+        cfg = tmp_path
+        cid = adapter.start("img", cfg, "restricted", None)
+        inst = SimpleNamespace(run_id="run-77", instance_id=cid)
+        handle = adapter.submit_task(inst, "do it")
+        cmd = handle.cmd
+        assert cmd[:2] == ["opencode", "run"]
+        assert cmd[cmd.index("--format") + 1] == "default"  # json=事件流不可解析
+        assert "--auto" in cmd  # 非交互容器内自动放行工具调用
+        assert cmd[cmd.index("--title") + 1] == "run-77"  # 会话命名归属
+        assert "--session" not in cmd  # --session 仅续已有 ses_* 会话
+        assert handle.cmd[-1] == "do it"
