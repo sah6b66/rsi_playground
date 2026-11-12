@@ -83,3 +83,44 @@ def test_taskrecord_shape_via_resolver(tmp_path):
     assert env.name == "env-x" and env.backend == "ensp-pro"
     assert tasks[0].task_id == "fault/leaf-uplink-down-01"
     assert cfg == "" and image == "rsi/opencode-netops:1.0"
+
+
+class _FakeGitstore:
+    """export() 造出整棵树（含 suts/<sut>/ 子目录）——真实 GitStore 形状."""
+
+    def __init__(self, sut_ids=("sut-abc",)):
+        self.sut_ids = sut_ids
+
+    def export(self, version_id, dest):
+        from pathlib import Path
+
+        dest = Path(dest)
+        for sid in self.sut_ids:
+            d = dest / "suts" / sid
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "model.json").write_text("{}", encoding="utf-8")
+        other = dest / "README.md"
+        other.write_text("x", encoding="utf-8")
+
+
+def test_resolve_config_dir_points_at_sut_subtree(tmp_path):
+    """E2 实测：git export 是整棵树，config 根必须是 suts/<sut_id>/ 子目录
+    （否则 adapter 读不到 model.json 回落 anthropic 默认模型）。"""
+    from rsi.orchestrator.resolver import _resolve_config_dir
+
+    gs = _FakeGitstore(sut_ids=("sut-abc", "sut-xyz"))
+    cfg = _resolve_config_dir(gs, "deadbeef" * 5, sut_id="sut-abc")
+    assert cfg.replace("\\", "/").endswith("suts/sut-abc"), cfg
+    from pathlib import Path
+
+    assert (Path(cfg) / "model.json").is_file()
+
+
+def test_resolve_config_dir_without_sut_id_keeps_root(tmp_path):
+    from rsi.orchestrator.resolver import _resolve_config_dir
+
+    gs = _FakeGitstore()
+    cfg = _resolve_config_dir(gs, "deadbeef" * 5)
+    from pathlib import Path
+
+    assert (Path(cfg) / "suts" / "sut-abc").is_dir()  # 未指定 sut：整树根

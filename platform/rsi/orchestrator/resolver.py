@@ -139,14 +139,18 @@ def _parse_tasks(raw_tasks: list[dict], evalset_id: str) -> list[TaskRecord] | N
     return records
 
 
-def _resolve_config_dir(gitstore, version_id: str) -> str:
+def _resolve_config_dir(gitstore, version_id: str, sut_id: str = "") -> str:
     """config_version_id -> exportable config directory.
 
     Pass-through when the id is already a live directory (P0 path-as-id);
     GitStore-registered versions are exported to a temp worktree copy so
-    the instrumentor/config overlay can consume them. Anything unknown
-    (including an uninitialized GitStore) degrades to ``""`` — the
-    documented empty-id behavior (never resolves to cwd).
+    the instrumentor/config overlay can consume them. The git export is the
+    WHOLE repo tree — when ``sut_id`` is given the returned dir is narrowed
+    to ``suts/<sut_id>/`` so carriers read ``model.json``/skills at the
+    subtree root (E2 实测：整树根会让 adapter 读不到 model.json 而回落
+    默认 anthropic 模型). Anything unknown (including an uninitialized
+    GitStore) degrades to ``""`` — the documented empty-id behavior
+    (never resolves to cwd).
     """
     vid = str(version_id or "").strip()
     if not vid:
@@ -158,6 +162,10 @@ def _resolve_config_dir(gitstore, version_id: str) -> str:
     try:
         dest = Path(tempfile.mkdtemp(prefix="rsi-resolver-cfg-"))
         gitstore.export(vid, dest)
+        if sut_id:
+            subtree = dest / "suts" / sut_id
+            if subtree.is_dir():
+                return str(subtree)
         return str(dest)
     except Exception as exc:  # noqa: BLE001 - degrade to "" (existing path)
         logger.warning(
@@ -220,7 +228,7 @@ def build_batch_resolver(
         sut_id = str(batch.get("sut_id", ""))
         image_ref = _image_ref(batch, record)
         config_dir = _resolve_config_dir(
-            gitstore, str(params.get("config_version_id", ""))
+            gitstore, str(params.get("config_version_id", "")), sut_id=sut_id
         )
         logger.info(
             "resolver.resolved",

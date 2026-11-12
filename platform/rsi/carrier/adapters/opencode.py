@@ -165,8 +165,18 @@ class OpenCodeAdapter(CarrierAdapter):
             handle.cmd, environment=env, workdir="/workspace", demux=True
         )
         stdout_bytes = out[0] if isinstance(out, tuple) else out
+        stderr_bytes = out[1] if isinstance(out, tuple) and len(out) > 1 else b""
         handle.stdout = (stdout_bytes or b"").decode("utf-8", "replace")
         handle.exit_code = int(exit_code or 0)
+        if handle.exit_code != 0:
+            raw = (stderr_bytes or b"").decode("utf-8", "replace")
+            logger.warning(
+                "opencode.exec_failed",
+                run_id=handle.run_id,
+                exit_code=handle.exit_code,
+                stderr_head=raw[:400],
+                stderr_tail=raw[-800:],
+            )
         logger.info(
             "opencode.exec_done",
             run_id=handle.run_id,
