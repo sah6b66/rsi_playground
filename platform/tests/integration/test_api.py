@@ -174,7 +174,8 @@ class TestFullApiWorkflow:
         assert resp.status_code == 200
         body = resp.json()
         assert body["metric"] == "success_rate"
-        assert isinstance(body["series"], list) and body["series"]
+        # W1：无真实批数据时诚实空序列（demo 回退已删）
+        assert isinstance(body["series"], list)
 
         # 13-14. System health and dependencies
         resp = await client.get("/api/v1/system/health")
