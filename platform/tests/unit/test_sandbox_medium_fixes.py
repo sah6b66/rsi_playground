@@ -400,3 +400,79 @@ class TestS11PrepareConfigBatch:
         applied = asyncio.run(svc.prepare(lab, "t1", [action]))
         assert applied
         assert ("exec_config", ["interface GE1/0/1", "shutdown"]) in recorded
+
+
+class TestF5BatchFileRestore:
+    """F5/A3'：备份文件恢复整文件单会话下发（不再逐行一个事务）。"""
+
+    def test_restore_batches_backup_lines_into_one_session(self, tmp_path, monkeypatch):
+        import asyncio
+
+        from rsi.core.models import (
+            AppliedAction, EnvSpec, LabHandle, SshAccess,
+        )
+        from rsi.sandbox.backends.fake import FakeSandboxBackend
+        from rsi.sandbox.service import OpsJournal, SandboxService
+        from rsi.sandbox.sshpool import SshPool
+
+        lab = LabHandle(lab_id="L9", host="main", backend="fake",
+                        endpoints={"R1": SshAccess(ip="10.0.0.9", username="a")})
+        cfg_dir = tmp_path / "backups" / "t9"
+        cfg_dir.mkdir(parents=True)
+        lines = ["sysname R1", "interface GE1/0/1", " description up", "# 注释跳过", ""]
+        (cfg_dir / "R1.cfg").write_text("\n".join(lines), encoding="utf-8")
+
+        class _StubBackend:
+            def exec(self, lab, device, cli):
+                return f"OUT<{cli}>"
+
+            async def wait_ready(self, lab):
+                from types import SimpleNamespace
+
+                return SimpleNamespace(
+                    passed=True, summary=lambda: "ok")
+
+        svc = SandboxService(backends={"fake": _StubBackend()},
+                             ssh_pool=SshPool(), labs_dir=tmp_path)
+        svc._envs[lab.lab_id] = _env()
+        svc._lab_backend[lab.lab_id] = "fake"
+        svc._journals[lab.lab_id] = OpsJournal(tmp_path, lab.lab_id)
+
+        calls: list[list[str]] = []
+
+        from rsi.sandbox.vendor import VENDOR_MAP
+
+        class _BatchSession:
+            lock = asyncio.Lock()
+            vendor = VENDOR_MAP["vrp"]
+
+            async def exec_config(self, lines_):
+                calls.append(list(lines_))
+                from rsi.sandbox.sshpool import ExecResult
+
+                return ExecResult(ok=True, output="", matched_errors=[],
+                                  duration_ms=1)
+
+            async def exec_cli(self, cli, read_timeout_s=120):
+                from rsi.sandbox.sshpool import ExecResult
+
+                return ExecResult(ok=True, output="OK", matched_errors=[],
+                                  duration_ms=1)
+
+            async def capture_config(self):
+                nl = chr(10)
+                return (
+                    "sysname R1" + nl + "interface GE1/0/1" + nl
+                    + " description up" + nl)
+
+        monkeypatch.setattr(svc, "_pool_session", lambda lab, d: _BatchSession())
+        applied = [AppliedAction(
+            action="exec_cli", entries=[],
+            backup_files={"R1": str(cfg_dir / "R1.cfg")},
+            applied_at="",
+        )]
+        asyncio.run(svc.restore_task(lab, applied))
+        # 备份全部有效行合并为单次批量下发（1 次 system-view + 1 次 commit；
+        # 另有 B-6 vendor reset_cmd 一次，属独立步骤）
+        assert calls[-1] == ["sysname R1", "interface GE1/0/1", " description up"]
+        assert not any(len(c) == 1 and c[0] == "sysname R1" for c in calls)

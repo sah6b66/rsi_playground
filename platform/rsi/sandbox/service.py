@@ -528,19 +528,31 @@ class SandboxService:
                         f"backup file {path!r} missing for device {device!r}",
                         context={"device": device, "path": path},
                     )
-                for line in backup.read_text(encoding="utf-8").splitlines():
-                    if not line.strip() or line.startswith("#"):
-                        continue
-                    session = self._pool_session(lab, device)
-                    if session is not None:
-                        result = _run_sync(session.exec_config([line]))
-                        if not result.ok:
-                            raise EnvError(
-                                f"backup replay failed on {device}: {line!r} "
-                                f"-> {result.matched_errors}",
-                                context={"device": device, "cli": line},
-                            )
-                    else:
+                lines = [
+                    line
+                    for line in backup.read_text(encoding="utf-8").splitlines()
+                    if line.strip() and not line.startswith("#")
+                ]
+                if not lines:
+                    continue
+                session = self._pool_session(lab, device)
+                if session is not None:
+                    # F5/A3'：整文件单会话批量下发（1 次 system-view →
+                    # 全部行 → 1 次 commit）。逐行一个事务在 CE 两阶段
+                    # 提交下 ~300 次事务，慢且中途易错（S11 实测
+                    # restore_env_failed 根因）。
+                    result = _run_sync(session.exec_config(lines))
+                    if not result.ok:
+                        bad = result.matched_errors or [result.output[:80]]
+                        raise EnvError(
+                            f"backup replay failed on {device}: {bad}",
+                            context={
+                                "device": device,
+                                "cli": f"<batch {len(lines)} lines>",
+                            },
+                        )
+                else:
+                    for line in lines:
                         output = backend.exec(lab, device, line)
                         if output.startswith(_ERROR_OUTPUT_PREFIX):
                             raise EnvError(
