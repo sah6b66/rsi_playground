@@ -216,7 +216,9 @@ class TestCliModeRegression:
         # CLI lab lifecycle fully exercised
         assert spy.calls.get("build_lab", 0) == 1
         assert spy.calls.get("wait_ready", 0) == 1
-        assert spy.calls.get("snapshot", 0) >= 1
+        # F6/R5：snap0 由 build_lab 内部登记——BatchRunner 经 snapshots()
+        # 列表取基线，不再显式补拍（否则每 lab 两条 snap0 记录）
+        assert spy.calls.get("snapshots", 0) >= 1
         assert spy.calls.get("prepare", 0) == 1
         assert spy.calls.get("restore_task", 0) >= 1
         assert spy.calls.get("destroy", 0) == 1

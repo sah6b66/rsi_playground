@@ -205,6 +205,27 @@ def _failed_run(run_id: str, rca: float) -> dict:
 
 
 @pytest.mark.asyncio
+async def test_batch_lab_journal_single_snap0(tmp_path: Path) -> None:
+    """F6/R5：新建 lab 路径 build_lab 已内置 snap0 并落 ops.jsonl——
+    BatchRunner 不得再补拍（S11 实测每个 lab 出现两条 snap0 记录）。"""
+    rig = ClosedLoopRig(tmp_path, {"cfg-v1": 0.5})
+    env, tasks = _env(), [_task(1)]
+    rig.judge.set_batch("cfg-v1", len(tasks))
+    await rig.runner.run_batch("batch-r5", env, tasks, "cfg-v1", "sut-img")
+
+    import json
+
+    journals = list(tmp_path.glob("lab-*/ops.jsonl"))
+    assert journals, "lab ops journal expected"
+    lines = [
+        json.loads(line)
+        for line in journals[0].read_text(encoding="utf-8").splitlines()
+    ]
+    snaps = [l for l in lines if l.get("record") == "snapshot"]
+    assert len(snaps) == 1, f"expected exactly one snapshot record, got {snaps}"
+
+
+@pytest.mark.asyncio
 async def test_closed_loop_promote(tmp_path: Path) -> None:
     rig = ClosedLoopRig(tmp_path, {"cfg-v1": 0.4, "cfg-v2": 0.9})
     env, tasks = _env(), [_task(1), _task(2)]

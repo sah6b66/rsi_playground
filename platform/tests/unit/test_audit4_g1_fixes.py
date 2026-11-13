@@ -177,6 +177,11 @@ class _SlowSandboxForShutdown:
     async def snapshot(self, lab, name="snap0"):
         return type("Snap", (), {"snapshot_id": "s0"})()
 
+    def snapshots(self, lab_id):
+        # F6/R5：BatchRunner 新建路径经 build_lab 的 snap0 登记（snapshots
+        # 列表）取基线，不再显式补拍。
+        return [type("Snap", (), {"snapshot_id": "s0"})()]
+
     async def prepare(self, lab, task_id, actions):
         await asyncio.sleep(10)
         return []

@@ -1420,7 +1420,9 @@ class BatchRunner:
             logger.info("batch.lab_dead", lab_id=state.get("lab_id"))
         lab = await self.sandbox.build_lab(env)
         await self.sandbox.wait_ready(lab, self.ready_timeout_s)
-        return lab, await self.sandbox.snapshot(lab, "snap0")
+        # F6/R5：build_lab 已登记 post-build snap0（service.py 登记 + ops
+        # journal 落记录）——复用之，不再补拍（否则每 lab 两条 snap0 记录）。
+        return lab, self.sandbox.snapshots(lab.lab_id)[-1]
 
     def _ingest_trace_channels(
         self,
