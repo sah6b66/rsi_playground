@@ -537,3 +537,34 @@ async def test_object_store_restart_survival(services, tmp_path):
     fresh_stores = {"suts": {}, "evalsets": {}, "iterations": {}}
     hydrate_object_stores(fresh_stores, tmp_path / "storage" / "object-store")
     assert fresh_stores["suts"][sut["id"]]["name"] == "survivor"
+
+
+@pytest.mark.asyncio
+async def test_promote_baseline_returns_409_not_500(services):
+    """F6/B2：promote 手动 baseline（无 cand 分支）应 409 + 语义文案，
+    不再 INTERNAL 500（S11 实测）。"""
+    from rsi.core.errors import ConflictError, GitStoreError
+
+    from rsi.api.routers import suts as suts_mod
+
+    app = create_app(services)
+    app.state.stores["suts"]["sut-p"] = {
+        "id": "sut-p", "name": "sp", "carrier": "opencode",
+        "image_ref": "i", "description": "", "created_at": "x"}
+
+    class _NoCandGit:
+        def promote(self, candidate):
+            raise GitStoreError(
+                "no candidate branch suts/<sut>/cand/* points at deadbeef",
+                candidate="deadbeef")
+
+    app.state.services["git_store"] = _NoCandGit()
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        headers = await admin_headers(client)
+        resp = await client.post(
+            "/api/v1/suts/sut-p/versions:promote",
+            json={"candidate_version_id": "deadbeef"}, headers=headers)
+        assert resp.status_code == 409
+        assert "候选" in resp.json()["message"] or "candidate" in resp.json()["message"]

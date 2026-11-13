@@ -320,7 +320,21 @@ async def promote_sut(
     实验记录字段集，实现取最小集：双批 id + reason + decision=promote）。
     """
     _get(store, sut_id)
-    _git(request).promote(body.candidate_version_id)
+    try:
+        _git(request).promote(body.candidate_version_id)
+    except Exception as exc:  # noqa: BLE001 - GitStoreError 无专用映射
+        from rsi.core.errors import ConflictError
+
+        msg = str(exc)
+        if "no candidate branch" in msg:
+            # F6/B2：手动 snapshot 是 baseline（无 cand/* 分支）——语义上
+            # 无需 promote；报 409 而非 INTERNAL 500（S11 实测）。
+            raise ConflictError(
+                "该版本是手动基线（baseline），无需 promote；promote 仅用于"
+                "优化器产出的候选版本（suts/<sut>/cand/* 分支）",
+                context={"candidate_version_id": body.candidate_version_id},
+            ) from exc
+        raise
     if body.baseline_batch_id and body.candidate_batch_id:
         experiments = request.app.state.stores["experiments"]
         exp = {
