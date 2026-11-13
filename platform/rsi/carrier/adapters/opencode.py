@@ -394,6 +394,19 @@ class OpenCodeAdapter(CarrierAdapter):
             return None, cid
 
     def trace_channels(self, instance: "InstanceHandle") -> TraceChannels:
+        # real 模式下 wiretap 文件的宿主可见位置是 trace_root/<run_id>/wiretap/
+        # （本地=bind mount 同一文件；远端=collect 后回收到该路径）。离线
+        # 默认（无 trace_root）保持容器路径语义。
+        if self.trace_root is not None:
+            host = self.trace_root / instance.run_id / "wiretap"
+            return TraceChannels(
+                kind="ndjson",
+                paths=[
+                    str(host / f"{instance.run_id}.ndjson"),
+                    str(host / "session.ndjson"),
+                    str(host / "events.ndjson"),
+                ],
+            )
         return TraceChannels(
             kind="ndjson",
             paths=[

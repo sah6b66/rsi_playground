@@ -115,3 +115,30 @@ def test_lines_are_valid_native_trace_events():
         obj.setdefault("sut_id", "s")
         ev = TraceEvent.model_validate(obj)
         assert ev.run_id == "run-4"
+
+
+def test_wal_mode_db_still_converted(tmp_path):
+    """E2 实测回归：真库 WAL 模式下 deserialize 报 unable to open——
+    临时文件连接必须兼容。"""
+    import sqlite3 as sq
+
+    path = tmp_path / "wal.db"
+    conn = sq.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.executescript(
+        "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,"
+        " time_created INTEGER, time_updated INTEGER, data TEXT);"
+        "CREATE TABLE session (id TEXT, title TEXT, cost REAL,"
+        " tokens_input INTEGER, tokens_output INTEGER, model TEXT);"
+    )
+    conn.execute(
+        "INSERT INTO part VALUES ('p','m','s',1,2,?)",
+        ('{"type":"tool","tool":"bash","callID":"c","state":{"status":"completed",'
+         '"input":{"command":"display clock"},"output":"ok",'
+         '"metadata":{"exit":0}}}',),
+    )
+    conn.commit()
+    conn.close()
+    lines = session_archive_to_event_lines(path.read_bytes(), "run-wal")
+    assert any('"tool_call"' in l for l in lines)
+    assert any('"display clock"' in l for l in lines)

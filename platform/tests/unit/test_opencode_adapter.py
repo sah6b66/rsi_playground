@@ -219,3 +219,18 @@ class TestS11CmdShape:
         assert cmd[cmd.index("--title") + 1] == "run-77"  # 会话命名归属
         assert "--session" not in cmd  # --session 仅续已有 ses_* 会话
         assert handle.cmd[-1] == "do it"
+
+
+def test_trace_channels_host_paths_when_trace_root_set(tmp_path) -> None:
+    """F1: real 模式 wiretap 在宿主 trace_root/<run>/wiretap/——ingest 按此路径
+    读文件（容器路径在远端模式下宿主不可见）。"""
+    from types import SimpleNamespace
+
+    adapter = OpenCodeAdapter(trace_root=tmp_path)
+    inst = SimpleNamespace(run_id="run-host")
+    ch = adapter.trace_channels(inst)
+    first = Path(ch.paths[0])
+    assert first == tmp_path / "run-host" / "wiretap" / "run-host.ndjson"
+    # 离线默认（无 trace_root）保持容器路径
+    ch2 = OpenCodeAdapter().trace_channels(SimpleNamespace(run_id="r"))
+    assert ch2.paths[0] == "/trace/wiretap/r.ndjson"

@@ -37,9 +37,30 @@ def _ms_to_iso(ms: Any) -> str:
 
 
 def _connect_bytes(db_bytes: bytes) -> sqlite3.Connection:
-    conn = sqlite3.connect(":memory:")
-    conn.deserialize(db_bytes)
-    return conn
+    """落临时文件再连——真库（WAL 模式）deserialize 会报
+    "unable to open database file"（E2 实测），文件路径连接无此问题。"""
+    import tempfile
+    from pathlib import Path
+
+    import os
+
+    fd, path = tempfile.mkstemp(prefix="opencode-archive-", suffix=".db")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(db_bytes)
+        return sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+    except Exception:
+        Path(path).unlink(missing_ok=True)
+        raise
+
+
+def _cleanup(conn: sqlite3.Connection) -> None:
+    path = conn.execute("PRAGMA database_list").fetchone()[2]
+    conn.close()
+    from pathlib import Path
+
+    if path and path != ":memory:":
+        Path(path).unlink(missing_ok=True)
 
 
 def session_archive_to_event_lines(db_bytes: bytes, run_id: str) -> list[str]:
@@ -66,7 +87,7 @@ def session_archive_to_event_lines(db_bytes: bytes, run_id: str) -> list[str]:
             lines.append(json.dumps(usage_event, ensure_ascii=False))
         return lines
     finally:
-        conn.close()
+        _cleanup(conn)
 
 
 def _iter_tool_parts(conn: sqlite3.Connection):
