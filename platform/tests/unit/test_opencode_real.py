@@ -62,6 +62,13 @@ class FakeContainer:
         import io
         import tarfile
 
+        if "opencode.db" in path and getattr(self, "db_bytes", None):
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tf:
+                info = tarfile.TarInfo("opencode.db")
+                info.size = len(self.db_bytes)
+                tf.addfile(info, io.BytesIO(self.db_bytes))
+            return iter([buf.getvalue()]), {"name": "opencode.db"}
         prefix = path.strip("/").split("/")[-1]  # /trace/wiretap -> wiretap
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w") as tf:
@@ -214,3 +221,55 @@ def test_tar_dir_gnu_format_no_pax_headers(tmp_path):
     with tarfile.open(fileobj=io.BytesIO(data)) as tf:
         assert "model.json" in tf.getnames()
         assert "skills/network-ops/SKILL.md" in tf.getnames()
+
+
+class TestSessionArchiveToWiretap:
+    """F1/A1: 远端 collect 回收 opencode.db → 转换写 wiretap ndjson."""
+
+    def _adapter(self, tmp_path):
+        import sqlite3
+
+        conn = sqlite3.connect(":memory:")
+        conn.executescript(
+            "CREATE TABLE part (id TEXT, message_id TEXT, session_id TEXT,"
+            " time_created INTEGER, time_updated INTEGER, data TEXT);"
+            "CREATE TABLE session (id TEXT, title TEXT, cost REAL,"
+            " tokens_input INTEGER, tokens_output INTEGER, model TEXT);"
+        )
+        conn.execute(
+            "INSERT INTO part VALUES ('p1','m1','s1',1,2,?)",
+            ('{"type":"tool","tool":"bash","callID":"c1","state":{"status":'
+             '"completed","input":{"command":"display version"},"output":"v100",'
+             '"metadata":{"exit":0}}}',),
+        )
+        conn.execute(
+            "INSERT INTO session VALUES ('s1','t',0.0,100,20,?)",
+            ('{"id":"glm-5.3-flash"}',),
+        )
+        conn.commit()
+        db_bytes = conn.serialize()
+        pool = FakeHostPool(FakeDockerClient(), docker_url="tcp://x:2375")
+        pool._c.created  # ensure attr
+        pool = FakeHostPool(FakeDockerClient(), docker_url="tcp://x:2375")
+        adapter = OpenCodeAdapter(
+            real=True, host_pool=pool, trace_root=tmp_path / "trace", extra_env={},
+        )
+        adapter._probe_db = db_bytes
+        return adapter
+
+    def test_collect_writes_wiretap_events(self, tmp_path):
+        adapter = self._adapter(tmp_path)
+        cid = adapter.start_instance("img", tmp_path, "rw", None, "main", "run-r1")
+        (c,) = adapter.host_pool._c.created
+        c.db_bytes = adapter._probe_db  # 容器内的 opencode.db
+        inst = InstanceHandle(
+            instance_id="i", sut_id="x", run_id="run-r1", host="main",
+            container_id=cid, config_dir=Path("."), carrier="opencode")
+        handle = adapter.submit_task(inst, "task")
+        adapter.collect_result(handle, 30)
+        wt = tmp_path / "trace" / "run-r1" / "wiretap" / "run-r1.ndjson"
+        assert wt.exists()
+        content = wt.read_text(encoding="utf-8")
+        assert '"tool_call"' in content and '"display version"' in content
+        assert '"tool_result"' in content
+        assert '"llm_request"' in content and '"estimated": false' in content

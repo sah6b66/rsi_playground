@@ -355,3 +355,32 @@ class TestRunsSeeded:
         assert resp.status_code == 202
         assert resp.json()["status"] == "judging"
         assert any(e.action == "run.rejudge" for e in services["audit_log"].entries)
+
+@pytest.mark.asyncio
+async def test_run_stdout_endpoint(services, monkeypatch, tmp_path):
+    """F1/C1: GET /runs/{id}/stdout 返回 artifacts 里的回答全文."""
+    app = create_app(services)
+    app.state.stores["runs"]["run-1"] = {
+        "id": "run-1", "batch_id": "b", "task_id": "t", "status": "done"}
+    from types import SimpleNamespace
+
+    app.state.services["settings"] = SimpleNamespace(
+        artifacts_dir=tmp_path / "artifacts")
+    from rsi.orchestrator.batch import persist_stdout
+
+    persist_stdout("run-1", "hello stdout", tmp_path / "artifacts")
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        headers = await admin_headers(client)
+        resp = await client.get("/api/v1/runs/run-1/stdout", headers=headers)
+        assert resp.status_code == 200
+        assert "hello stdout" in resp.text
+
+        resp = await client.get("/api/v1/runs/run-none/stdout", headers=headers)
+        assert resp.status_code == 404
+
+        resp = await client.get("/api/v1/runs/run-1/stdout", headers=headers)
+        # 第二次：artifact 存在但 run 不存在 -> 404（_get_anywhere 先挡）
+        resp = await client.get("/api/v1/runs/run-404/stdout", headers=headers)
+        assert resp.status_code == 404

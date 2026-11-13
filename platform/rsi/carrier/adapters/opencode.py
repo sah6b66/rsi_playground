@@ -187,23 +187,61 @@ class OpenCodeAdapter(CarrierAdapter):
         return handle.stdout
 
     def _pull_trace(self, container: Any, run_id: str) -> None:
-        """远端模式：exec 后回收容器 /trace/wiretap 到本地 trace_root/<run_id>."""
+        """远端模式：exec 后回收容器 trace（wiretap + opencode 会话库）.
+
+        F1/A1：opencode 1.19.5 无 prompt-logger 插件，agent 行为证据在
+        ``~/.local/share/opencode/opencode.db``——回收并转换为 native
+        TraceEvent 行写入 ``wiretap/<run_id>.ndjson``，走既有 tail 摄取。
+        """
         if not (self.trace_root and self._remote_run(run_id)):
             return
         target = self.trace_root / run_id
+        target.mkdir(parents=True, exist_ok=True)
+        import io
+        import tarfile
+
         try:
             stream, _stat = container.get_archive("/trace/wiretap")
             data = b"".join(stream)
-            import io
-            import tarfile
-
-            target.mkdir(parents=True, exist_ok=True)
             with tarfile.open(fileobj=io.BytesIO(data)) as tf:
+                # 成员已带 wiretap/ 前缀——解到 target 即 target/wiretap/*
                 tf.extractall(target, filter="data")
             logger.debug("opencode.trace_pulled", run_id=run_id, target=str(target))
         except Exception as exc:  # noqa: BLE001 - trace 回收失败不阻断结果
             logger.warning(
                 "opencode.trace_pull_failed", run_id=run_id, error=str(exc)
+            )
+        # 会话存档 → 事件行（A1 证据链）
+        try:
+            from rsi.carrier.opencode_archive import (
+                OPENCODE_DB_PATH,
+                session_archive_to_event_lines,
+            )
+
+            stream, _stat = container.get_archive(OPENCODE_DB_PATH)
+            db_bytes = b"".join(stream)
+            with tarfile.open(fileobj=io.BytesIO(db_bytes)) as tf:
+                member = next(
+                    (m for m in tf.getmembers() if m.name.endswith("opencode.db")),
+                    None,
+                )
+                payload = (
+                    tf.extractfile(member).read() if member is not None else b""
+                )
+            lines = session_archive_to_event_lines(payload, run_id)
+            if lines:
+                wt = target / "wiretap" / f"{run_id}.ndjson"
+                wt.parent.mkdir(parents=True, exist_ok=True)
+                with wt.open("a", encoding="utf-8") as fh:
+                    fh.write("\n".join(lines) + "\n")
+                logger.info(
+                    "opencode.session_archive_events",
+                    run_id=run_id,
+                    lines=len(lines),
+                )
+        except Exception as exc:  # noqa: BLE001 - 存档转换失败不阻断结果
+            logger.warning(
+                "opencode.session_archive_failed", run_id=run_id, error=str(exc)
             )
 
     @staticmethod

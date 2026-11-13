@@ -87,6 +87,24 @@ def _cred_payload(resolved: Any) -> dict[str, Any] | None:
     return payload
 
 
+def persist_stdout(run_id: str, stdout: str | None, artifacts_root) -> "Path | None":
+    """F1/C1: SUT 回答全文落 artifacts/<run_id>/stdout.txt（判分复核依据）.
+
+    空输出/写失败均 no-op——留证不得阻断主流程。返回文件路径或 None。
+    """
+    if not (stdout or "").strip():
+        return None
+    try:
+        out_dir = Path(artifacts_root) / run_id
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / "stdout.txt"
+        path.write_text(stdout, encoding="utf-8")
+        return path
+    except OSError as exc:
+        logger.warning("run.stdout_persist_failed", run_id=run_id, error=str(exc))
+        return None
+
+
 def _utcnow_iso() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
 
@@ -922,6 +940,12 @@ class BatchRunner:
                 result = await asyncio.to_thread(
                     self.carrier.collect, handle, self.task_timeout_s
                 )
+                # F1/C1: 回答全文留证（判分复核/排障），失败不阻断
+                if self.settings is not None:
+                    persist_stdout(
+                        run_id, getattr(handle, "stdout", None),
+                        self.settings.artifacts_dir,
+                    )
                 # F2 crash classification: a carrier that surfaces the container
                 # exit code (137=OOM / 139=segfault) marks the run infra-crashed
                 # regardless of stdout; FINAL_JSON is meaningless then. Carriers

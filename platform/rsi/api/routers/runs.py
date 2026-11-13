@@ -64,6 +64,32 @@ async def get_run(
     return RunOut(**_get_anywhere(request, store, run_id))
 
 
+@router.get("/{run_id}/stdout")
+async def get_run_stdout(
+    run_id: str,
+    request: Request,
+    user: Claims = Depends(get_current_user),
+    store: dict = Depends(get_store("runs")),
+) -> Response:
+    """F1/C1: run 的 SUT 回答全文（artifacts/<run_id>/stdout.txt）."""
+    _get_anywhere(request, store, run_id)
+    settings = request.app.state.services.get("settings")
+    path = (
+        settings.artifacts_dir / run_id / "stdout.txt"
+        if settings is not None
+        else None
+    )
+    if path is None or not path.is_file():
+        raise NotFoundError(
+            f"stdout artifact for run {run_id!r} not found",
+            context={"run_id": run_id},
+        )
+    return Response(
+        content=path.read_text(encoding="utf-8", errors="replace"),
+        media_type="text/plain; charset=utf-8",
+    )
+
+
 @router.get("/{run_id}/traces", response_model=TracePage)
 async def list_traces(
     run_id: str,
