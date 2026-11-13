@@ -49,8 +49,11 @@ class VendorProfile(BaseModel):           # vendor.py SSOT（借鉴 nl2cli Vendo
     enter_config: str                     # vrp: "system-view"; ios: "configure terminal"
     exit_config: str                      # "return" / "end"
     save_config: tuple[str, ...]          # vrp: ("save","y")
+    config_prompt_pattern: str            # D2（S11 CE6800 实测沉淀）：配置视图提示符正则；VRP5/VRP8 `\[~?name(/sub)?\]`（~ = 未提交标记，commit 后消失；接口子视图含 /）
+    user_prompt_pattern: str              # 用户视图提示符正则；VRP `<name>`；ios `name#`
+    two_phase_commit: bool                # CE/VRP8 两阶段提交（exit_config 前须显式 commit，否则 return 触发 Y/N/C 交互挂死）；ce=True、vrp/ios=False
 
-VENDOR_MAP: dict[str, VendorProfile] = {"vrp": …, "ce": …, "ios": …}
+VENDOR_MAP: dict[str, VendorProfile] = {"vrp": …, "ce": …, "ios": …}   # ce 独立 profile（同 vrp 命令面 + two_phase_commit=True）；设备 type 取值即键
 
 class SessionKey(NamedTuple):             # v1.1（ADR-24）
     ip: str; port: int                    # 池键=(IP,端口)——全局唯一（不同沙箱同名设备端点不同）

@@ -28,6 +28,13 @@ class VendorProfile(BaseModel):
     enter_config: str
     exit_config: str
     save_config: tuple[str, ...] = Field(default_factory=tuple)
+    # 配置视图提示符正则：VRP5/VRP8 形如 [~?]name[/sub]（~ = 未提交标记，
+    # commit 后消失；接口子视图含 /）。user 视图 <name>。
+    config_prompt_pattern: str = r"\[~?[A-Za-z0-9._/*-]+\]"
+    user_prompt_pattern: str = r"<[A-Za-z0-9._/-]+>"
+    # CE/VRP8 两阶段提交：exit_config 前必须显式 commit，否则 return 触发
+    # Y/N/C 交互挂死；S 系 vrp 单阶段（立即生效）不开。
+    two_phase_commit: bool = False
 
 
 _HUAWEI = VendorProfile(
@@ -39,6 +46,8 @@ _HUAWEI = VendorProfile(
     save_config=("save", "y"),
 )
 
+_CE = _HUAWEI.model_copy(update={"two_phase_commit": True})
+
 _CISCO = VendorProfile(
     netmiko_device_type="cisco_ios",
     error_patterns=_ERROR_PATTERNS_COMMON,
@@ -46,10 +55,12 @@ _CISCO = VendorProfile(
     enter_config="configure terminal",
     exit_config="end",
     save_config=("write memory",),
+    config_prompt_pattern=r"[A-Za-z0-9._-]+\(config[^)]*\)#",
+    user_prompt_pattern=r"[A-Za-z0-9._-]+#",
 )
 
 VENDOR_MAP: dict[str, VendorProfile] = {
     "vrp": _HUAWEI,
-    "ce": _HUAWEI,  # ce 复用 vrp 配置（P0 收敛，DD-04 §3）
+    "ce": _CE,  # CE/VRP8：同 vrp 命令面 + 两阶段提交（D2，S11 CE6800 实测）
     "ios": _CISCO,
 }

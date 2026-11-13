@@ -163,7 +163,8 @@ class _ConfigConn:
 def test_exec_config_ce_two_phase_commit_sequence(monkeypatch):
     """E2 实测（CE6800 YunShan）：send_config_set 因 [~Leaf-01-GE1/0/1]
     （含斜杠/波浪号）提示符与两阶段提交（return 触发 Y/N/C 交互）确定性
-    失败——exec_config 必须显式 expect 串行 + commit。"""
+    失败——exec_config 必须显式 expect 串行 + commit（D2：行为由
+    VendorProfile.two_phase_commit 驱动，ce=True）。"""
     import asyncio
 
     import netmiko
@@ -175,13 +176,56 @@ def test_exec_config_ce_two_phase_commit_sequence(monkeypatch):
     from rsi.sandbox.vendor import VENDOR_MAP
 
     s = netmiko_session_factory(
-        SessionKey("1.2.3.4", 22, "l"), VENDOR_MAP["vrp"],
+        SessionKey("1.2.3.4", 22, "l"), VENDOR_MAP["ce"],
         SshAccess(ip="1.2.3.4", username="u", password="p"),
     )
     result = asyncio.run(s.exec_config(["interface GE1/0/1", "shutdown"]))
     assert result.ok, result.matched_errors
     seq = [c for c, _ in s._conn.sent]
     assert seq == ["system-view", "interface GE1/0/1", "shutdown", "commit", "return"]
+    # expect 串来自 VendorProfile 而非硬编码
+    expects = [e for _, e in s._conn.sent]
+    assert expects[0] == VENDOR_MAP["ce"].config_prompt_pattern
+    assert expects[-1] == VENDOR_MAP["ce"].user_prompt_pattern
+
+
+def test_exec_config_vrp_single_phase_no_commit(monkeypatch):
+    """D2：vrp（S 系单阶段配置，立即生效）exec_config 不插 commit——
+    S 系 system 视图无 commit 命令，盲发会命中错误模式。"""
+    import asyncio
+
+    import netmiko
+
+    monkeypatch.setattr(netmiko, "ConnectHandler", _ConfigConn)
+    from rsi.core.models import SshAccess
+    from rsi.sandbox.netmiko_session import netmiko_session_factory
+    from rsi.sandbox.sshpool import SessionKey
+    from rsi.sandbox.vendor import VENDOR_MAP
+
+    s = netmiko_session_factory(
+        SessionKey("2.3.4.5", 22, "l"), VENDOR_MAP["vrp"],
+        SshAccess(ip="2.3.4.5", username="u", password="p"),
+    )
+    result = asyncio.run(s.exec_config(["interface GE1/0/2", "undo shutdown"]))
+    assert result.ok, result.matched_errors
+    seq = [c for c, _ in s._conn.sent]
+    assert seq == ["system-view", "interface GE1/0/2", "undo shutdown", "return"]
+
+
+def test_vendor_profile_prompt_and_commit_fields():
+    """D2：提示符正则/两阶段 commit 沉淀为 VendorProfile 字段（SSOT），
+    供其他 VRP 型号复用——不再散落 netmiko_session 硬编码。"""
+    import re
+
+    ce, vrp = VENDOR_MAP["ce"], VENDOR_MAP["vrp"]
+    assert ce.two_phase_commit is True
+    assert vrp.two_phase_commit is False
+    # CE/VRP8 配置提示符含 ~（未提交态）与 /（接口子视图）；commit 后 ~ 消失
+    for prompt in ("[~Leaf-01]", "[~Leaf-01-GE1/0/1]", "[Leaf-01]"):
+        assert re.search(ce.config_prompt_pattern, prompt), prompt
+    assert re.search(vrp.config_prompt_pattern, "[Leaf-01]")
+    assert re.search(ce.user_prompt_pattern, "<Leaf-01>")
+    assert ce.enter_config == "system-view" and ce.exit_config == "return"
 
 
 class _PagingConn(_ConfigConn):

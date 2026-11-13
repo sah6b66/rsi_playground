@@ -108,30 +108,40 @@ class NetmikoDeviceSession(DeviceSession):
                 pass
 
     def _exec_config_sync(self, lines: list[str]) -> str:
-        """配置批：显式 expect 串行 + 两阶段 commit（CE6800 YunShan 实测）。
+        """配置批：显式 expect 串行，commit 行为由 VendorProfile 驱动（D2）。
 
         netmiko huawei 驱动的 send_config_set 在 CE 上确定性失败：配置视图
         提示符形如 ``[~Leaf-01]`` / 接口子视图 ``[~Leaf-01-GE1/0/1]``（含
         ~ 与 /），且未 commit 时 ``return`` 触发 Y/N/C 交互提示。逐条
-        ``send_command(expect_string=...)`` + 末尾 ``commit`` 是唯一稳定形态。
+        ``send_command(expect_string=...)`` 是唯一稳定形态；末尾是否补
+        ``commit`` 由 profile.two_phase_commit 决定（CE/VRP8 开，S 系关）。
         """
         conn = self._connect()
-        cfg_prompt = r"\[~?[A-Za-z0-9._/*-]+\]"
-        user_prompt = r"<[A-Za-z0-9._/-]+>"
+        v = self.vendor
         parts = [
             conn.send_command(
-                "system-view", expect_string=cfg_prompt, read_timeout=20
+                v.enter_config, expect_string=v.config_prompt_pattern,
+                read_timeout=20,
             )
         ]
         for line in lines:
             parts.append(
-                conn.send_command(line, expect_string=cfg_prompt, read_timeout=20)
+                conn.send_command(
+                    line, expect_string=v.config_prompt_pattern, read_timeout=20
+                )
+            )
+        if v.two_phase_commit:
+            parts.append(
+                conn.send_command(
+                    "commit", expect_string=v.config_prompt_pattern,
+                    read_timeout=30,
+                )
             )
         parts.append(
-            conn.send_command("commit", expect_string=cfg_prompt, read_timeout=30)
-        )
-        parts.append(
-            conn.send_command("return", expect_string=user_prompt, read_timeout=20)
+            conn.send_command(
+                v.exit_config, expect_string=v.user_prompt_pattern,
+                read_timeout=20,
+            )
         )
         return "\n".join(str(p) for p in parts)
 

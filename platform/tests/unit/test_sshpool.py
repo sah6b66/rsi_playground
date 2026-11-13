@@ -15,8 +15,15 @@ class TestVendorMap:
     def test_covers_p0_vendors(self):
         assert set(VENDOR_MAP) == {"vrp", "ce", "ios"}
 
-    def test_ce_alias_same_object_as_vrp(self):
-        assert VENDOR_MAP["ce"] is VENDOR_MAP["vrp"]
+    def test_ce_independent_profile_with_two_phase_commit(self):
+        # D2：ce 不再别名 vrp——同命令面但独立 profile（two_phase_commit=True）
+        ce, vrp = VENDOR_MAP["ce"], VENDOR_MAP["vrp"]
+        assert ce is not vrp
+        assert ce.netmiko_device_type == vrp.netmiko_device_type
+        assert ce.enter_config == vrp.enter_config
+        assert ce.reset_cmd == vrp.reset_cmd
+        assert ce.two_phase_commit is True
+        assert vrp.two_phase_commit is False
 
     def test_huawei_profile(self):
         p = VENDOR_MAP["vrp"]
