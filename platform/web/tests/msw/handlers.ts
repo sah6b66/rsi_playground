@@ -111,7 +111,10 @@ const baseEvalsets = (): EvalsetFixture[] => [
     id: 'eval-0001',
     name: 'netops-bgp-triage',
     purpose: 'iterate',
-    tasks: [{ id: 't-001' }, { id: 't-002' }],
+    tasks: [
+      { task_id: 't-001', title: 'BGP 邻居中断定位' },
+      { task_id: 't-002', title: '接口状态巡检' },
+    ],
     description: '',
     frozen: true,
     version: 1,
@@ -696,7 +699,10 @@ export const resourcesHandlers = [
       id,
       name: body.new_name ?? 'cloned',
       purpose: 'iterate',
-      tasks: [{ id: 't-001' }, { id: 't-002' }],
+      tasks: [
+      { task_id: 't-001', title: 'BGP 邻居中断定位' },
+      { task_id: 't-002', title: '接口状态巡检' },
+    ],
       description: 'cloned',
       frozen: false,
       version: 1,

@@ -120,8 +120,9 @@ export function EvalsetDetailPage() {
           pagination={false}
           dataSource={es.tasks.map((t, i) => ({
             idx: i + 1,
-            id: (t as { id?: string }).id,
-            title: (t as { prompt?: string }).prompt,
+            // 后端 tasks 是 TaskRecord 形状：task_id / title（无 id/prompt 顶层键）
+            id: (t as { task_id?: string }).task_id,
+            title: (t as { title?: string }).title,
           }))}
           columns={[
             { title: '序号', dataIndex: 'idx', width: 70 },
