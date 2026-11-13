@@ -10,6 +10,7 @@ from __future__ import annotations
 import functools
 import inspect
 import json
+import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -88,6 +89,9 @@ class AuditEntry(BaseModel):
     detail: dict[str, Any] = Field(default_factory=dict)
 
 
+LOGIN_THROTTLE_S = 600  # user.login 每 actor 10 分钟记一条
+
+
 class AuditLog:
     """Audit trail: in-memory list (P0), plus optional ``audit_log`` table.
 
@@ -108,6 +112,8 @@ class AuditLog:
         self.entries: list[AuditEntry] = []
         self._session = session
         self._session_factory = session_factory
+        # F4/W10：user.login 每 actor 节流窗（S11 实测轮询脚本 4 万条灌水）
+        self._login_last: dict[str, float] = {}
 
     def record(
         self,
@@ -117,6 +123,8 @@ class AuditLog:
         object_id: str,
         detail: dict[str, Any] | None = None,
     ) -> None:
+        if action == "user.login" and self._login_throttled(actor):
+            return
         entry = AuditEntry(
             ts=datetime.now(timezone.utc).isoformat(),
             actor=actor,
@@ -156,6 +164,15 @@ class AuditLog:
                 logger.warning(
                     "audit.db_write_failed", action=action, error=str(exc)
                 )
+
+    def _login_throttled(self, actor: str) -> bool:
+        """True=丢弃（窗口内重复登录）。首登/过期/异常一律记录."""
+        now = time.monotonic()
+        last = self._login_last.get(actor)
+        if last is not None and now - last < LOGIN_THROTTLE_S:
+            return True
+        self._login_last[actor] = now
+        return False
 
     def audited(
         self,

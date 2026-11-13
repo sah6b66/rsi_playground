@@ -382,6 +382,7 @@ async def freeze_status(
 @router.get("/system/logs", response_model=LogPage)
 async def query_logs(
     response: Response,
+    request: Request,
     cursor: str | None = None,
     limit: int = DEFAULT_LIMIT,
     level: str | None = None,
@@ -392,6 +393,35 @@ async def query_logs(
         "logs",
         [{"ts": "2026-01-01T00:00:00Z", "level": "INFO", "message": "boot"}],
     )
+    # F4/W9：优先读 <RSI_HOME>/logs 真实文件（app.jsonl 尾部）；内存兜底
+    import json as _json
+
+    settings = request.app.state.services.get("settings")
+    logs_dir = getattr(settings, "logs_dir", None)
+    file_logs: list[dict] = []
+    if logs_dir is not None:
+        f = logs_dir / "app.jsonl"
+        try:
+            lines = f.read_text(encoding="utf-8", errors="replace").splitlines()
+            for line in lines[-500:]:
+                try:
+                    obj = _json.loads(line)
+                except _json.JSONDecodeError:
+                    continue
+                file_logs.append({
+                    "ts": str(obj.get("timestamp", "")),
+                    "level": str(obj.get("level", "info")).upper(),
+                    "message": str(obj.get("event", "")),
+                    "logger": obj.get("logger"),
+                    "detail": {
+                        k: v for k, v in obj.items()
+                        if k not in ("timestamp", "level", "event", "logger")
+                    },
+                })
+        except OSError:
+            pass
+    if file_logs:
+        logs = list(reversed(file_logs))  # 最新在前
     if level is not None:
         logs = [e for e in logs if e["level"].lower() == level.lower()]
     items, page = paginate(logs, cursor, limit)

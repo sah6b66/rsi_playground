@@ -62,6 +62,9 @@ def run_init(
             except Exception:  # noqa: BLE001 - invalid/rehashed -> not ours
                 effective = False
     finally:
+        pruned = _prune_login_audit(engine)
+        if pruned:
+            print(f"✓ 登录审计瘦身: 清理 {pruned} 条 user.login 历史行（W10）")
         engine.dispose()
 
     git_store = GitStore(
@@ -126,6 +129,23 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(f"✓ Git 裸仓已就绪: {rep['git_repo_path']}")
     return 0
+
+
+def _prune_login_audit(engine) -> int:
+    """F4/W10：user.login 审计只保留最近 200 行（历史灌水体量治理）。"""
+    from sqlalchemy import text as _text
+
+    try:
+        with engine.connect() as conn:
+            res = conn.execute(_text(
+                "DELETE FROM audit_log WHERE action='user.login' AND id <= ("
+                " SELECT MIN(id) FROM ("
+                "  SELECT id FROM audit_log WHERE action='user.login'"
+                "  ORDER BY id DESC LIMIT 200))"))
+            conn.commit()
+            return res.rowcount or 0
+    except Exception:  # noqa: BLE001 - 清理尽力而为
+        return 0
 
 
 if __name__ == "__main__":

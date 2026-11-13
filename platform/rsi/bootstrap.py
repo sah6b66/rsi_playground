@@ -169,6 +169,13 @@ def build_services(
 ) -> dict[str, Any]:
     """Composition root: Settings -> full service dict for ``create_app``."""
     settings = settings or Settings()
+    # F4/W9：结构化日志双写 <RSI_HOME>/logs（app.jsonl + error.jsonl 轮转）
+    from rsi.log import configure_logging
+
+    configure_logging(
+        level=str(os.environ.get("RSI_LOG_LEVEL", "info")),
+        logs_dir=settings.logs_dir,
+    )
 
     # -- DB --------------------------------------------------------------
     engine = None
