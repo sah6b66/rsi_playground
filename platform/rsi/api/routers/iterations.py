@@ -150,6 +150,7 @@ def _out(it: dict) -> IterationOut:
 @audit.audited("iteration.create", object_type="iteration")
 async def create_iteration(
     body: IterationCreate,
+    request: Request,
     user: Claims = Depends(require_perms("iteration:manage")),
     store: dict = Depends(get_store("iterations")),
     suts: dict = Depends(get_store("suts")),
@@ -214,6 +215,9 @@ async def create_iteration(
         "created_at": _now(),
     }
     store[it["id"]] = it
+    from rsi.api.object_store import persist_record
+
+    persist_record(request.app.state.services, "iterations", it)
     return {"iteration_id": it["id"]}
 
 
@@ -429,6 +433,7 @@ def _transition(it: dict, action: str) -> None:
 @router.post("/{iteration_id}:pause", response_model=IterationOut)
 @audit.audited("iteration.pause", object_type="iteration")
 async def pause_iteration(
+    request: Request,
     iteration_id: str,
     user: Claims = Depends(require_perms("iteration:manage")),
     store: dict = Depends(get_store("iterations")),
@@ -455,6 +460,7 @@ async def pause_iteration(
 @router.post("/{iteration_id}:resume", response_model=IterationOut)
 @audit.audited("iteration.resume", object_type="iteration")
 async def resume_iteration(
+    request: Request,
     iteration_id: str,
     user: Claims = Depends(require_perms("iteration:manage")),
     store: dict = Depends(get_store("iterations")),
@@ -473,6 +479,7 @@ async def resume_iteration(
 @router.post("/{iteration_id}:abort", response_model=IterationOut)
 @audit.audited("iteration.abort", object_type="iteration")
 async def abort_iteration(
+    request: Request,
     iteration_id: str,
     user: Claims = Depends(require_perms("iteration:manage")),
     store: dict = Depends(get_store("iterations")),
@@ -488,6 +495,7 @@ async def abort_iteration(
 @audit.audited("iteration.archive", object_type="iteration")
 async def delete_iteration(
     iteration_id: str,
+    request: Request,
     user: Claims = Depends(require_perms("iteration:manage")),
     store: dict = Depends(get_store("iterations")),
 ) -> Response:
@@ -495,6 +503,9 @@ async def delete_iteration(
     it["archived"] = True
     it["state"] = IterationState.ARCHIVED.value
     it["paused_from"] = None
+    from rsi.api.object_store import persist_record
+
+    persist_record(request.app.state.services, "iterations", it)
     return Response(status_code=204)
 
 
@@ -546,6 +557,7 @@ def _gate_router(name: str, required_step: str, next_step: str):
     async def gate(
         iteration_id: str,
         body: GateBody,
+        request: Request,
         user: Claims = Depends(require_perms("approval:decide")),
         store: dict = Depends(get_store("iterations")),
         hypotheses: dict = Depends(get_store("hypotheses")),
@@ -605,6 +617,9 @@ def _gate_router(name: str, required_step: str, next_step: str):
             {"gate": name, "step": required_step, "by": str(user.sub),
              "at": _now()}
         )
+        from rsi.api.object_store import persist_record as _persist_it
+
+        _persist_it(request.app.state.services, "iterations", it)
         if name == "hypothesis":
             # 人工门②（§9.12）：写 hypotheses.iteration_id 并推进状态机，
             # 响应 201 + {"hypothesis_id": ...}

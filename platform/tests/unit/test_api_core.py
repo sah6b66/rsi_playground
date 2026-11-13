@@ -514,3 +514,26 @@ async def test_dashboard_aggregates_real_runs(services):
 
         resp = await client.get("/api/v1/dashboard/defect-dist", headers=headers)
         assert resp.json() == {"a": {}, "b": {}}
+
+
+@pytest.mark.asyncio
+async def test_object_store_restart_survival(services, tmp_path):
+    """F3/B1：API 建 SUT → 模拟重启（空 stores + 水合）→ SUT 仍在。"""
+    from types import SimpleNamespace
+
+    from rsi.api.object_store import hydrate_object_stores
+
+    settings_stub = SimpleNamespace(home=tmp_path, model_dump=dict)
+    services["settings"] = settings_stub
+    app = create_app(services)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        headers = await admin_headers(client)
+        sut = await make_sut(client, headers, name="survivor")
+    f = tmp_path / "storage" / "object-store" / "suts" / f"{sut['id']}.json"
+    assert f.is_file()
+
+    fresh_stores = {"suts": {}, "evalsets": {}, "iterations": {}}
+    hydrate_object_stores(fresh_stores, tmp_path / "storage" / "object-store")
+    assert fresh_stores["suts"][sut["id"]]["name"] == "survivor"

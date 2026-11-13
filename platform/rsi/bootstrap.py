@@ -557,6 +557,11 @@ def build_services(
         event_bus=event_bus,
     )
     services["health_monitor"] = health_monitor
+    # F3/B1：对象文件库水合——suts/evalsets/iterations 等重启不丢
+    # （S11 实测：内存 store 重启清空，每次须重跑 provision）。
+    from rsi.api.object_store import hydrate_object_stores
+
+    hydrate_object_stores(stores, settings.home / "storage" / "object-store")
 
     logger.info(
         "bootstrap.assembled",

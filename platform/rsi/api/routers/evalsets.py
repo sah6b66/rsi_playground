@@ -171,6 +171,7 @@ async def list_evalsets(
 @router.post("", response_model=EvalsetOut, status_code=201)
 @audit.audited("evalset.create", object_type="evalset")
 async def create_evalset(
+    request: Request,
     body: EvalsetCreate,
     user: Claims = Depends(require_perms("evalset:manage")),
     store: dict = Depends(get_store("evalsets")),
@@ -191,6 +192,9 @@ async def create_evalset(
         "versions": [],
     }
     store[es["id"]] = es
+    from rsi.api.object_store import persist_record
+
+    persist_record(request.app.state.services, "evalsets", es)
     return _out(es)
 
 
@@ -271,12 +275,16 @@ async def update_evalset(
 @router.delete("/{evalset_id}", status_code=204)
 @audit.audited("evalset.delete", object_type="evalset")
 async def delete_evalset(
+    request: Request,
     evalset_id: str,
     user: Claims = Depends(require_perms("evalset:manage")),
     store: dict = Depends(get_store("evalsets")),
 ) -> Response:
     _get(store, evalset_id)
     del store[evalset_id]
+    from rsi.api.object_store import delete_record
+
+    delete_record(request.app.state.services, "evalsets", evalset_id)
     return Response(status_code=204)
 
 
@@ -387,6 +395,7 @@ async def export_evalset(
 @router.post(":import", response_model=EvalsetOut, status_code=201)
 @audit.audited("evalset.import", object_type="evalset")
 async def import_evalset(
+    request: Request,
     file: UploadFile = File(...),
     name: str = Form(""),
     user: Claims = Depends(require_perms("evalset:manage")),
@@ -438,6 +447,9 @@ async def import_evalset(
         "versions": [],
     }
     store[es["id"]] = es
+    from rsi.api.object_store import persist_record
+
+    persist_record(request.app.state.services, "evalsets", es)
     return _out(es)
 
 
@@ -467,6 +479,7 @@ class CloneBody(BaseModel):
 @router.post("/{evalset_id}:clone", response_model=EvalsetOut, status_code=201)
 @audit.audited("evalset.clone", object_type="evalset")
 async def clone_evalset(
+    request: Request,
     evalset_id: str,
     body: CloneBody,
     user: Claims = Depends(require_perms("evalset:manage")),
@@ -513,4 +526,7 @@ async def clone_evalset(
     if body.overrides.site_name:
         es["overrides"] = {"site_name": body.overrides.site_name}
     store[es["id"]] = es
+    from rsi.api.object_store import persist_record
+
+    persist_record(request.app.state.services, "evalsets", es)
     return _out(es)

@@ -125,6 +125,7 @@ async def list_suts(
 @audit.audited("sut.create", object_type="sut")
 async def create_sut(
     body: SutCreate,
+    request: Request,
     user: Claims = Depends(require_perms("sut:manage")),
     store: dict = Depends(get_store("suts")),
 ) -> SutOut:
@@ -144,6 +145,9 @@ async def create_sut(
         "optimization_scope": _validate_scope(sut_id, body.optimization_scope),
     }
     store[sut["id"]] = sut
+    from rsi.api.object_store import persist_record
+
+    persist_record(request.app.state.services, "suts", sut)
     return SutOut(**sut)
 
 
@@ -161,12 +165,16 @@ async def get_sut(
 async def update_sut(
     sut_id: str,
     body: SutUpdate,
+    request: Request,
     user: Claims = Depends(require_perms("sut:manage")),
     store: dict = Depends(get_store("suts")),
 ) -> SutOut:
     sut = _get(store, sut_id)
     updates = body.model_dump(exclude_unset=True)
     sut.update(updates)
+    from rsi.api.object_store import persist_record
+
+    persist_record(request.app.state.services, "suts", sut)
     return SutOut(**sut)
 
 
@@ -175,6 +183,7 @@ async def update_sut(
 async def update_sut_scope(
     sut_id: str,
     body: SutScopeUpdate,
+    request: Request,
     user: Claims = Depends(require_perms("sut:manage")),
     store: dict = Depends(get_store("suts")),
 ) -> SutOut:
@@ -187,6 +196,9 @@ async def update_sut_scope(
     """
     sut = _get(store, sut_id)
     sut["optimization_scope"] = _validate_scope(sut_id, body.optimization_scope)
+    from rsi.api.object_store import persist_record
+
+    persist_record(request.app.state.services, "suts", sut)
     return SutOut(**sut)
 
 
@@ -194,11 +206,15 @@ async def update_sut_scope(
 @audit.audited("sut.delete", object_type="sut")
 async def delete_sut(
     sut_id: str,
+    request: Request,
     user: Claims = Depends(require_perms("sut:manage")),
     store: dict = Depends(get_store("suts")),
 ) -> Response:
     _get(store, sut_id)
     del store[sut_id]
+    from rsi.api.object_store import delete_record
+
+    delete_record(request.app.state.services, "suts", sut_id)
     return Response(status_code=204)
 
 
