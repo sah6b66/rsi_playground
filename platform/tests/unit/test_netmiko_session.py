@@ -209,3 +209,53 @@ def test_connect_disables_paging(monkeypatch):
     )
     asyncio.run(s.exec_cli("display version"))
     assert s._conn.paging_disabled is True
+
+
+class _StallConn:
+    """首次 send_command 卡死（ReadTimeout 形态），重连后成功."""
+
+    calls = 0
+
+    def __init__(self, *a, **kw):
+        self.commands = []
+
+    def send_command(self, cli, **kw):
+        from netmiko.exceptions import ReadTimeout
+
+        _StallConn.calls += 1
+        if _StallConn.calls == 1:
+            raise ReadTimeout("Pattern not detected: '>' in output.")
+        return f"OK<{cli}>"
+
+    def disable_paging(self, **kw):
+        return ""
+
+    def is_alive(self):
+        return True
+
+    def disconnect(self):
+        pass
+
+
+def test_send_retries_once_after_stall(monkeypatch):
+    """E2 实测：agent 容器大量 SSH 后设备 VTY 瞬时劣化——首读超时须
+    重连重试一次。"""
+    import asyncio
+
+    import netmiko
+
+    monkeypatch.setattr(netmiko, "ConnectHandler", _StallConn)
+    monkeypatch.setattr("rsi.sandbox.netmiko_session._sleep", lambda s: None)
+    from rsi.core.models import SshAccess
+    from rsi.sandbox.netmiko_session import netmiko_session_factory
+    from rsi.sandbox.sshpool import SessionKey
+    from rsi.sandbox.vendor import VENDOR_MAP
+
+    _StallConn.calls = 0
+    s = netmiko_session_factory(
+        SessionKey("9.9.9.9", 22, "l3"), VENDOR_MAP["vrp"],
+        SshAccess(ip="9.9.9.9", username="u", password="p"),
+    )
+    out = asyncio.run(s.exec_cli("display version"))
+    assert out.ok and out.output == "OK<display version>"
+    assert _StallConn.calls == 2

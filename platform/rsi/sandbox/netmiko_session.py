@@ -84,8 +84,28 @@ class NetmikoDeviceSession(DeviceSession):
         raise last_exc  # type: ignore[misc]
 
     def _send_sync(self, cli: str, read_timeout_s: int) -> str:
-        conn = self._connect()
-        return str(conn.send_command(cli, read_timeout=max(read_timeout_s, 10)))
+        try:
+            conn = self._connect()
+            return str(conn.send_command(cli, read_timeout=max(read_timeout_s, 10)))
+        except Exception as exc:  # noqa: BLE001 - E2 实测：瞬时劣化（VTY 滞留等）
+            logger.warning(
+                "netmiko.send_retry",
+                device=self._access.ip,
+                cli=cli[:60],
+                error=str(exc)[:120],
+            )
+            self._force_disconnect()
+            _sleep(_RETRY_DELAYS[0])
+            conn = self._connect()
+            return str(conn.send_command(cli, read_timeout=max(read_timeout_s, 10)))
+
+    def _force_disconnect(self) -> None:
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                conn.disconnect()
+            except Exception:  # noqa: BLE001 - 清理尽力而为
+                pass
 
     def _exec_config_sync(self, lines: list[str]) -> str:
         """配置批经 netmiko send_config_set（自动 system-view/return）。
