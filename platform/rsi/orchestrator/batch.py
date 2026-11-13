@@ -1451,7 +1451,7 @@ class BatchRunner:
                 logger.debug("trace_channels.skip_missing", run_id=run_id, path=raw_path)
                 continue
             try:
-                self.collector.tail_ndjson(
+                ingested = self.collector.tail_ndjson(
                     path,
                     run_id,
                     {
@@ -1461,6 +1461,13 @@ class BatchRunner:
                         "run_id": run_id,
                     },
                 )
+                if ingested:
+                    logger.info(
+                        "trace_channels.ingested",
+                        run_id=run_id,
+                        path=str(path),
+                        events=ingested,
+                    )
             except Exception as exc:  # noqa: BLE001 - best effort trace ingest
                 logger.warning(
                     "trace_channels.tail_failed",
