@@ -46,29 +46,117 @@ _DEFAULT_SERIES = [
 ]
 
 
+def _all_batches(request: Request, store: dict) -> list[dict]:
+    """内存批记录 + DB 回退（重启后内存空），按创建时间排序。"""
+    from rsi.api.db_reads import _session_factory
+
+    out: dict[str, dict] = {b["id"]: b for b in store.values()}
+    sf = _session_factory(request)
+    if sf is not None:
+        try:
+            from sqlmodel import select
+
+            from rsi.db.tables import Batch
+
+            with sf() as session:  # type: ignore[misc]
+                for row in session.exec(select(Batch)).all():
+                    out.setdefault(
+                        row.id,
+                        {
+                            "id": row.id,
+                            "evalset_id": row.evalset_id,
+                            "sut_id": row.sut_id,
+                            "purpose": row.purpose,
+                            "status": row.status or "",
+                            "created_at": row.created_at,
+                            "iteration_id": row.iteration_id,
+                        },
+                    )
+        except Exception:  # noqa: BLE001 - 读回退不得 500
+            pass
+    return sorted(out.values(), key=lambda b: b.get("created_at", ""))
+
+
+def _batch_runs(request: Request, runs_store: dict, batch_id: str) -> list[dict]:
+    from rsi.api.db_reads import list_runs_for_batch
+
+    return list_runs_for_batch(request, runs_store, batch_id)
+
+
+def _run_score(run: dict, key: str) -> float | None:
+    result = run.get("result")
+    if not isinstance(result, dict):
+        return None
+    scores = result.get("scores")
+    if not isinstance(scores, dict):
+        return None
+    v = scores.get(key)
+    return float(v) if isinstance(v, (int, float)) else None
+
+
 @router.get("/metrics", response_model=MetricsOut)
 async def metrics(
+    request: Request,
     metric: str = "success_rate",
     sut_id: str | None = None,
     user: Claims = Depends(get_current_user),
     store: dict = Depends(get_store("metrics")),
+    batches: dict = Depends(get_store("batches")),
+    runs: dict = Depends(get_store("runs")),
 ) -> MetricsOut:
-    series = store.get(metric) or [
-        {"ts": ts, "value": v} for ts, v in _DEFAULT_SERIES
-    ]
-    return MetricsOut(metric=metric, series=[SeriesPoint(**p) for p in series])
+    """F2/W1：按批聚合真实 runs（success_rate / root_cause_accuracy）。
+
+    显式写入 metrics store 的序列（测试/运营注入）优先；无批数据时返回
+    空序列（不再回退 demo 假数据）。
+    """
+    if store.get(metric):
+        return MetricsOut(metric=metric, series=[SeriesPoint(**p) for p in store[metric]])
+    key = "task_complete" if metric == "success_rate" else "root_cause_accuracy"
+    series: list[SeriesPoint] = []
+    for batch in _all_batches(request, batches):
+        if sut_id and batch.get("sut_id") != sut_id:
+            continue
+        batch_runs = _batch_runs(request, runs, batch["id"])
+        vals = [v for r in batch_runs if (v := _run_score(r, key)) is not None]
+        if not vals:
+            continue
+        value = (
+            sum(1.0 for v in vals if v >= 1.0) / len(vals)
+            if metric == "success_rate"
+            else sum(vals) / len(vals)
+        )
+        series.append(SeriesPoint(ts=batch.get("created_at", ""), value=value))
+    return MetricsOut(metric=metric, series=series)
 
 
 @router.get("/model-compare", response_model=ModelCompareOut)
 async def model_compare(
+    request: Request,
     user: Claims = Depends(get_current_user),
     store: dict = Depends(get_store("metrics")),
+    batches: dict = Depends(get_store("batches")),
+    runs: dict = Depends(get_store("runs")),
+    suts: dict = Depends(get_store("suts")),
 ) -> ModelCompareOut:
-    items = store.get("model_compare") or [
-        {"model": "glm-4", "sut_id": None, "score": 0.71},
-        {"model": "gpt-x", "sut_id": None, "score": 0.68},
+    if store.get("model_compare"):
+        return ModelCompareOut(items=[ModelScore(**m) for m in store["model_compare"]])
+    agg: dict[str, list[float]] = {}
+    for batch in _all_batches(request, batches):
+        sut = batch.get("sut_id") or ""
+        for run in _batch_runs(request, runs, batch["id"]):
+            v = _run_score(run, "task_complete")
+            if v is not None:
+                agg.setdefault(sut, []).append(v)
+    items = [
+        ModelScore(
+            model=str((suts.get(sut) or {}).get("name") or sut),
+            sut_id=sut or None,
+            score=sum(v) / len(v),
+        )
+        for sut, v in sorted(agg.items())
+        if v
     ]
-    return ModelCompareOut(items=[ModelScore(**m) for m in items])
+    return ModelCompareOut(items=items)
 
 
 @router.get("/defect-dist", response_model=DefectDistOut)
@@ -76,10 +164,7 @@ async def defect_dist(
     user: Claims = Depends(get_current_user),
     store: dict = Depends(get_store("metrics")),
 ) -> DefectDistOut:
-    dist = store.get("defect_dist") or {
-        "a": {"tool_error": 12, "timeout": 5, "hallucination": 3},
-        "b": {"tool_error": 7, "timeout": 6, "hallucination": 1},
-    }
+    dist = store.get("defect_dist") or {"a": {}, "b": {}}
     a = dict(dist.get("a", {}))
     b = dict(dist.get("b", {}))
     return DefectDistOut(a=a, b=b)

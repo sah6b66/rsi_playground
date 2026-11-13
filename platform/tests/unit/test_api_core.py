@@ -384,3 +384,133 @@ async def test_run_stdout_endpoint(services, monkeypatch, tmp_path):
         # 第二次：artifact 存在但 run 不存在 -> 404（_get_anywhere 先挡）
         resp = await client.get("/api/v1/runs/run-404/stdout", headers=headers)
         assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_trace_endpoints_fall_back_to_collector_store(services):
+    """F2/W12：事件在 collector（trace_store），stores['traces'] 为空时
+    traces 端点必须回退读 collector（生产路径唯一真实事件源）。"""
+    from rsi.core.enums import EventType
+    from rsi.core.models import TraceEvent
+    from rsi.tracing.collector import TraceCollector
+    from rsi.tracing.seq import SeqAllocator
+    from rsi.tracing.store import TraceStore
+
+    collector = TraceCollector(SeqAllocator(), None)
+    trace_store = TraceStore(collector)
+    collector.attach_store(trace_store)
+    collector.ingest([
+        TraceEvent(
+            run_id="run-tc", task_id="t", lab_id="l", sut_id="s",
+            seq=0, ts="", event_type=EventType.TOOL_CALL,
+            data={"tool": "bash", "command": "display version"},
+        ),
+        TraceEvent(
+            run_id="run-tc", task_id="t", lab_id="l", sut_id="s",
+            seq=1, ts="", event_type=EventType.TOOL_RESULT,
+            data={"call_id": "c"},
+        ),
+    ])
+    collector.finalize("run-tc")
+    services["trace_store"] = trace_store
+    app = create_app(services)
+    app.state.stores["runs"]["run-tc"] = {
+        "id": "run-tc", "batch_id": "b", "task_id": "t", "status": "done"}
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        headers = await admin_headers(client)
+        resp = await client.get("/api/v1/runs/run-tc/traces", headers=headers)
+        assert resp.status_code == 200
+        assert len(resp.json()["items"]) == 2
+        assert resp.json()["items"][0]["event_type"] == "tool_call"
+
+        resp = await client.post(
+            "/api/v1/traces:stats", json={"run_id": "run-tc"}, headers=headers)
+        assert resp.status_code == 200
+        assert resp.json()["total_events"] == 2
+        assert resp.json()["by_type"].get("tool_call") == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_iteration_linkage_and_decision_final_state(services):
+    """F2/W3+W2：BatchCreate.iteration_id 关联落批记录与 DB；decision 门后
+    store-only 状态机进入 FINISHED。"""
+    import json as _json
+
+    app = create_app(services)
+    app.state.stores["iterations"]["iter-link"] = {
+        "id": "iter-link", "label": None, "sut_id": "sut-1",
+        "profile_id": "prof-1", "evalset_id": "es-1", "profile": {},
+        "prep_mode": "cli", "api_evalset_name": None, "mode": "p0",
+        "state": "paused", "current_step": "awaiting_decision", "round": 1,
+        "experiments": [], "budget_used": {"llm_calls": 0, "tokens": 0},
+        "archived": False, "paused_from": "deciding", "gates": [],
+        "created_at": "2026-11-13T00:00:00Z",
+    }
+    app.state.stores["suts"]["sut-1"] = {
+        "id": "sut-1", "name": "s1", "carrier": "opencode",
+        "image_ref": "img", "description": "", "created_at": "x"}
+    app.state.stores["evalsets"]["es-1"] = {
+        "id": "es-1", "name": "e1", "purpose": "iterate", "tasks": [],
+        "version": 1, "created_at": "x", "description": "", "env": {},
+        "env_yaml": "", "frozen": False}
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        headers = await admin_headers(client)
+        resp = await client.post(
+            "/api/v1/batches",
+            json={"evalset_id": "es-1", "sut_id": "sut-1",
+                  "purpose": "iterate", "iteration_id": "iter-link"},
+            headers=headers)
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body.get("iteration_id") == "iter-link"
+        # 内存批记录带关联（timeline/tokens 兜底依赖）
+        assert app.state.stores["batches"][body["id"]]["iteration_id"] == "iter-link"
+
+        # decision 门 → FINISHED（store-only 终态转移）
+        resp = await client.post(
+            "/api/v1/iterations/iter-link/decision",
+            json={"decision": "iterate"}, headers=headers)
+        assert resp.status_code == 204
+        resp = await client.get("/api/v1/iterations/iter-link", headers=headers)
+        assert resp.json()["state"] == "finished"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_aggregates_real_runs(services):
+    """F2/W1：dashboard 三端点接真实 runs 聚合（不再返回 demo 序列）。"""
+    app = create_app(services)
+    bstore = app.state.stores["batches"]
+    rstore = app.state.stores["runs"]
+    # batch-1：2/2 完成；batch-2：0/1 完成
+    bstore["b1"] = {"id": "b1", "evalset_id": "e", "sut_id": "sut-a",
+                    "purpose": "iterate", "status": "finalized",
+                    "created_at": "2026-11-13T01:00:00Z", "progress": {}}
+    bstore["b2"] = {"id": "b2", "evalset_id": "e", "sut_id": "sut-a",
+                    "purpose": "iterate", "status": "finalized",
+                    "created_at": "2026-11-13T02:00:00Z", "progress": {}}
+    rstore["r1"] = {"id": "r1", "batch_id": "b1", "task_id": "t1", "status": "done",
+                    "result": {"scores": {"task_complete": True, "root_cause_accuracy": 1.0}}}
+    rstore["r2"] = {"id": "r2", "batch_id": "b1", "task_id": "t2", "status": "done",
+                    "result": {"scores": {"task_complete": True, "root_cause_accuracy": 0.5}}}
+    rstore["r3"] = {"id": "r3", "batch_id": "b2", "task_id": "t3", "status": "done",
+                    "result": {"scores": {"task_complete": False, "root_cause_accuracy": 0.0}}}
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        headers = await admin_headers(client)
+        resp = await client.get("/api/v1/dashboard/metrics", headers=headers)
+        assert resp.status_code == 200
+        series = resp.json()["series"]
+        assert [p["value"] for p in series] == [1.0, 0.0]  # 按批时间序
+
+        resp = await client.get("/api/v1/dashboard/model-compare", headers=headers)
+        items = resp.json()["items"]
+        assert len(items) == 1 and items[0]["sut_id"] == "sut-a"
+        assert items[0]["score"] == (1.0 + 1.0 + 0.0) / 3
+
+        resp = await client.get("/api/v1/dashboard/defect-dist", headers=headers)
+        assert resp.json() == {"a": {}, "b": {}}

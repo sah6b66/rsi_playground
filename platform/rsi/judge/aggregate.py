@@ -32,6 +32,7 @@ class VerdictAggregator:
         hack: HackSignals,
         efficiency: Efficiency,
         missing: bool,
+        checklist_only: bool = False,
     ) -> Verdict:
         logger.debug(
             "aggregate.entry",
@@ -77,8 +78,15 @@ class VerdictAggregator:
 
         accuracy = 1.0 if sem.root_cause_match is True else 0.0
         state_ok = all(r.passed for r in det.final_state_results)
-        task_complete = state_ok and sem.root_cause_match is True
-        indeterminate = sem.root_cause_match is None
+        # W11：checklist-only 任务（巡检/割接，无 root_cause 期望）按形态分派
+        # ——task_complete = 断言通过 AND checklist 全命中；root_cause_match
+        # 恒 None 不再一票否决（indeterminate 仅对根因类任务有意义）。
+        if checklist_only:
+            task_complete = state_ok and not det.checklist_missed
+            indeterminate = False
+        else:
+            task_complete = state_ok and sem.root_cause_match is True
+            indeterminate = sem.root_cause_match is None
 
         if hack.conclusion_process_mismatch:  # rule 3 — lucky guess is not a pass
             task_complete = False

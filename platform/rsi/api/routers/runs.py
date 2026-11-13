@@ -102,7 +102,13 @@ async def list_traces(
     traces: dict = Depends(get_store("traces")),
 ) -> TracePage:
     _get_anywhere(request, store, run_id)
-    events = sorted(traces.get(run_id, []), key=lambda e: e["seq"])
+    if traces.get(run_id):
+        events = sorted(traces.get(run_id, []), key=lambda e: e["seq"])
+    else:
+        # F2/W12：生产事件在 collector——内存 traces store 空时回退
+        from rsi.api.routers.traces import _collector_events
+
+        events = sorted(_collector_events(request, run_id), key=lambda e: e["seq"])
     items, page = paginate(events, cursor, limit)
     response.headers["x-pagination"] = json.dumps(page)
     return TracePage(

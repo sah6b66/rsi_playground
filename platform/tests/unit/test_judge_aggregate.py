@@ -119,3 +119,75 @@ def test_normal_aggregation_wrong_root_cause() -> None:
     )
     assert v.scores.root_cause_accuracy == 0.0
     assert v.scores.task_complete is False
+
+
+class TestS11AggregationFixes:
+    """F2/W11：checklist-only 任务按形态分派；summarizer 含命令文本。"""
+
+    def test_checklist_only_task_complete_on_all_hit(self):
+        """巡检/割接（无 root_cause 期望、有 checklist）：checklist 全命中
+        且 final_state 通过 → task_complete=True（不再被 sem.root_cause_match
+        恒 None/false 否决）。"""
+        from rsi.core.models import Efficiency, SafetyVerdict
+        from rsi.judge.antihack import HackSignals
+        from rsi.judge.deterministic import DetScores
+        from rsi.judge.llm_judge import SemanticScores
+        from rsi.core.models import PathQuality
+        from rsi.judge.aggregate import VerdictAggregator
+
+        det = DetScores(
+            final_state_results=[], critical_steps_hit=["display version"],
+            diagnostic_steps=1, checklist_missed=[],
+        )
+        sem = SemanticScores(
+            root_cause_match=None, root_cause_confidence=0.0,
+            path_quality=PathQuality(verdict="pass", reasoning=""), checklist_missed=[], checklist_false_positive=[],
+        )
+        v = VerdictAggregator().aggregate(
+            det, SafetyVerdict(), sem, HackSignals(),
+            Efficiency(), False, checklist_only=True,
+        )
+        assert v.scores.task_complete is True
+        assert v.scores.missed_check == 0
+
+    def test_checklist_only_missed_check_fails_complete(self):
+        from rsi.core.models import Efficiency, SafetyVerdict
+        from rsi.judge.antihack import HackSignals
+        from rsi.judge.deterministic import DetScores
+        from rsi.judge.llm_judge import SemanticScores
+        from rsi.core.models import PathQuality
+        from rsi.judge.aggregate import VerdictAggregator
+
+        det = DetScores(
+            final_state_results=[], critical_steps_hit=[],
+            diagnostic_steps=0, checklist_missed=["Leaf-02 接口状态未核"],
+        )
+        sem = SemanticScores(
+            root_cause_match=None, root_cause_confidence=0.0,
+            path_quality=PathQuality(verdict="pass", reasoning=""), checklist_missed=["Leaf-02 接口状态未核"],
+            checklist_false_positive=[],
+        )
+        v = VerdictAggregator().aggregate(
+            det, SafetyVerdict(), sem, HackSignals(),
+            Efficiency(), False, checklist_only=True,
+        )
+        assert v.scores.task_complete is False
+        assert v.scores.missed_check == 1
+
+    def test_summarizer_includes_command_text(self):
+        """F2：转换器产出的 tool_call 事件（tool/command 字段）必须进摘要
+        ——否则 LLM 裁判看不到命令，误判 skipped_critical_steps（E2 实测）。"""
+        from rsi.core.enums import EventType
+        from rsi.core.models import TraceEvent
+        from rsi.judge.summarizer import TraceSummarizer
+
+        ev = TraceEvent(
+            run_id="r", task_id="t", lab_id="l", sut_id="s", seq=0, ts="",
+            event_type=EventType.TOOL_CALL,
+            data={"tool": "bash", "call_id": "c1",
+                  "command": "huawei-cli.sh Spine-01 'display version'",
+                  "input": {"command": "huawei-cli.sh Spine-01 'display version'"}},
+        )
+        line = TraceSummarizer()._event_line(ev)
+        assert "display version" in line
+        assert "bash" in line

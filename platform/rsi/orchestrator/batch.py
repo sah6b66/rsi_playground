@@ -395,6 +395,9 @@ class BatchRunner:
                     "evalset_id": str(batch.get("evalset_id", "")),
                     "sut_id": str(batch.get("sut_id", "")),
                     "profile_id": batch.get("profile_id"),
+                    # F2/W3：API 显式关联（batches.iteration_id 列已有）
+                    "iteration_id": batch.get("iteration_id")
+                    or params.get("iteration_id"),
                 },
                 progress_fn=_progress,
             )

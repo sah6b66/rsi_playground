@@ -55,12 +55,37 @@ class TraceStatsOut(BaseModel):
     run_ids: list[str]
 
 
-def _events(traces: dict, run_id: str | None) -> list[dict[str, Any]]:
+def _collector_events(request: Request, run_id: str | None) -> list[dict[str, Any]]:
+    """F2/W12：collector（trace_store）是生产路径唯一真实事件源——内存
+    traces store 无此 run 时回退读 collector。"""
+    trace_store = request.app.state.services.get("trace_store")
+    if trace_store is None:
+        return []
+    try:
+        from rsi.tracing.store import TraceFilter
+
+        events, _cursor = trace_store.query(
+            TraceFilter(run_ids=[run_id] if run_id else None), None, 10_000
+        )
+    except Exception:  # noqa: BLE001 - 回退失败按无事件处理
+        return []
+    out: list[dict[str, Any]] = []
+    for ev in events:
+        d = ev.model_dump(mode="json")
+        d.setdefault("type", d.get("event_type"))
+        out.append(d)
+    return out
+
+
+def _events(request: Request, traces: dict, run_id: str | None) -> list[dict[str, Any]]:
     if run_id is not None:
-        return sorted(traces.get(run_id, []), key=lambda e: e["seq"])
+        if traces.get(run_id):
+            return sorted(traces.get(run_id, []), key=lambda e: e["seq"])
+        return sorted(_collector_events(request, run_id), key=lambda e: e["seq"])
     out: list[dict[str, Any]] = []
     for rid in traces:
         out.extend({**e, "run_id": rid} for e in traces[rid])
+    out.extend(e for e in _collector_events(request, None) if not traces.get(e.get("run_id", "")))
     return sorted(out, key=lambda e: e.get("seq", 0))
 
 
@@ -102,10 +127,11 @@ async def diff_traces(
 @router.post("/traces:query", response_model=TraceQueryOut)
 async def query_traces(
     body: TraceQueryBody,
+    request: Request,
     user: Claims = Depends(get_current_user),
     traces: dict = Depends(get_store("traces")),
 ) -> TraceQueryOut:
-    events = _events(traces, body.run_id)
+    events = _events(request, traces, body.run_id)
     if body.type is not None:
         events = [e for e in events if e.get("type") == body.type]
     if body.since_seq is not None:
@@ -116,12 +142,15 @@ async def query_traces(
 @router.post("/traces:stats", response_model=TraceStatsOut)
 async def trace_stats(
     body: TraceStatsBody,
+    request: Request,
     user: Claims = Depends(get_current_user),
     traces: dict = Depends(get_store("traces")),
 ) -> TraceStatsOut:
-    events = _events(traces, body.run_id)
+    events = _events(request, traces, body.run_id)
+    run_ids = set(traces.keys())
+    run_ids.update(e.get("run_id") for e in _collector_events(request, None) if e.get("run_id"))
     return TraceStatsOut(
         total_events=len(events),
         by_type=dict(Counter(e.get("type", "unknown") for e in events)),
-        run_ids=sorted(traces.keys()),
+        run_ids=sorted(r for r in run_ids if r),
     )

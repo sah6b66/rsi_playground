@@ -56,8 +56,18 @@ class TraceSummarizer:
         et = str(e.event_type.value)
         data = e.data or {}
         if et == "tool_call":
-            args = _dump(data.get("args", ""))[:_ARGS_MAX]
-            name = data.get("name", "")
+            # 兼容两种事件形态：wiretap（name/args）与会话存档转换
+            # （tool/command/input）——命令文本必须可见，否则 LLM 裁判
+            # 无法核证 critical_steps（E2 实测误判 skipped）。
+            name = str(data.get("name") or data.get("tool") or "")
+            raw_args = (
+                data.get("args")
+                if data.get("args") not in (None, "")
+                else data.get("command")
+                if data.get("command")
+                else data.get("input")
+            )
+            args = _dump(raw_args or "")[:_ARGS_MAX]
             return f"[{e.seq}] {et} name={name} args={args}"
         if et == "llm_request":
             system = str(data.get("system", ""))[:_SYSTEM_MAX]

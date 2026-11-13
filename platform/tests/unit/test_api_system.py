@@ -149,7 +149,9 @@ class TestDashboard:
         body = resp.json()
         assert body["metric"] == "success_rate"
         assert isinstance(body["series"], list)
-        assert len(body["series"]) > 0
+        # W1：无真实批数据时诚实空序列（demo 假数据回退已删除）；
+        # 显式注入 metrics store 仍优先。
+        assert body["series"] == []
 
     async def test_model_compare(self, client):
         h = await res_headers(client)

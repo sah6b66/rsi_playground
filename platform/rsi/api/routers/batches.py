@@ -35,6 +35,8 @@ class BatchCreate(BaseModel):
         default={},
         json_schema_extra={"example": {"max_parallel": 4, "timeout_s": 1800}},
     )
+    # F2/W3：API 模式批-会话关联（引擎路径自行写入；此处供运营者手动关联）
+    iteration_id: str | None = Field(default=None)
 
 
 class BatchOut(BaseModel):
@@ -43,6 +45,7 @@ class BatchOut(BaseModel):
     sut_id: str
     purpose: str
     profile_id: str | None
+    iteration_id: str | None = None
     status: str
     paused: bool
     progress: dict[str, Any]
@@ -104,6 +107,7 @@ async def trigger_batch(
         "paused": False,
         "progress": {"done": 0, "total": 0},
         "params": body.params,
+        "iteration_id": body.iteration_id,
         "created_at": _now(),
     }
     store[batch["id"]] = batch

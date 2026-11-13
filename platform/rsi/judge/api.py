@@ -108,7 +108,16 @@ class JudgeService:
         hack = self._antihack.detect(task, events, det_scores, sem, result=result, run_status=run_status)
         eff = efficiency if efficiency is not None else self._efficiency(events)
         missing = self._missing(result, run_status)
-        verdict = self._agg.aggregate(det_scores, safety_verdict, sem, hack, eff, missing)
+        expected = getattr(task.task, "expected", None)
+        checklist_only = bool(
+            expected is not None
+            and getattr(expected, "root_cause", None) is None
+            and getattr(expected, "checklist", None)
+        )
+        verdict = self._agg.aggregate(
+            det_scores, safety_verdict, sem, hack, eff, missing,
+            checklist_only=checklist_only,
+        )
         if not events:
             # C-7: an empty event list has no run identity — persisting would
             # write a run_id="" junk row, so skip (with a warning) instead.

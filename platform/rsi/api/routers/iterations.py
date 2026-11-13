@@ -595,6 +595,12 @@ def _gate_router(name: str, required_step: str, next_step: str):
         it["state"] = it["paused_from"] or IterationState.ATTRIBUTING.value
         it["paused_from"] = None
         it["current_step"] = _GATE_NEXT_STEP.get(name, next_step)
+        # F2/W2：decision 是本轮终门——store-only 模式下进入 FINISHED
+        # （引擎模式由引擎状态机自管终态，不走此回退）。
+        if name == "decision":
+            it["state"] = IterationState.FINISHED.value
+            it["paused_from"] = None
+            it["current_step"] = "round_complete"
         it["gates"].append(
             {"gate": name, "step": required_step, "by": str(user.sub),
              "at": _now()}
