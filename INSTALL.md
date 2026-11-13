@@ -60,6 +60,13 @@ cp ../examples/settings.yaml.example var/settings.yaml
 - `llm.defaults.judge.model` —— 裁判模型名称
 - `sandbox.backends.*` / `carrier.hosts.*` —— 仿真后端与容器宿主（推荐装好后经 WEB 参数页在线管理）
 
+> **内部层键——settings-internal.yaml**：`carrier.adapters.*`（真实载体镜像基址）、
+> `instrumentor.*`、`scheduler.*`、`security.*`、`git.*`、`tracing.collector.*` 等
+> 运维级旋钮**只**从 `<RSI_HOME>/settings-internal.yaml` 读取（可用
+> `RSI_INTERNAL_SETTINGS` 指定路径）——写在用户 settings.yaml 里的同名段会被
+> **静默忽略**（无报错）。配置真实载体（OpenCode/Claude Code 镜像基址）前先建
+> `var/settings-internal.yaml`。
+
 > 提示：也可用 `RSI_HOME=/path/to/var` 指定任意数据根（DB/Git/轨迹/日志均在其下），
 > 或用 `RSI_SETTINGS` 指定配置文件绝对路径。**放在仓库根的 settings.yaml 不会被读取。**
 

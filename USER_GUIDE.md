@@ -155,6 +155,22 @@ P1 模式下，WEB 优化页面会显示四个人工门：
 - **门 ③ 预审裁决**：查看确定性检查结果 + diff → 通过/拒绝
 - **门 ④ 决策执行**：查看 Selector 建议 → 晋升/回退
 
+### 8.1 版本晋升（promote）语义
+
+`POST /suts/{sut_id}/versions:promote` **仅用于优化器产出的候选版本**
+（对应 `suts/<sut>/cand/*` 候选分支）。手动创建的 snapshot 属于
+baseline（无候选分支），**无需也无法 promote**——对其调用会得到
+`409`（"手动基线无需 promote"），不是错误，直接忽略即可。
+
+```
+# 优化候选晋升（正常路径）
+curl -X POST http://localhost:8000/api/v1/suts/{sut_id}/versions:promote \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"candidate_version_id": "<优化器候选版本 sha>"}'
+
+# 409 {"message": "该版本是手动基线（baseline），无需 promote；..."}
+```
+
 ### 9. 查看效果看板
 
 访问 Dashboard 页面：
@@ -184,6 +200,12 @@ ssh_access:
     ip: 10.101.1.1
     username: admin
     password: Lab@123               # 或 password_ref: cred-name
+ready_checks: []                    # 缺省 = 全部设备各一条 ssh_reachable；
+                                   # 显式条目必须带 device（裸 ssh_reachable 不带
+                                   # device 会校验失败），如：
+                                   # - {type: ssh_reachable, device: R1}
+                                   # - {type: cli_match, device: R1,
+                                   #    cli: "display version", expect: "VRP"}
 ```
 
 ### tasks.jsonl（每行一个任务）
@@ -212,6 +234,8 @@ ssh_access:
 - `prepare` 仅支持 `exec_cli`（call_api 已随 ADR-27 删除；API 模式的环境准备走网络准备 API）
 - `root_cause.expected` 是自然语言描述（LLM 语义比对），不是关键词
 - 同一 evalset 的所有任务共享同一个 env.yaml 环境
+- 设备 `type` 按实际形态选：VRP8/CloudEngine（如 CE6800，提示符 `[~设备名]`、
+  配置须两阶段 commit）用 `ce`；S 系/AR（提示符 `[设备名]`、单阶段）用 `vrp`
 
 ## SUT Agent 镜像准备
 
@@ -221,7 +245,10 @@ ssh_access:
 |------|------|
 | `/trace/` | 轨迹输出目录（卷挂载点） |
 | 载体 CLI | OpenCode 或 Claude Code 可执行文件 |
-| prompt-logger | OpenCode 载体需预装 opencode-prompt-logger |
+
+> OpenCode 载体**无需**预装任何插件（opencode 1.19.5 实测无
+> opencode-prompt-logger，设计附 C 原假设已勘误）——平台在任务执行后
+> 回收容器内 opencode 会话存档并转为轨迹事件。
 
 ### 配置通过挂载注入（不烧录在镜像内）
 
@@ -235,6 +262,11 @@ ssh_access:
 | `/agent-config/scripts/` | 程序脚本 |
 | `/agent-config/knowledge/` | 知识库 |
 
+> **model.json 约束（OpenCode 载体实测）**：`provider` 必须是镜像内已定义的
+> provider（GLM 镜像为 `zhipuai-coding-plan`，可用模型如 `glm-5.3-flash`）；
+> `model` 用 `provider/model` 斜杠全称（如 `zhipuai-coding-plan/glm-5.3-flash`）。
+> opencode 工程配置（opencode.json）**禁止顶层 `provider` 键**（会被静默忽略）。
+
 ### 构建示例
 
 ```dockerfile
@@ -243,15 +275,14 @@ FROM node:20-slim
 # 安装 OpenCode CLI（npm 包名是 opencode-ai，可执行文件叫 opencode）
 RUN npm install -g opencode-ai
 
-# 安装 prompt-logger 插件
-RUN opencode plugin add opencode-prompt-logger
-
-# 预留轨迹目录
+# 预留轨迹目录（平台 exec 后回收 opencode 会话存档转轨迹事件）
 RUN mkdir -p /trace
 
 # 载体入口
 ENTRYPOINT ["opencode"]
 ```
+
+完整可构建样例见 `deploy/sut-opencode/`（含网络运维 skill 与 GLM 配置注入）。
 
 ## 故障排查
 
@@ -263,4 +294,4 @@ ENTRYPOINT ["opencode"]
 | LLM 调用失败 | 检查 settings.yaml 的 `llm.providers.*.api_key` + `GET /api/v1/system/dependencies` 看 llm 状态 |
 | 评测结果全 0 | 查看 `GET /api/v1/runs/{id}/judgment` 的 safety.violations |
 | 迭代一直等待 | P1 模式检查四个人工门是否已提交 |
-| 轨迹为空 | 检查 SUT 容器 /trace/ 目录挂载 + collector 4317/4318 端口 |
+| 轨迹为空 | 看 `<RSI_HOME>/storage/carrier-trace/<run_id>/` 下 wiretap ndjson 是否生成（平台 exec 后回收容器 opencode 会话库转出）；再看 server.log 中 wiretap 摄取记录 |

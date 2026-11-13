@@ -206,3 +206,66 @@ uv run python -m rsi.init
 # 回归确认
 uv run pytest -q
 ```
+
+## 附录：实战运维 Runbook（S11 真实环境沉淀，2026-11）
+
+### A. 服务器重启后恢复
+
+服务重启后以下状态**自动从磁盘水合**，无需人工重建：
+
+- 用户（DB users 表）与运行记录（runs/judgments/llm_calls 等）
+- 对象文件库：suts / evalsets / iterations 的 store 记录
+  （`<RSI_HOME>/storage/object-store/`）
+- Git 裸仓与 SUT 配置树、评测集冻结版本
+
+验证顺序：
+
+```bash
+curl http://localhost:8000/api/v1/system/health        # 服务存活
+# 登录取 token → GET /suts、/evalsets 确认对象在
+cd platform && uv run python -m rsi.doctor            # 32 项自检
+```
+
+仅以下情况需人工操作：评测集内容更新（重新 `POST /evalsets:import`）；
+SUT 配置树大改（重新提交配置版本）；SUT VM 重装（见 B）。
+
+### B. SUT VM Docker/镜像重建
+
+SUT Agent 镜像源在仓库 `deploy/sut-opencode/`（Dockerfile + entrypoint +
+defaults：网络运维 skill + GLM 配置注入）。重建流程：
+
+```bash
+# 在能访问 Docker 的机器上（或直接在 VM 内）：
+cd deploy/sut-opencode
+ZAI_TOKEN=<bigmodel token> bash build.sh rsi/opencode-netops:1.0
+
+# 远端 VM（经 SSH 推送源码后构建；VM 需开 tcp://0.0.0.0:2375 供平台驱动，
+# 国内网络建议配 registry-mirrors 以拉取 node 基础镜像）
+# 平台侧重启实例即可用新镜像（instance destroy → 批次重建）
+```
+
+> token 经 build-arg 注入，不落库不入 git；`defaults/opencode.json` 内为占位符。
+
+### C. 设备勘察（survey）——env.yaml 的事实来源
+
+新环境接入前，先对每台设备采集事实再编写 env.yaml（切忌凭记忆写拓扑）：
+
+```text
+display version            → 设备型号/软件版本（决定 devices[].type：
+                             VRP8/CloudEngine 用 ce，S 系用 vrp）
+display interface brief    → 接口清单与状态
+display lldp neighbor brief → 邻接关系 → topology.links 布线
+display current-configuration | include ^#|interface|description|ip address
+                             → configs/*.cfg 初始配置底稿
+```
+
+勘察结论固化：设备名/IP 对应 `ssh_access`、LLD 邻接对应 `links`、
+配置摘录存 `configs/`。注意带外管理口（如 GE1/0/10）禁止注入故障。
+
+### D. 日常运维提示
+
+- **SQLite 定期 checkpoint**：WAL 文件（`platform.db-wal`）长时间不回收会
+  持续增长，低峰期执行 `sqlite3 platform.db 'PRAGMA wal_checkpoint(TRUNCATE);'`
+- 轮转文件日志在 `<RSI_HOME>/logs/`（app.jsonl / error.jsonl，
+  `GET /api/v1/system/logs` 可查）；stdout 重定向的 server.log 仅兜底
+- `<RSI_HOME>/storage/labs/` 按批累积 lab 目录，过期批可整目录归档清理
