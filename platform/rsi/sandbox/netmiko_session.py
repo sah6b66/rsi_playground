@@ -108,12 +108,32 @@ class NetmikoDeviceSession(DeviceSession):
                 pass
 
     def _exec_config_sync(self, lines: list[str]) -> str:
-        """配置批经 netmiko send_config_set（自动 system-view/return）。
+        """配置批：显式 expect 串行 + 两阶段 commit（CE6800 YunShan 实测）。
 
-        E2 实测：逐行 send_command 不进系统视图，配置命令必失败。
+        netmiko huawei 驱动的 send_config_set 在 CE 上确定性失败：配置视图
+        提示符形如 ``[~Leaf-01]`` / 接口子视图 ``[~Leaf-01-GE1/0/1]``（含
+        ~ 与 /），且未 commit 时 ``return`` 触发 Y/N/C 交互提示。逐条
+        ``send_command(expect_string=...)`` + 末尾 ``commit`` 是唯一稳定形态。
         """
         conn = self._connect()
-        return str(conn.send_config_set(lines))
+        cfg_prompt = r"\[~?[A-Za-z0-9._/*-]+\]"
+        user_prompt = r"<[A-Za-z0-9._/-]+>"
+        parts = [
+            conn.send_command(
+                "system-view", expect_string=cfg_prompt, read_timeout=20
+            )
+        ]
+        for line in lines:
+            parts.append(
+                conn.send_command(line, expect_string=cfg_prompt, read_timeout=20)
+            )
+        parts.append(
+            conn.send_command("commit", expect_string=cfg_prompt, read_timeout=30)
+        )
+        parts.append(
+            conn.send_command("return", expect_string=user_prompt, read_timeout=20)
+        )
+        return "\n".join(str(p) for p in parts)
 
     async def exec_config(self, lines: list[str]):
         from rsi.sandbox.sshpool import ExecResult

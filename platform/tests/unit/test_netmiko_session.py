@@ -139,17 +139,16 @@ def test_connect_retries_on_banner_reset(monkeypatch):
 
 
 class _ConfigConn:
+    """记录 send_command(expect_string=...) 序列——CE6800 两阶段提交实测形态."""
+
     def __init__(self, *a, **kw):
-        self.config_batches = []
-        self.commands = []
+        self.sent: list[tuple] = []
 
-    def send_command(self, cli, **kw):
-        self.commands.append(cli)
-        return f"OUT<{cli}>"
-
-    def send_config_set(self, lines, **kw):
-        self.config_batches.append(list(lines))
-        return "[config] " + " | ".join(lines)
+    def send_command(self, cli, expect_string=None, **kw):
+        self.sent.append((cli, expect_string))
+        if cli == "system-view":
+            return "Enter system view [~Leaf-01]"
+        return "[~Leaf-01]"
 
     def is_alive(self):
         return True
@@ -157,10 +156,14 @@ class _ConfigConn:
     def disconnect(self):
         pass
 
+    def disable_paging(self, **kw):
+        return ""
 
-def test_exec_config_uses_send_config_set(monkeypatch):
-    """E2 实测：exec_cli 逐行下发配置命令不进系统视图必失败——exec_config
-    必须经 netmiko send_config_set 成批下发。"""
+
+def test_exec_config_ce_two_phase_commit_sequence(monkeypatch):
+    """E2 实测（CE6800 YunShan）：send_config_set 因 [~Leaf-01-GE1/0/1]
+    （含斜杠/波浪号）提示符与两阶段提交（return 触发 Y/N/C 交互）确定性
+    失败——exec_config 必须显式 expect 串行 + commit。"""
     import asyncio
 
     import netmiko
@@ -176,8 +179,9 @@ def test_exec_config_uses_send_config_set(monkeypatch):
         SshAccess(ip="1.2.3.4", username="u", password="p"),
     )
     result = asyncio.run(s.exec_config(["interface GE1/0/1", "shutdown"]))
-    assert result.ok
-    assert s._conn.config_batches == [["interface GE1/0/1", "shutdown"]]
+    assert result.ok, result.matched_errors
+    seq = [c for c, _ in s._conn.sent]
+    assert seq == ["system-view", "interface GE1/0/1", "shutdown", "commit", "return"]
 
 
 class _PagingConn(_ConfigConn):
