@@ -178,3 +178,34 @@ def test_exec_config_uses_send_config_set(monkeypatch):
     result = asyncio.run(s.exec_config(["interface GE1/0/1", "shutdown"]))
     assert result.ok
     assert s._conn.config_batches == [["interface GE1/0/1", "shutdown"]]
+
+
+class _PagingConn(_ConfigConn):
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.paging_disabled = False
+
+    def disable_paging(self, **kw):
+        self.paging_disabled = True
+        return "Info: The configuration of the terminal has been changed."
+
+
+def test_connect_disables_paging(monkeypatch):
+    """E2 实测：display current-configuration 全量输出被 More 分页卡死
+    （prompt '>' 不再出现 → ReadTimeout）——建连后必须显式关分页。"""
+    import asyncio
+
+    import netmiko
+
+    monkeypatch.setattr(netmiko, "ConnectHandler", _PagingConn)
+    from rsi.core.models import SshAccess
+    from rsi.sandbox.netmiko_session import netmiko_session_factory
+    from rsi.sandbox.sshpool import SessionKey
+    from rsi.sandbox.vendor import VENDOR_MAP
+
+    s = netmiko_session_factory(
+        SessionKey("5.6.7.8", 22, "l2"), VENDOR_MAP["vrp"],
+        SshAccess(ip="5.6.7.8", username="u", password="p"),
+    )
+    asyncio.run(s.exec_cli("display version"))
+    assert s._conn.paging_disabled is True

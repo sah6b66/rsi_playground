@@ -62,6 +62,16 @@ class NetmikoDeviceSession(DeviceSession):
                         device=self._access.ip,
                         attempt=attempt + 1,
                     )
+                try:
+                    # E2 实测：display current-configuration 全量输出被
+                    # More 分页截断（prompt 不再出现 → ReadTimeout）
+                    self._conn.disable_paging()
+                except Exception as exc:  # noqa: BLE001 - 个别平台不支持
+                    logger.warning(
+                        "netmiko.disable_paging_failed",
+                        device=self._access.ip,
+                        error=str(exc)[:120],
+                    )
                 return self._conn
             except Exception as exc:  # noqa: BLE001 - 网络抖动统一重试
                 last_exc = exc
