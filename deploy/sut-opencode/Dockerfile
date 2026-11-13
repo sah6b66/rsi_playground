@@ -18,7 +18,7 @@ ENV XDG_CONFIG_HOME=/rsi-config \
     ANTHROPIC_AUTH_TOKEN=${ZAI_TOKEN} \
     ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/anthropic \
     ANTHROPIC_URL=https://open.bigmodel.cn/api/anthropic \
-    ANTHROPIC_MODEL=glm-5.1
+    ANTHROPIC_MODEL=glm-5.3-flash
 RUN mkdir -p /rsi-config/opencode /workspace /agent-config /trace/wiretap \
     && chmod +x /opt/rsi-defaults/skills/network-ops/huawei-cli.sh
 COPY entrypoint.sh /entrypoint.sh

@@ -63,6 +63,18 @@ def test_connect_uses_access_credentials(monkeypatch):
     assert s._conn.kw["device_type"] == "huawei"
 
 
+def test_connect_enables_ssh_keepalive(monkeypatch):
+    """用户指令②：池化长连接必须开 SSH keepalive（参数 30s，参考
+    nl2cli keepalive_interval=30）——批次阶段间隙空闲会话不被 NAT/防火墙掐。"""
+    _patch_netmiko(monkeypatch)
+    access = SshAccess(ip="192.168.96.22", username="u", password="p")
+    s = NetmikoDeviceSession(
+        SessionKey(access.ip, 22, "lab"), VENDOR_MAP["vrp"], access
+    )
+    asyncio.run(s.exec_cli("display version"))
+    assert s._conn.kw.get("keepalive") == 30
+
+
 def test_close_and_liveness(monkeypatch):
     _patch_netmiko(monkeypatch)
     access = SshAccess(ip="1.2.3.4", username="u", password="p")

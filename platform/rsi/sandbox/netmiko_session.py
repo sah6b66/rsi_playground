@@ -55,6 +55,7 @@ class NetmikoDeviceSession(DeviceSession):
                     password=self._access.password or "",
                     conn_timeout=15,
                     banner_timeout=30,
+                    keepalive=30,
                 )
                 if attempt:
                     logger.info(
