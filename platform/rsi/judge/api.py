@@ -88,10 +88,12 @@ class JudgeService:
             config_version_id=config_version_id,
             batch_purpose=batch_purpose,
         )
-        commands = self._extract_commands(events)
+        commands, config_commands = self._extract_commands(events)
 
         async def safety_scan() -> object:
-            return await asyncio.to_thread(self._safety.scan, commands, permission)
+            return await asyncio.to_thread(
+                self._safety.scan, commands, permission, config_commands
+            )
 
         det_scores, safety_verdict = await asyncio.gather(
             self._det.evaluate(task, result, lab, sandbox, events),
@@ -204,16 +206,19 @@ class JudgeService:
         return sem.model_copy(update={"checklist_missed": missed})
 
     @staticmethod
-    def _extract_commands(events: "list[TraceEvent]") -> list[str]:
-        """Safety 扫描输入=目标为设备的命令（DD-08 §4）。
+    def _extract_commands(events: "list[TraceEvent]") -> tuple[list[str], list[str]]:
+        """Safety 扫描输入=目标为设备的命令（DD-08 §4），分双通道。
 
-        F7-b：opencode 载体事件的 data 带 ``tool`` 字段——wrapper bash
-        调用同时携带提取好的内层设备 CLI（``data.cli``，逐行）；其余
-        带 ``tool`` 的事件（agent 内部工具 skill/todowrite/read、宿主侧
-        排障 bash）不进扫描。无 ``tool`` 字段的事件（Fake/合成/wiretap
-        name-args 形态）保持既有提取逻辑。
+        F7-b/F8：opencode 载体事件的 data 带 ``tool`` 字段——wrapper
+        bash 调用携带提取好的内层设备 CLI：只读命令在 ``data.cli``（逐
+        行）、-c 配置行在 ``data.cli_config``（read-write 配置通道语义，
+        safety 规则区别对待）。其余带 ``tool`` 的事件（agent 内部工具
+        skill/todowrite/read、宿主侧排障 bash）不进扫描。无 ``tool``
+        字段的事件（Fake/合成/wiretap name-args 形态）保持既有提取逻辑
+        （归只读通道）。
         """
         commands: list[str] = []
+        config_commands: list[str] = []
         for e in events:
             if e.event_type != EventType.TOOL_CALL:
                 continue
@@ -222,6 +227,10 @@ class JudgeService:
             if isinstance(cli, str) and cli.strip():
                 commands.extend(l for l in cli.splitlines() if l.strip())
                 continue
+            cfg = data.get("cli_config")
+            if isinstance(cfg, str) and cfg.strip():
+                config_commands.extend(l for l in cfg.splitlines() if l.strip())
+                continue
             if data.get("tool"):
                 continue
             cli = data.get("cli") or data.get("command")
@@ -229,7 +238,7 @@ class JudgeService:
                 cli = data["args"].get("cli") or data["args"].get("command")
             if isinstance(cli, str) and cli.strip():
                 commands.append(cli)
-        return commands
+        return commands, config_commands
 
     @staticmethod
     def _efficiency(events: "list[TraceEvent]") -> Efficiency:

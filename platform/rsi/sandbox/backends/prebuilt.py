@@ -26,12 +26,20 @@ from rsi.core.models import EnvSpec, LabHandle, SnapRef
 from rsi.core.naming import new_id
 from rsi.sandbox.backends.base import BackendStatus, SandboxBackend
 from rsi.sandbox.readiness import ReadyReport
-from rsi.sandbox.service import _run_sync
 from rsi.sandbox.sshpool import SessionKey, SshPool
 from rsi.sandbox.vendor import VENDOR_MAP
 from rsi.settings import DeviceEndpoint
 
 __all__ = ["PrebuiltBackend"]
+
+
+def _run_sync(awaitable):
+    # service._run_sync 经延迟导入使用——模块级导入会成环
+    # （service → backends/__init__ → prebuilt → service，加载期
+    # _run_sync 尚未定义），api.app 先于其它入口导入时触发。
+    from rsi.sandbox.service import _run_sync as _impl
+
+    return _impl(awaitable)
 
 logger = get_logger(__name__)
 

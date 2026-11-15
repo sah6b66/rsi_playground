@@ -54,21 +54,25 @@ def _up_to_shell_metachar(command: str) -> str:
     return "".join(out)
 
 
-def _device_cli_lines(command: str | None) -> list[str]:
-    """从 wrapper bash 调用中提取内层设备 CLI（positional 只读命令与
-    -c 配置行）。非 wrapper 调用返回 []。"""
+def _device_cli_lines(command: str | None) -> tuple[list[str], list[str]]:
+    """从 wrapper bash 调用中提取内层设备 CLI。
+
+    返回 (只读通道, 配置通道)：位置参数（用户视图命令）与首个 ``-c``
+    之后的引用参数（system-view 配置行——脚本契约：-c 后全部入参即
+    配置流）。非 wrapper 调用返回 ([], [])。
+    """
     if not command or _DEVICE_WRAPPER not in command:
-        return []
+        return [], []
     head = _up_to_shell_metachar(command)
     try:
         tokens = shlex.split(head, posix=False)
     except ValueError:
-        return []
+        return [], []
     idx = next(
         (i for i, t in enumerate(tokens) if _DEVICE_WRAPPER in t), None
     )
     if idx is None:
-        return []
+        return [], []
     rest = tokens[idx + 1 :]
     i = 0
     # 首个非 flag token = 设备名（脚本契约：huawei-cli.sh <dev> ...）
@@ -76,20 +80,26 @@ def _device_cli_lines(command: str | None) -> list[str]:
         i += 1
     if i < len(rest):
         i += 1
-    cmds: list[str] = []
+    read_cmds: list[str] = []
+    config_cmds: list[str] = []
+    in_config = False
     while i < len(rest):
         tok = rest[i]
+        if tok == "-c":
+            in_config = True
+            i += 1
+            continue
         if tok.startswith("-"):
-            i += 1  # -c 分隔符/未知 flag
+            i += 1  # 未知 flag
             continue
         # posix=False 保留引号：仅引用的 token 是脚本入参（设备命令）；
         # 裸 token（quit、2、/dev/null…）是 shell 控制噪音
         if len(tok) >= 2 and tok[0] in "\"'" and tok[-1] == tok[0]:
             inner = tok[1:-1]
             if inner:
-                cmds.append(inner)
+                (config_cmds if in_config else read_cmds).append(inner)
         i += 1
-    return cmds
+    return read_cmds, config_cmds
 
 
 def _ms_to_iso(ms: Any) -> str:
@@ -201,13 +211,16 @@ def _iter_tool_parts(conn: sqlite3.Connection):
                 "input": tool_input,
             },
         }
-        # F7-b：wrapper bash 调用的内层设备 CLI 进 data.cli——safety
-        # 扫描输入=目标为设备的命令（DD-08 §4），宿主 bash/agent 内部
+        # F7-b/F8：wrapper bash 调用的内层设备 CLI——只读命令进 data.cli、
+        # -c 配置行进 data.cli_config（read-write 配置通道语义依赖该区分，
+        # DD-08 §4 safety 输入=目标为设备的命令）；宿主 bash/agent 内部
         # 工具不进扫描。命令全文保留在 command（det 全文匹配不受影响）。
         if isinstance(command, str):
-            cli_lines = _device_cli_lines(command)
-            if cli_lines:
-                call["data"]["cli"] = "\n".join(cli_lines)
+            read_lines, config_lines = _device_cli_lines(command)
+            if read_lines:
+                call["data"]["cli"] = "\n".join(read_lines)
+            if config_lines:
+                call["data"]["cli_config"] = "\n".join(config_lines)
         output = state.get("output")
         output_text = (
             output if isinstance(output, str)

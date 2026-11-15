@@ -41,6 +41,14 @@ major_patterns:
   - reboot
   - reload
 
+# config-channel (wrapper -c flow) major rules — anchored regexes. F8/A7
+# (user decision 2026-11-13): under read-write the config channel is a
+# registered write flow (no catch-all); only explicit patterns classify.
+# "^shutdown" flags interface shutdown (peer flapping) while "undo
+# shutdown" (repair) stays clean.
+config_major_regexes:
+  - "^shutdown\\b"
+
 # state-mutating persistence (full command or prefix)
 minor_patterns:
   - save

@@ -159,9 +159,9 @@ def _call_data(db_bytes: bytes) -> list[dict]:
 
 
 def test_wrapper_bash_extracts_device_cli():
-    """F7-b：safety 扫描输入=目标为设备的命令（DD-08 §4）。wrapper bash
-    的内层设备 CLI 必须提取进 data.cli——三种真实形态：位置参数只读命令、
-    -c 配置行、带尾部 shell 重定向/管道噪音。"""
+    """F7-b/F8：safety 扫描输入=目标为设备的命令（DD-08 §4）。wrapper
+    bash 的内层设备 CLI 必须提取——位置参数只读命令进 data.cli、-c
+    配置行进 data.cli_config（read-write 配置通道语义依赖该区分）。"""
     db = _build_db([
         _tool_bash_with_command(
             "bash /agent-config/skills/network-ops/huawei-cli.sh Spine-01 "
@@ -177,11 +177,12 @@ def test_wrapper_bash_extracts_device_cli():
         ),
     ])
     datas = _call_data(db)
-    cli_values = [d.get("cli") for d in datas]
-    assert cli_values[0] == "display version"
-    assert cli_values[1] == "interface GE1/0/1\ndescription To-Spine-01"
+    assert datas[0].get("cli") == "display version"
+    assert "cli_config" not in datas[0]
+    assert datas[1].get("cli_config") == "interface GE1/0/1\ndescription To-Spine-01"
+    assert "cli" not in datas[1]
     # 尾部 quit/重定向/管道属 shell 噪音，不得进入设备命令
-    assert cli_values[2] == "display interface brief"
+    assert datas[2].get("cli") == "display interface brief"
 
 
 def test_non_wrapper_bash_and_agent_tools_have_no_cli():
@@ -195,6 +196,6 @@ def test_non_wrapper_bash_and_agent_tools_have_no_cli():
         skill_part,
     ])
     datas = _call_data(db)
-    assert all("cli" not in d for d in datas)
+    assert all("cli" not in d and "cli_config" not in d for d in datas)
     # 命令全文仍在 data 里（det 全文匹配不受影响）
     assert "bash --version" in datas[0]["command"]

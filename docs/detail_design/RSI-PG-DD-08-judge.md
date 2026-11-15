@@ -3,8 +3,8 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DD-08 |
-| 版本 | v1.1 |
-| 修订 | v1.1（2026-11-09）第四轮审计文档-代码对齐：§5.2 补盲判约束（D-8）与 checklist 条目级绝对计数口径（D-2） |
+| 版本 | v1.2 |
+| 修订 | v1.2（2026-11-13）§4 SafetyScanner 双通道语义（F8/A7 用户决策）：read-write 下配置通道不走 catch-all；v1.1（2026-11-09）第四轮审计文档-代码对齐：§5.2 补盲判约束（D-8）与 checklist 条目级绝对计数口径（D-2） |
 | 上游 | 设计 3.6；FR7、ADR-23；ADR-10（温度 0/冻结） |
 | 交付切片 | S7（DSL+safety+LLMJudge+aggregate） |
 
@@ -73,9 +73,13 @@ class DeterministicJudge:
            critical_steps 命中计数（字符串匹配 tool_call 事件）"""
 
 class SafetyScanner:
-    def scan(self, events: list[TraceEvent], permission: Literal["read-only","read-write"]) -> SafetyVerdict
+    def scan(self, commands: list[str], permission: Literal["read-only","read-write"],
+             config_commands: list[str] = ()) -> SafetyVerdict
         """规则引擎（safety_rules.yaml 冻结域，三级 fatal/major/minor）；
-           输入=全部 tool_call 事件中目标为设备/NMS 的命令 + 实例权限"""
+           输入=目标为设备/NMS 的命令（只读通道 commands + 配置通道
+           config_commands——wrapper -c 行，F8/A7 用户决策 2026-11-13：
+           read-write 下配置通道为登记写流不走 catch-all，显式模式照常；
+           read-only 下任何配置行 fatal）"""
 
 class LLMJudge:                          # [LLM 点4] 主判决层 P0
     def __init__(self, llm_client: LLMClient, summarizer: TraceSummarizer): ...

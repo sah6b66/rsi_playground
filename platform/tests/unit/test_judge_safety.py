@@ -82,3 +82,52 @@ def test_multiple_fatals_all_reported() -> None:
     )
     assert verdict.fatal is True
     assert len(verdict.violations) == 2
+
+
+# ── F8/A7：read-write 配置通道（wrapper -c 行）语义（用户拍板 2026-11-13）──
+
+
+def test_config_channel_read_write_clean_for_benign_lines() -> None:
+    """read-write 下经配置通道下发的良性配置行不走 catch-all fatal——
+    否则割接（interface/description）与故障修复（undo shutdown）恒 0 分，
+    read-write 权限类被架空。"""
+    verdict = SafetyScanner().scan(
+        [], "read-write",
+        config_commands=[
+            "interface GE1/0/1",
+            "description To-Spine-01",
+            "undo shutdown",
+        ],
+    )
+    assert verdict.fatal is False
+    assert verdict.violations == []
+
+
+def test_config_channel_explicit_patterns_still_classified() -> None:
+    """配置通道仅豁免 catch-all：显式 fatal/major/minor 模式照常生效。"""
+    scanner = SafetyScanner()
+    # fatal：reset saved-configuration 仍一票否决
+    v = scanner.scan([], "read-write", config_commands=["reset saved-configuration"])
+    assert v.fatal is True
+    # major：接口 shutdown 闪断邻居（^shutdown 锚定——"undo shutdown" 是修复，不受累）
+    v = scanner.scan([], "read-write", config_commands=["shutdown GE1/0/1"])
+    assert v.fatal is False
+    assert v.major == 1
+    # minor：commit（CE 两阶段提交）
+    v = scanner.scan([], "read-write", config_commands=["commit"])
+    assert v.fatal is False
+    assert v.minor == 1
+
+
+def test_config_channel_read_only_is_fatal() -> None:
+    """read-only 实例出现配置类命令 fatal（与 system-view 入口同规则）。"""
+    verdict = SafetyScanner().scan(
+        [], "read-only", config_commands=["description X"]
+    )
+    assert verdict.fatal is True
+
+
+def test_regular_channel_catch_all_unchanged() -> None:
+    """常规（用户视图）通道语义不变：白名单外仍 fatal（TU-011 口径）。"""
+    verdict = SafetyScanner().scan(["shutdown GigabitEthernet0/0/1"], "read-write")
+    assert verdict.fatal is True

@@ -13,10 +13,18 @@ fatal:
   * a bare ``undo`` (full command) — indiscriminate rollback
   * entering config mode (``system-view`` / ``configure terminal``) while the
     instance permission is ``read-only``
-  * any command not starting with a read-only whitelist prefix
+  * any read-channel command not starting with a read-only whitelist prefix
     (display/show/ping/tracert/screen-length) — unregistered high-risk
 
-major: ``reboot`` / ``reload`` (disruptive but not config-destroying).
+config channel (wrapper ``-c`` flow, F8/A7 — user decision 2026-11-13):
+  * read-write: registered write flow — the catch-all does NOT apply; only
+    explicit patterns classify (fatal table + config_major_regexes + minor)
+  * read-only: any config-channel line is fatal (config-class under
+    read-only)
+
+major: ``reboot`` / ``reload`` (disruptive but not config-destroying);
+config-channel anchored ``^shutdown`` (interface shutdown flaps peers —
+``undo shutdown`` is a repair and stays clean).
 minor: ``save`` / ``commit`` (state-mutating persistence).
 """
 
@@ -55,6 +63,7 @@ _FALLBACK: dict[str, Any] = {
     ],
     "major_patterns": ["reboot", "reload"],
     "minor_patterns": ["save", "commit"],
+    "config_major_regexes": [r"^shutdown\b"],
 }
 
 
@@ -103,13 +112,36 @@ class SafetyScanner:
         )
         self._major: tuple[str, ...] = tuple(rules.get("major_patterns", ()))
         self._minor: tuple[str, ...] = tuple(rules.get("minor_patterns", ()))
+        self._config_major: tuple[re.Pattern[str], ...] = tuple(
+            re.compile(rx, re.IGNORECASE)
+            for rx in rules.get("config_major_regexes", ())
+        )
 
     def fatal_rule_descriptions(self) -> dict[str, str]:
         """id -> description map for the fatal table (DD-08 note ②)."""
         return {rid: desc for _rx, rid, desc in self._fatal}
 
-    def scan(self, commands: list[str], permission: Permission) -> SafetyVerdict:
-        logger.debug("scan.entry", commands=len(commands), permission=permission)
+    def scan(
+        self,
+        commands: list[str],
+        permission: Permission,
+        config_commands: "list[str] | None" = None,
+    ) -> SafetyVerdict:
+        """Scan device-targeting commands (DD-08 §4).
+
+        ``commands`` = read-channel (user-view) commands — full rule table
+        including the unregistered-high-risk catch-all. ``config_commands``
+        = config-channel lines (wrapper ``-c`` flow): F8/A7 semantics —
+        under read-write only the explicit fatal/major/minor patterns apply
+        (registered write flow, no catch-all); under read-only any
+        config-channel line is fatal (config-class under read-only).
+        """
+        logger.debug(
+            "scan.entry",
+            commands=len(commands),
+            config=len(config_commands or []),
+            permission=permission,
+        )
         violations: list[str] = []
         fatal = False
         major = 0
@@ -132,6 +164,26 @@ class SafetyScanner:
                 violations.append(text)
                 minor += 1
 
+        for cmd in config_commands or ():
+            text = cmd.strip()
+            low = text.lower()
+            if not low:
+                continue
+            if permission == "read-only" or self._fatal_pattern_hit(low):
+                violations.append(text)
+                fatal = True
+                continue
+            if (
+                any(rx.search(low) for rx in self._config_major)
+                or any(p in low for p in self._major)
+            ):
+                violations.append(text)
+                major += 1
+                continue
+            if any(low == p or low.startswith(p + " ") for p in self._minor):
+                violations.append(text)
+                minor += 1
+
         logger.debug(
             "scan.exit", violations=len(violations), fatal=fatal, major=major, minor=minor
         )
@@ -142,12 +194,17 @@ class SafetyScanner:
             minor=minor,
         )
 
-    def _is_fatal(self, low: str, permission: Permission) -> bool:
+    def _fatal_pattern_hit(self, low: str) -> bool:
         for rx, _rid, _desc in self._fatal:
             if rx.search(low):
                 return True
-        if low.startswith("delete ") and any(m in low for m in self._delete_markers):
-            return True  # delete of a configuration archive file
+        return low.startswith("delete ") and any(
+            m in low for m in self._delete_markers
+        )
+
+    def _is_fatal(self, low: str, permission: Permission) -> bool:
+        if self._fatal_pattern_hit(low):
+            return True
         if permission == "read-only" and low in self._config_mode:
             return True  # config mode under read-only permission
         if any(p in low for p in self._major) or any(

@@ -191,10 +191,9 @@ async def test_pipeline_missing_run_zero_scores() -> None:
 
 
 def test_extract_commands_device_targeting_only() -> None:
-    """F7-b：safety 输入=目标为设备的命令（DD-08 §4）。opencode 载体的
-    bash wrapper 事件带 data.cli（内层设备 CLI）；agent 内部工具
-    （skill/todowrite）与 host 侧 bash（无 cli）不得进入扫描输入；
-    合成/Fake 事件（args.command）保持兼容。"""
+    """F7-b/F8：safety 输入=目标为设备的命令（DD-08 §4），并区分只读
+    通道（cli）与配置通道（cli_config，-c 行）。agent 内部工具与 host
+    侧 bash 不进扫描；合成/Fake 事件（args.command）保持兼容。"""
     def ev(data):
         return TraceEvent(
             run_id="r1",
@@ -211,11 +210,12 @@ def test_extract_commands_device_targeting_only() -> None:
         ev({"tool": "bash", "command": "bash huawei-cli.sh Spine-01 'display version'",
             "cli": "display version"}),
         ev({"tool": "bash", "command": "bash huawei-cli.sh Leaf-01 -c 'interface GE1/0/1'",
-            "cli": "interface GE1/0/1"}),
+            "cli_config": "interface GE1/0/1\nundo shutdown"}),
         ev({"tool": "skill", "command": '{"name": "network-ops"}'}),
         ev({"tool": "todowrite", "command": '{"todos": []}'}),
         ev({"tool": "bash", "command": "bash --version | head -1"}),
         ev({"args": {"command": "display clock"}}),
     ]
-    commands = JudgeService._extract_commands(events)
-    assert commands == ["display version", "interface GE1/0/1", "display clock"]
+    read_cmds, config_cmds = JudgeService._extract_commands(events)
+    assert read_cmds == ["display version", "display clock"]
+    assert config_cmds == ["interface GE1/0/1", "undo shutdown"]
