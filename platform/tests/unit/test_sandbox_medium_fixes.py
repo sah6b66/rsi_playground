@@ -473,6 +473,6 @@ class TestF5BatchFileRestore:
         )]
         asyncio.run(svc.restore_task(lab, applied))
         # 备份全部有效行合并为单次批量下发（1 次 system-view + 1 次 commit；
-        # 另有 B-6 vendor reset_cmd 一次，属独立步骤）
+        # F7-a 后无 vendor reset 前置步骤，批量回放即首个 config 调用）
         assert calls[-1] == ["sysname R1", "interface GE1/0/1", " description up"]
         assert not any(len(c) == 1 and c[0] == "sysname R1" for c in calls)

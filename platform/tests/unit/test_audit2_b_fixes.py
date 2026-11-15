@@ -444,7 +444,11 @@ class TestB6VendorReset:
             )
         ]
 
-    def test_pool_path_uses_vendor_reset_cmd_not_lab_reset(self, tmp_path):
+    def test_pool_path_replays_backup_without_vendor_reset(self, tmp_path):
+        """F7-a（S11 CE6800 实测）：vendor reset_cmd 前置步骤在真机必败
+        （reset saved-configuration → ^Error:），挡死备份文件回放。按 A3'
+        用户决策（文件备份/文件恢复框架），restore 直接整文件回放，
+        不再先发 reset_cmd。"""
         backup = tmp_path / "R1.cfg"
         backup.write_text("sysname R1\ninterface GE0/0/1\n", encoding="utf-8")
         session = _RecordingSession(
@@ -468,12 +472,43 @@ class TestB6VendorReset:
         )
         lab = asyncio.run(service.build_lab(_env_one()))
         asyncio.run(service.restore_task(lab, self._applied(backup)))
-        # vendor reset_cmd went through the pooled session...
+        # 备份全文经池化会话整文件回放，且不含任何 reset_cmd
         assert session.config_calls
-        reset_lines = [c for calls in session.config_calls for c in calls]
-        assert "reset saved-configuration" in reset_lines
-        # ...and the whole-lab backend reset was never invoked
+        replay_lines = [c for calls in session.config_calls for c in calls]
+        assert "sysname R1" in replay_lines
+        assert "reset saved-configuration" not in replay_lines
+        # 整 lab backend reset 同样从未触发
         assert resets == []
+
+    def test_replay_skips_comment_and_volatile_lines(self, tmp_path):
+        """F7-a：CE capture 的配置备份含 '!Software Version...' 等注释行，
+        下发会在设备上报 ^Error:（S11 实测逐行恢复"中途易错"的一部分）。
+        回放过滤器须与 normalize_config 的注释前缀口径一致。"""
+        backup = tmp_path / "R1.cfg"
+        backup.write_text(
+            "!Software Version V300R025C10SPC500\n"
+            "#\n"
+            "sysname R1\n"
+            "interface GE0/0/1\n",
+            encoding="utf-8",
+        )
+        session = _RecordingSession(
+            SessionKey("10.0.0.9", 2022, "L1"),
+            VENDOR_MAP["vrp"],
+            config_text="sysname R1\ninterface GE0/0/1\n",
+        )
+        service = SandboxService(
+            backends={"fake": FakeSandboxBackend()},
+            labs_dir=tmp_path,
+            ssh_pool=_SingleSessionPool(session),
+        )
+        lab = asyncio.run(service.build_lab(_env_one()))
+        asyncio.run(service.restore_task(lab, self._applied(backup)))
+        sent = [c for calls in session.config_calls for c in calls]
+        assert "sysname R1" in sent
+        assert not any(
+            line.startswith(("!", "#")) for line in sent if line != "#"
+        )
 
     def test_equivalence_mismatch_raises_and_retries(self, tmp_path):
         backup = tmp_path / "R1.cfg"

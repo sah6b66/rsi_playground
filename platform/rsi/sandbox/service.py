@@ -490,11 +490,16 @@ class SandboxService:
         return replayed
 
     async def _recover_once(self, lab: LabHandle, applied: list[AppliedAction]) -> None:
-        env = self._require_env(lab)
         backend = self._backend(lab)
         has_cli_restore = any(
             a.action == "exec_cli" and a.backup_files for a in applied
         )
+        # F7-a（A3' 用户决策，S11 CE6800 实测）：池化真机路径不再先发 vendor
+        # reset_cmd——reset saved-configuration 在真机必败（^Error:），挡死
+        # 备份文件回放；且清空启动配置对恢复运行配置无意义。真机恢复=整文件
+        # 回放 + B-6 等价性抽查（失败兜底与重试触发），L2 走 backend.reset。
+        # 无池化会话的后端（fake/离线）保留 backend.reset 清空原语——其
+        # config_lines 集合语义依赖先清空再回放。
         devices_to_reset: list[str] = []
         if has_cli_restore:
             devices_to_reset = sorted(
@@ -503,22 +508,7 @@ class SandboxService:
             pool_sessions = {
                 d: self._pool_session(lab, d) for d in devices_to_reset
             }
-            if all(s is not None for s in pool_sessions.values()):
-                # B-6 (DD-04 §5.4): per-device vendor reset_cmd over the SSH
-                # pool instead of a whole-lab reset — only the devices touched
-                # by this task's prepare are rolled back.
-                for device, session in pool_sessions.items():
-                    result = _run_sync(
-                        session.exec_config(list(session.vendor.reset_cmd))
-                    )
-                    if not result.ok:
-                        raise EnvError(
-                            f"vendor reset_cmd failed on {device}: "
-                            f"{result.matched_errors}",
-                            context={"device": device, "lab_id": lab.lab_id},
-                        )
-            else:
-                # no pooled session for every device — legacy whole-lab reset
+            if not all(s is not None for s in pool_sessions.values()):
                 await backend.reset(lab)
         for action in reversed(applied):
             for device, path in action.backup_files.items():
@@ -531,7 +521,11 @@ class SandboxService:
                 lines = [
                     line
                     for line in backup.read_text(encoding="utf-8").splitlines()
-                    if line.strip() and not line.startswith("#")
+                    # F7-a：CE capture 的备份含 '!Software Version ...' 等
+                    # 注释/易变行，下发会在设备报 ^Error:（与 normalize_config
+                    # 的 _NORM_DROP_PREFIXES 口径一致）。
+                    if line.strip()
+                    and not line.startswith(_NORM_DROP_PREFIXES)
                 ]
                 if not lines:
                     continue

@@ -3,7 +3,7 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DD-04 |
-| 版本 | v1.3（ADR-27：config_apis/call_api 废除——§5.3/§5.5 删除 call_api 路径；新增 §5.8 NetworkPrepClient） |
+| 版本 | v1.4（§5.4 按 A3' 文件恢复框架重写：去 vendor reset_cmd 前置、整文件批量回放+注释行过滤——S11 CE6800 实测 reset 必败）；v1.3（ADR-27：config_apis/call_api 废除——§5.3/§5.5 删除 call_api 路径；新增 §5.8 NetworkPrepClient） |
 | 上游 | 设计 3.4/3.13、接口 §4；FR3/FR4、ADR-20/24/25/27；ADR-12/13 |
 | 交付切片 | S3（Backend 抽象+Fake+readiness）；S11（真实后端） |
 
@@ -148,12 +148,17 @@ journal.append(lab.lab_id, action)                          # ③ ops.jsonl 追�
 
 视图归位（借鉴 nl2cli）：`exec_config` 结束统一 `exit_config` + 检测提示符层级，逐层 `quit` 回用户视图（残留视图会污染下一命令）。
 
-### 5.4 restore_task·exec_cli 恢复（按厂商模板，DD 设计 3.4.1）
+### 5.4 restore_task·exec_cli 恢复（A3' 文件恢复框架，v1.4）
 
 ```
-s.exec_config(vendor.reset_cmd)            # vrp: reset saved-configuration + 重启确认（自动 Y 白名单内）
-s.exec_config(["save","y"])？否——直接逐行重放 backup 全文（配置式命令幂等 SET 语义）
+# 池化真机路径（F5/F7-a，S11 CE6800 实测）：不发 vendor reset_cmd——
+# reset saved-configuration 在真机必败（^Error:）且清空启动配置对恢复
+# 运行配置无意义。直接整文件单会话批量下发：
+lines = backup 全文过滤注释/易变行（!/#/</*/% 前缀，与 normalize_config 口径一致）
+s.exec_config(lines)                       # 1 次 system-view → 全部行 → 1 次 commit
 # 等价性快检：capture_config() 与 backup 规范化 diff（去时间戳/序号行）为空→OK；否则重试≤2
+# 无池化会话的后端（fake/离线基座）：先 backend.reset(lab) 清空再回放
+# （其 config_lines 集合语义依赖先清空）；L2 环境级兜底仍走 backend.reset
 ```
 
 ### 5.5 ~~call_api（ConfigApiCaller）~~ 已废除（v1.3，ADR-27）
