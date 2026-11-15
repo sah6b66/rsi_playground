@@ -23,6 +23,7 @@ logger = get_logger(__name__)
 
 _ARGS_MAX = 200
 _SYSTEM_MAX = 200
+_OUTPUT_MAX = 240
 
 
 def _trunc(s: str, limit: int) -> str:
@@ -69,6 +70,12 @@ class TraceSummarizer:
             )
             args = _dump(raw_args or "")[:_ARGS_MAX]
             return f"[{e.seq}] {et} name={name} args={args}"
+        if et == "tool_result":
+            # F7-c：输出节选必须可见——只渲染键名时 LLM 裁判无法核证
+            # 语义级 checklist（S11 实测误判 suspect："无法核实版本信息
+            # 完整"）。截断防撑爆裁判预算。
+            out = " ".join(str(data.get("output") or "").split())
+            return f"[{e.seq}] {et} exit={data.get('exit_code')} output={out[:_OUTPUT_MAX]}"
         if et == "llm_request":
             system = str(data.get("system", ""))[:_SYSTEM_MAX]
             msgs = data.get("messages", [])

@@ -191,3 +191,30 @@ class TestS11AggregationFixes:
         line = TraceSummarizer()._event_line(ev)
         assert "display version" in line
         assert "bash" in line
+
+    def test_summarizer_shows_tool_result_output_excerpt(self):
+        """F7-c：tool_result 行只渲染键名时，LLM 裁判无法核证语义级
+        checklist（S11 实测误判 suspect："无法核实版本信息完整"）。
+        设备输出节选必须可见。"""
+        from rsi.core.enums import EventType
+        from rsi.core.models import TraceEvent
+        from rsi.judge.summarizer import TraceSummarizer
+
+        ev = TraceEvent(
+            run_id="r", task_id="t", lab_id="l", sut_id="s", seq=5, ts="",
+            event_type=EventType.TOOL_RESULT,
+            data={
+                "call_id": "c1",
+                "tool": "bash",
+                "output": "Huawei Versatile Routing Platform V300R025C10\n"
+                          "GE1/0/1  up  up",
+                "exit_code": 0,
+            },
+        )
+        line = TraceSummarizer()._event_line(ev)
+        assert "Versatile Routing" in line
+        assert "GE1/0/1" in line
+        # 超长输出截断，不撑爆裁判预算
+        long = ev.model_copy(update={"data": {**ev.data, "output": "x" * 5000}})
+        truncated = TraceSummarizer()._event_line(long)
+        assert len(truncated) < 600
