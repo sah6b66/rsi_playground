@@ -188,3 +188,34 @@ async def test_pipeline_missing_run_zero_scores() -> None:
     )
     assert verdict.missing is True
     assert verdict.scores.root_cause_accuracy == 0.0
+
+
+def test_extract_commands_device_targeting_only() -> None:
+    """F7-b：safety 输入=目标为设备的命令（DD-08 §4）。opencode 载体的
+    bash wrapper 事件带 data.cli（内层设备 CLI）；agent 内部工具
+    （skill/todowrite）与 host 侧 bash（无 cli）不得进入扫描输入；
+    合成/Fake 事件（args.command）保持兼容。"""
+    def ev(data):
+        return TraceEvent(
+            run_id="r1",
+            task_id="inspection/demo-01",
+            lab_id="lab-1",
+            sut_id="sut",
+            seq=0,
+            ts="2026-01-01T00:00:00.000+00:00",
+            event_type=EventType.TOOL_CALL,
+            data=data,
+        )
+
+    events = [
+        ev({"tool": "bash", "command": "bash huawei-cli.sh Spine-01 'display version'",
+            "cli": "display version"}),
+        ev({"tool": "bash", "command": "bash huawei-cli.sh Leaf-01 -c 'interface GE1/0/1'",
+            "cli": "interface GE1/0/1"}),
+        ev({"tool": "skill", "command": '{"name": "network-ops"}'}),
+        ev({"tool": "todowrite", "command": '{"todos": []}'}),
+        ev({"tool": "bash", "command": "bash --version | head -1"}),
+        ev({"args": {"command": "display clock"}}),
+    ]
+    commands = JudgeService._extract_commands(events)
+    assert commands == ["display version", "interface GE1/0/1", "display clock"]

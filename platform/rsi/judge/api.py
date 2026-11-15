@@ -205,11 +205,25 @@ class JudgeService:
 
     @staticmethod
     def _extract_commands(events: "list[TraceEvent]") -> list[str]:
+        """Safety 扫描输入=目标为设备的命令（DD-08 §4）。
+
+        F7-b：opencode 载体事件的 data 带 ``tool`` 字段——wrapper bash
+        调用同时携带提取好的内层设备 CLI（``data.cli``，逐行）；其余
+        带 ``tool`` 的事件（agent 内部工具 skill/todowrite/read、宿主侧
+        排障 bash）不进扫描。无 ``tool`` 字段的事件（Fake/合成/wiretap
+        name-args 形态）保持既有提取逻辑。
+        """
         commands: list[str] = []
         for e in events:
             if e.event_type != EventType.TOOL_CALL:
                 continue
             data = e.data
+            cli = data.get("cli")
+            if isinstance(cli, str) and cli.strip():
+                commands.extend(l for l in cli.splitlines() if l.strip())
+                continue
+            if data.get("tool"):
+                continue
             cli = data.get("cli") or data.get("command")
             if not cli and isinstance(data.get("args"), dict):
                 cli = data["args"].get("cli") or data["args"].get("command")

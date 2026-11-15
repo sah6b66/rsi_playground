@@ -13,6 +13,7 @@ opencode 1.19.5 无 prompt-logger 插件（设计附 C 勘误），会话数据�
 from __future__ import annotations
 
 import json
+import shlex
 import sqlite3
 from typing import Any
 
@@ -25,6 +26,70 @@ logger = get_logger(__name__)
 OPENCODE_DB_PATH = "/root/.local/share/opencode/opencode.db"
 
 _OUTPUT_CAP = 4000
+
+# network-ops skill 的设备 CLI 包装脚本（deploy/sut-opencode/defaults/
+# skills/network-ops）——bash 调用它即"目标为设备的命令"（DD-08 §4
+# safety 扫描输入口径）。
+_DEVICE_WRAPPER = "huawei-cli.sh"
+
+
+def _up_to_shell_metachar(command: str) -> str:
+    """Quote-aware 截断：取首个未加引号的 shell 元字符（| < > ; &&）前
+    的调用头——wrapper 调用尾部的重定向/管道噪音不属于设备命令。"""
+    out: list[str] = []
+    in_quote = False
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if ch == '"':
+            in_quote = not in_quote
+            out.append(ch)
+        elif not in_quote and ch in "|<>;":
+            break
+        elif not in_quote and ch == "&" and command[i : i + 2] == "&&":
+            break
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _device_cli_lines(command: str | None) -> list[str]:
+    """从 wrapper bash 调用中提取内层设备 CLI（positional 只读命令与
+    -c 配置行）。非 wrapper 调用返回 []。"""
+    if not command or _DEVICE_WRAPPER not in command:
+        return []
+    head = _up_to_shell_metachar(command)
+    try:
+        tokens = shlex.split(head, posix=False)
+    except ValueError:
+        return []
+    idx = next(
+        (i for i, t in enumerate(tokens) if _DEVICE_WRAPPER in t), None
+    )
+    if idx is None:
+        return []
+    rest = tokens[idx + 1 :]
+    i = 0
+    # 首个非 flag token = 设备名（脚本契约：huawei-cli.sh <dev> ...）
+    while i < len(rest) and rest[i].startswith("-") and rest[i] != "-c":
+        i += 1
+    if i < len(rest):
+        i += 1
+    cmds: list[str] = []
+    while i < len(rest):
+        tok = rest[i]
+        if tok.startswith("-"):
+            i += 1  # -c 分隔符/未知 flag
+            continue
+        # posix=False 保留引号：仅引用的 token 是脚本入参（设备命令）；
+        # 裸 token（quit、2、/dev/null…）是 shell 控制噪音
+        if len(tok) >= 2 and tok[0] in "\"'" and tok[-1] == tok[0]:
+            inner = tok[1:-1]
+            if inner:
+                cmds.append(inner)
+        i += 1
+    return cmds
 
 
 def _ms_to_iso(ms: Any) -> str:
@@ -136,6 +201,13 @@ def _iter_tool_parts(conn: sqlite3.Connection):
                 "input": tool_input,
             },
         }
+        # F7-b：wrapper bash 调用的内层设备 CLI 进 data.cli——safety
+        # 扫描输入=目标为设备的命令（DD-08 §4），宿主 bash/agent 内部
+        # 工具不进扫描。命令全文保留在 command（det 全文匹配不受影响）。
+        if isinstance(command, str):
+            cli_lines = _device_cli_lines(command)
+            if cli_lines:
+                call["data"]["cli"] = "\n".join(cli_lines)
         output = state.get("output")
         output_text = (
             output if isinstance(output, str)

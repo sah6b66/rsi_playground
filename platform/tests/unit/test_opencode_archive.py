@@ -142,3 +142,59 @@ def test_wal_mode_db_still_converted(tmp_path):
     lines = session_archive_to_event_lines(path.read_bytes(), "run-wal")
     assert any('"tool_call"' in l for l in lines)
     assert any('"display clock"' in l for l in lines)
+
+
+def _tool_bash_with_command(command: str) -> dict:
+    part = json.loads(json.dumps(TOOL_BASH))
+    part["raw"]["state"]["input"]["command"] = command
+    return part
+
+
+def _call_data(db_bytes: bytes) -> list[dict]:
+    return [
+        json.loads(l)["data"]
+        for l in session_archive_to_event_lines(db_bytes, "run-cli")
+        if json.loads(l)["event_type"] == "tool_call"
+    ]
+
+
+def test_wrapper_bash_extracts_device_cli():
+    """F7-b：safety 扫描输入=目标为设备的命令（DD-08 §4）。wrapper bash
+    的内层设备 CLI 必须提取进 data.cli——三种真实形态：位置参数只读命令、
+    -c 配置行、带尾部 shell 重定向/管道噪音。"""
+    db = _build_db([
+        _tool_bash_with_command(
+            "bash /agent-config/skills/network-ops/huawei-cli.sh Spine-01 "
+            '"display version"'
+        ),
+        _tool_bash_with_command(
+            "bash /agent-config/skills/network-ops/huawei-cli.sh Leaf-01 "
+            '-c "interface GE1/0/1" -c "description To-Spine-01"'
+        ),
+        _tool_bash_with_command(
+            "bash /tmp/opencode/huawei-cli.sh Leaf-01 "
+            '"display interface brief" quit 2>/dev/null | grep -vE "^Info:"'
+        ),
+    ])
+    datas = _call_data(db)
+    cli_values = [d.get("cli") for d in datas]
+    assert cli_values[0] == "display version"
+    assert cli_values[1] == "interface GE1/0/1\ndescription To-Spine-01"
+    # 尾部 quit/重定向/管道属 shell 噪音，不得进入设备命令
+    assert cli_values[2] == "display interface brief"
+
+
+def test_non_wrapper_bash_and_agent_tools_have_no_cli():
+    """F7-b：非 wrapper bash（host 侧排障）与 agent 内部工具
+    （skill/todowrite/read 的 command 是 JSON 元数据）不产设备 CLI。"""
+    skill_part = json.loads(json.dumps(TOOL_BASH))
+    skill_part["raw"]["tool"] = "skill"
+    skill_part["raw"]["state"]["input"] = {"name": "network-ops"}
+    db = _build_db([
+        _tool_bash_with_command("bash --version | head -1"),
+        skill_part,
+    ])
+    datas = _call_data(db)
+    assert all("cli" not in d for d in datas)
+    # 命令全文仍在 data 里（det 全文匹配不受影响）
+    assert "bash --version" in datas[0]["command"]
