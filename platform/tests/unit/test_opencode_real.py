@@ -173,6 +173,47 @@ def test_exec_probe_reports_container_and_trace_progress(tmp_path):
     assert "bash" in info["trace_last"]
 
 
+def test_sweep_orphans_removes_only_aged_rsi_containers(tmp_path):
+    """F12：服务器被强杀时 run_task 的 destroy 兜底不执行——启动清扫
+    rsi-run-* 超龄容器；新近容器与其他命名容器不动。"""
+    adapter = _adapter(tmp_path)
+    client = adapter.host_pool._c
+
+    import time as _t
+    from datetime import datetime, timedelta, timezone
+
+    class _OrphanContainer:
+        def __init__(self, name, age_s):
+            self.attrs = {
+                "Names": [f"/{name}"],
+                "Created": (
+                    datetime.now(timezone.utc) - timedelta(seconds=age_s)
+                ).isoformat(),
+            }
+            self.removed = False
+            self.short_id = name[-6:]
+
+        def remove(self, force=False):
+            self.removed = True
+
+    old_rsi = _OrphanContainer("rsi-run-20261113043230-abc", 3 * 86400)
+    new_rsi = _OrphanContainer("rsi-run-fresh", 60)
+    other = _OrphanContainer("nginx", 3 * 86400)
+    client.created.extend([old_rsi, new_rsi, other])
+
+    # client.containers.list 需要（FakeContainers 只有 create/get）
+    def _list_all(all=True):
+        return list(client.created)
+
+    client.containers.list = _list_all
+
+    removed = adapter.sweep_orphans(["main"], max_age_s=7200.0)
+    assert removed == 1
+    assert old_rsi.removed is True
+    assert new_rsi.removed is False
+    assert other.removed is False
+
+
 def test_real_destroy_removes_container(tmp_path):
     adapter = _adapter(tmp_path)
     cid = adapter.start_instance("img", tmp_path, "read-only", None, "main", "run-1")

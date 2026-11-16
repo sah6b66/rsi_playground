@@ -314,6 +314,22 @@ def build_services(
         adapters=adapters,
         settings=settings,
     )
+    # F12：启动清扫孤儿 SUT 容器——服务器被强杀时 run_task 的 destroy
+    # 兜底不会执行（S11 实测累积 5 个 rsi-run-* 残留）。超龄（>2h）才
+    # 清，新近容器不动（同主机可能有并行实例在用）。失败不阻断启动。
+    try:
+        _hosts = list((getattr(settings.carrier, "hosts", None) or {}).keys())
+        for _ad in adapters.values():
+            _sweep = getattr(_ad, "sweep_orphans", None)
+            if _sweep is None:
+                continue
+            _removed = _sweep(_hosts)
+            if _removed:
+                logger.info("bootstrap.container_sweep", removed=_removed)
+    except Exception as exc:  # noqa: BLE001 - 清扫失败不阻断启动
+        logger.warning(
+            "bootstrap.container_sweep_failed", error=str(exc)[:120]
+        )
 
     # -- Sandbox (T4: kind routing — fake offline, prebuilt platforms) ---
     # Bug fix (T4): every settings backend used to be setdefault'd to

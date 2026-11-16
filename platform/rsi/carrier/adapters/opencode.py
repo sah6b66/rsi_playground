@@ -376,6 +376,56 @@ class OpenCodeAdapter(CarrierAdapter):
 
     # -- S11 real container lifecycle -------------------------------------
 
+    def sweep_orphans(self, hosts: list[str], max_age_s: float = 7200.0) -> int:
+        """F12：清扫孤儿 SUT 容器（rsi-run-* 命名且创建超 max_age）。
+
+        服务器进程被强杀时 run_task 的 destroy 兜底不会执行（S11 实测
+        累积 5 个残留容器）——启动时按主机清扫超龄容器；新近容器不动
+        （同主机可能有并行实例在用）。失败静默（清扫不得阻断启动）。
+        """
+        import time as _time
+
+        removed = 0
+        for host in hosts:
+            try:
+                client = self.host_pool.client(host)
+            except Exception:  # noqa: BLE001 - host 未配置
+                continue
+            if client is None:
+                continue
+            try:
+                for ct in client.containers.list(all=True):
+                    names = ct.attrs.get("Names") or []
+                    if not any(n.startswith("/rsi-run-") for n in names):
+                        continue
+                    created = ct.attrs.get("Created", "")
+                    # Docker 时间戳形如 2026-11-16T03:14:38.123456789Z
+                    from datetime import UTC, datetime
+
+                    try:
+                        ts = datetime.fromisoformat(
+                            created.replace("Z", "+00:00")
+                        )
+                        age = _time.time() - ts.timestamp()
+                    except ValueError:
+                        age = max_age_s + 1  # 解析失败按超龄处理
+                    if age > max_age_s:
+                        ct.remove(force=True)
+                        removed += 1
+                        logger.info(
+                            "opencode.orphan_swept",
+                            host=host,
+                            container=(names[0] if names else ct.short_id),
+                            age_s=int(age),
+                        )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "opencode.orphan_sweep_failed",
+                    host=host,
+                    error=str(exc)[:120],
+                )
+        return removed
+
     def start_instance(
         self,
         image_ref: str,
