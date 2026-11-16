@@ -135,7 +135,7 @@ class JudgeService:
                 config_version_id=config_version_id,
                 batch_purpose=batch_purpose,
             )
-        logger.debug(
+        logger.info(
             "judge_run.exit",
             task_complete=verdict.scores.task_complete,
             missing=verdict.missing,
@@ -185,7 +185,7 @@ class JudgeService:
             with self._session_factory() as session:
                 session.add(row)
                 session.commit()
-            logger.debug("judgment.persisted", run_id=run_id)
+            logger.info("judgment.persisted", run_id=run_id)
         except Exception as exc:  # noqa: BLE001 - persistence must not block judging
             logger.warning(
                 "judgment.persist_failed", run_id=run_id, exc_type=type(exc).__name__

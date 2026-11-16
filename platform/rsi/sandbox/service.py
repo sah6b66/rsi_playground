@@ -289,13 +289,13 @@ class SandboxService:
         return report
 
     async def snapshot(self, lab: LabHandle, name: str) -> SnapRef:
-        logger.debug("snapshot.entry", lab_id=lab.lab_id, name=name)
+        logger.info("snapshot.entry", lab_id=lab.lab_id, name=name)
         snap = await self._backend(lab).snapshot(lab, name)
         self._snapshots.setdefault(lab.lab_id, []).append(snap)
         self._journals[lab.lab_id].append(
             {"record": "snapshot", "name": name, "snapshot_id": snap.snapshot_id}
         )
-        logger.debug("snapshot.exit", snapshot_id=snap.snapshot_id)
+        logger.info("snapshot.exit", snapshot_id=snap.snapshot_id)
         return snap
 
     async def restore(self, lab: LabHandle, snap: SnapRef) -> None:
@@ -397,7 +397,7 @@ class SandboxService:
         return applied
 
     async def restore_task(self, lab: LabHandle, applied: list[AppliedAction]) -> None:
-        logger.debug("restore_task.entry", lab_id=lab.lab_id, applied_count=len(applied))
+        logger.info("restore_task.entry", lab_id=lab.lab_id, applied_count=len(applied))
         last: EnvError | None = None
         for attempt in range(_RESTORE_MAX_ATTEMPTS):
             try:
@@ -405,14 +405,15 @@ class SandboxService:
                 self._journal(lab).append(
                     {"record": "restore_task", "ts": _utcnow_iso(), "status": "ok"}
                 )
-                logger.debug("restore_task.exit", attempt=attempt + 1, status="ok")
+                logger.info("restore_task.exit", attempt=attempt + 1, status="ok")
                 return
             except EnvError as exc:
                 last = exc
-                logger.debug(
+                logger.warning(
                     "restore_task.retry_round",
                     attempt=attempt + 1,
                     exc_type=type(exc).__name__,
+                    error=str(exc)[:200],
                 )
         self._journal(lab).append(
             {
@@ -423,7 +424,7 @@ class SandboxService:
             }
         )
         assert last is not None
-        logger.debug("restore_task.exit", status="failed", exc_type=type(last).__name__)
+        logger.info("restore_task.exit", status="failed", exc_type=type(last).__name__)
         raise last
 
     async def replay_applied_ops(

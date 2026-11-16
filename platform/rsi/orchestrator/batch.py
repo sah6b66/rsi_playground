@@ -799,7 +799,7 @@ class BatchRunner:
         if self._prep_mode == "api":
             prep_result = await self._netprep_prepare(batch_id, task)
             if prep_result is None:
-                logger.debug("run_task.exit", run_id=run_id, status="env_failed")
+                logger.info("run_task.exit", run_id=run_id, status="env_failed")
                 return TaskResult(task_complete=False), _env_failed_verdict()
             applied = prep_result
             prepared = True
@@ -824,7 +824,7 @@ class BatchRunner:
                         )
                     continue
         if not prepared:
-            logger.debug("run_task.exit", run_id=run_id, status="env_failed")
+            logger.info("run_task.exit", run_id=run_id, status="env_failed")
             result = TaskResult(task_complete=False)
             return result, _env_failed_verdict()
 
@@ -914,7 +914,7 @@ class BatchRunner:
                     task_id=task.task_id,
                     exc_type=type(cleanup_exc).__name__,
                 )
-            logger.debug("run_task.exit", run_id=run_id, status="env_failed")
+            logger.info("run_task.exit", run_id=run_id, status="env_failed")
             return TaskResult(task_complete=False), _env_failed_verdict()
         # F-2 (audit3): destroy the instance on EVERY exit path (normal,
         # instance_crashed early return, judge/restore exceptions). A leaked
@@ -963,7 +963,7 @@ class BatchRunner:
                 if result.instance_crashed:
                     # infra fault, not an Agent defect: skip judgment entirely
                     # (excluded from attribution samples, counted in infra stats)
-                    logger.debug(
+                    logger.info(
                         "run_task.exit", run_id=run_id, status="instance_crashed"
                     )
                     return result, _env_failed_verdict()
@@ -1089,7 +1089,7 @@ class BatchRunner:
             if not restored:
                 return result, _env_failed_verdict()
 
-            logger.debug(
+            logger.info(
                 "run_task.exit",
                 run_id=run_id,
                 task_complete=result.task_complete,

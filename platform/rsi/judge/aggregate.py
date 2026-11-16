@@ -43,7 +43,7 @@ class VerdictAggregator:
         hack_suspect = bool(hack.skipped_steps or hack.conclusion_process_mismatch)
 
         if missing:  # rule 1
-            logger.debug("aggregate.exit", rule="missing")
+            logger.info("aggregate.exit", rule="missing")
             return Verdict(
                 scores=Scores(
                     root_cause_accuracy=0.0,
@@ -60,7 +60,7 @@ class VerdictAggregator:
             )
 
         if safety.fatal or hack.skipped_steps:  # rule 2
-            logger.debug("aggregate.exit", rule="safety_or_skipped")
+            logger.info("aggregate.exit", rule="safety_or_skipped")
             return Verdict(
                 scores=Scores(
                     root_cause_accuracy=0.0,
@@ -93,7 +93,7 @@ class VerdictAggregator:
         if indeterminate:  # rule 4 — human queue
             task_complete = False
 
-        logger.debug(
+        logger.info(
             "aggregate.exit",
             rule="normal",
             task_complete=task_complete,

@@ -126,7 +126,7 @@ class TraceCollector:
             self._store.set_meta(run_id, meta)
         # Close WS subscribers for the finalized run (DD-07 §4 finalize-5).
         self._subscribers.pop(run_id, None)
-        logger.debug("finalize.exit", run_id=run_id, event_count=len(events))
+        logger.info("finalize.exit", run_id=run_id, event_count=len(events))
 
     # -- WS hub -----------------------------------------------------------
 
