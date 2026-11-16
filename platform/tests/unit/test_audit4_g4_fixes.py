@@ -245,6 +245,67 @@ def test_ingest_trace_channels_quiet_when_no_files(tmp_path: Path) -> None:
     assert extra == []
 
 
+def test_collect_with_heartbeat_polls_exec_probe() -> None:
+    """F11：collect 阻塞期间周期探针——SUT Agent 卡死在长工具执行时
+    stdout 可能完全静默，心跳携带容器态 + 会话库轨迹进度。"""
+    import asyncio
+
+    from rsi.orchestrator import batch as batch_mod
+
+    calls: list[int] = []
+
+    class _SlowCarrier:
+        def collect(self, handle, timeout_s):
+            import time as _t
+
+            _t.sleep(0.15)
+            return "RESULT"
+
+        def exec_probe(self, handle):
+            calls.append(1)
+            return {"container": "running", "trace_parts": 3}
+
+    runner = SimpleNamespace(
+        carrier=_SlowCarrier(), task_timeout_s=30
+    )
+    old = batch_mod._EXEC_HEARTBEAT_S
+    batch_mod._EXEC_HEARTBEAT_S = 0.05
+    try:
+        out = asyncio.run(
+            batch_mod.BatchRunner._collect_with_heartbeat(runner, "run-hb", object())
+        )
+    finally:
+        batch_mod._EXEC_HEARTBEAT_S = old
+    assert out == "RESULT"
+    assert len(calls) >= 1
+
+
+def test_collect_with_heartbeat_probe_failure_degrades() -> None:
+    """探针抛异常不得影响 collect 主链路（降级 elapsed-only）。"""
+    import asyncio
+
+    from rsi.orchestrator import batch as batch_mod
+
+    class _BadProbeCarrier:
+        def collect(self, handle, timeout_s):
+            return "OK"
+
+        def exec_probe(self, handle):
+            raise RuntimeError("probe boom")
+
+    runner = SimpleNamespace(carrier=_BadProbeCarrier(), task_timeout_s=5)
+    old = batch_mod._EXEC_HEARTBEAT_S
+    batch_mod._EXEC_HEARTBEAT_S = 0.05
+    try:
+        # collect 立即完成——首个 wait_for 周期内返回，探针不触发即结束
+        out = asyncio.run(
+            batch_mod.BatchRunner._collect_with_heartbeat(runner, "run-hb2", object())
+        )
+    finally:
+        batch_mod._EXEC_HEARTBEAT_S = old
+    assert out == "OK"
+
+
 def test_collect_run_events_ingests_each_stream_once(tmp_path: Path) -> None:
     """F9-e：wiretap 事件经 tail_ndjson 已入 collector——run_task 组装时
     不得再经外层 ingest 重复入（S11 发现：collector/traces 查询与 F9-b

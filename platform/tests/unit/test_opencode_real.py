@@ -145,6 +145,34 @@ def test_real_collect_runs_exec_and_fills_handle(tmp_path):
     assert c.execs[0]["env"]["OPENCODE_WIRETAP_FILE"] == "/trace/wiretap/run-1.ndjson"
 
 
+def test_exec_probe_reports_container_and_trace_progress(tmp_path):
+    """F11：心跳探针三层信息——容器态 + 会话库轨迹进度（part 数与最新
+    动作）。stdout 静默期 part 表仍在更新，是 agent 执行进度的可靠源。"""
+    adapter = _adapter(tmp_path)
+    cid = adapter.start_instance("img", tmp_path, "read-write", None, "main", "run-1")
+    (container,) = adapter.host_pool._c.created
+
+    class _Reloadable(FakeContainer):
+        status = "running"
+
+        def reload(self):
+            pass
+
+        def logs(self, tail=0):
+            return b""
+
+    # 注入活会话库（1 个 tool part）
+    from tests.unit.test_opencode_archive import TOOL_BASH, _build_db
+
+    container.__class__ = _Reloadable
+    container.db_bytes = _build_db([TOOL_BASH])
+
+    info = adapter.exec_probe(_instance(adapter, cid))
+    assert info["container"] == "running"
+    assert info["trace_parts"] == 1
+    assert "bash" in info["trace_last"]
+
+
 def test_real_destroy_removes_container(tmp_path):
     adapter = _adapter(tmp_path)
     cid = adapter.start_instance("img", tmp_path, "read-only", None, "main", "run-1")

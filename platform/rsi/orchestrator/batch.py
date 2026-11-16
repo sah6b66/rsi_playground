@@ -14,6 +14,7 @@ import hashlib
 import inspect
 import json
 import threading
+import time
 from types import SimpleNamespace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -52,6 +53,9 @@ logger = get_logger(__name__)
 _PREPARE_ATTEMPTS = 3  # 1 initial + 2 retries (DD-12 §5.2 step 3)
 _MAX_CONSECUTIVE_ENV_FAILURES = 3  # F1 circuit breaker (DD-12 §5.1)
 _EST_TOKENS_PER_TASK = 50_000
+# F11：SUT Agent 执行期心跳间隔（秒）——真实容器 exec 可达 5-14 分钟，
+# 周期记录容器状态与输出尾部，避免任务提交后长时间无感知。
+_EXEC_HEARTBEAT_S = 60
 
 _CRED_SUFFIXES = ("USER", "PASS", "HOST", "PORT")
 
@@ -956,9 +960,7 @@ class BatchRunner:
             try:
                 # 5. submit -> collect (timeout from config)
                 handle = self.carrier.submit_task(instance, task.task)
-                result = await asyncio.to_thread(
-                    self.carrier.collect, handle, self.task_timeout_s
-                )
+                result = await self._collect_with_heartbeat(run_id, handle)
                 # F1/C1: 回答全文留证（判分复核/排障），失败不阻断
                 if self.settings is not None:
                     persist_stdout(
@@ -1432,6 +1434,35 @@ class BatchRunner:
         # F6/R5：build_lab 已登记 post-build snap0（service.py 登记 + ops
         # journal 落记录）——复用之，不再补拍（否则每 lab 两条 snap0 记录）。
         return lab, self.sandbox.snapshots(lab.lab_id)[-1]
+
+    async def _collect_with_heartbeat(self, run_id: str, handle: Any) -> Any:
+        """collect（阻塞至任务完成/超时）+ 执行期心跳（F11）。
+
+        每个心跳间隔记录 elapsed + 载体探针信息（容器状态/输出尾部，
+        ``carrier.exec_probe`` 可选实现），让 SUT Agent 卡死/异常在
+        exec 中途即可从日志感知，而非等到 exec_done/超时。探针失败
+        静默（心跳降级为 elapsed-only），绝不影响 collect 主链路。
+        """
+        probe = getattr(self.carrier, "exec_probe", None)
+        task = asyncio.create_task(
+            asyncio.to_thread(self.carrier.collect, handle, self.task_timeout_s)
+        )
+        started = time.monotonic()
+        while True:
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(task), timeout=_EXEC_HEARTBEAT_S
+                )
+            except asyncio.TimeoutError:
+                info: dict[str, Any] = {
+                    "elapsed_s": int(time.monotonic() - started)
+                }
+                if probe is not None:
+                    try:
+                        info.update(await asyncio.to_thread(probe, handle))
+                    except Exception:  # noqa: BLE001 - 心跳不得扰动主链路
+                        info["probe"] = "unavailable"
+                logger.info("run_task.exec_heartbeat", run_id=run_id, **info)
 
     def _collect_run_events(
         self,

@@ -186,6 +186,96 @@ class OpenCodeAdapter(CarrierAdapter):
         self._pull_trace(container, handle.run_id)
         return handle.stdout
 
+    def exec_probe(self, handle: Any) -> dict:
+        """F11 执行期心跳探针：容器态 + stdout 尾行 + 会话库轨迹进度。
+
+        周期由 BatchRunner 心跳驱动（60s）；本方法自身不抛——任何失败
+        降级为部分字段，绝不扰动 collect 主链路。
+        """
+        try:
+            client, cid = self._resolve_run(handle.run_id)
+            if client is None or cid is None:
+                return {"container": "unknown"}
+            container = client.containers.get(cid)
+            container.reload()
+            info: dict = {"container": container.status}
+            try:
+                logs = container.logs(tail=3).decode("utf-8", "replace")
+                tail = [ln for ln in logs.splitlines() if ln.strip()]
+                if tail:
+                    info["tail"] = tail[-1][:160]
+            except Exception:  # noqa: BLE001 - 尾行可选
+                pass
+            info.update(self._live_trace_progress(container))
+            return info
+        except Exception as exc:  # noqa: BLE001 - 探针失败降级
+            return {"container": "unavailable", "error": str(exc)[:80]}
+
+    @staticmethod
+    def _live_trace_progress(container: Any) -> dict:
+        """拉取 opencode.db(+wal/shm) 只读查询轨迹进度（F11）。
+
+        WAL 模式支持写入期并发读——比 stdout 信息量可靠（agent 长时间
+        执行设备工具时 stdout 可能完全静默，会话库的 part 表始终在更新）。
+        """
+        import io as _io
+        import json as _json
+        import shutil as _shutil
+        import sqlite3 as _sq
+        import tarfile as _tar
+        import tempfile as _tf
+        from pathlib import Path as _P
+
+        from rsi.carrier.opencode_archive import OPENCODE_DB_PATH
+
+        blobs: dict[str, bytes] = {}
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                stream, _stat = container.get_archive(OPENCODE_DB_PATH + suffix)
+                data = b"".join(stream)
+                with _tar.open(fileobj=_io.BytesIO(data)) as tf:
+                    member = next(
+                        (m for m in tf.getmembers()
+                         if m.name.endswith("opencode.db" + suffix)),
+                        None,
+                    )
+                    if member is not None:
+                        blobs["opencode.db" + suffix] = tf.extractfile(member).read()
+            except Exception:  # noqa: BLE001 - -wal/-shm 可能不存在
+                pass
+        if "opencode.db" not in blobs:
+            return {"trace": "unavailable"}
+        tmp = _tf.mkdtemp(prefix="opencode-hb-")
+        try:
+            for fname, blob in blobs.items():
+                (_P(tmp) / fname).write_bytes(blob)
+            conn = _sq.connect(f"file:{_P(tmp) / 'opencode.db'}?mode=ro", uri=True)
+            try:
+                n_parts = conn.execute("SELECT count(*) FROM part").fetchone()[0]
+                row = conn.execute(
+                    "SELECT data FROM part ORDER BY time_updated DESC LIMIT 1"
+                ).fetchone()
+            finally:
+                conn.close()
+            last = ""
+            if row:
+                try:
+                    d = _json.loads(row[0])
+                    tool = str(d.get("tool") or d.get("type") or "")
+                    state = d.get("state") or {}
+                    cmd = (
+                        (state.get("input") or {}).get("command")
+                        if isinstance(state.get("input"), dict) else None
+                    )
+                    last = f"{tool}: {str(cmd)[:80]}" if cmd else tool
+                except Exception:  # noqa: BLE001
+                    last = "<unparsed>"
+            return {"trace_parts": n_parts, "trace_last": last[:120]}
+        except Exception:  # noqa: BLE001 - 进度查询失败降级
+            return {"trace": "unavailable"}
+        finally:
+            _shutil.rmtree(tmp, ignore_errors=True)
+
     def _pull_trace(self, container: Any, run_id: str) -> None:
         """远端模式：exec 后回收容器 trace（wiretap + opencode 会话库）.
 
