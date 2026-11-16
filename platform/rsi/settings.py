@@ -601,6 +601,7 @@ class LlmSettings(BaseModel):
     })
     cassette_mode: Literal["replay", "record", "off"] = "replay"
     max_concurrent_calls: int = 4
+    retry_max: int = 3
 
 
 # ══════ ⑪ evalset / network-prep API (ADR-27, config doc §2 ⑪) ══════

@@ -86,3 +86,62 @@ def test_handler_temperature_kwarg_accepted(monkeypatch):
     )
     h = AnthropicCompatHandler(api_key="tk")
     assert h("critic", "x", {"prompt": "p"}, temperature=0.3)
+
+
+def test_handler_retries_on_5xx(monkeypatch):
+    import httpx
+
+    calls = {"n": 0}
+    sleeps: list[float] = []
+
+    def fake_post(url, **kw):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            return httpx.Response(500, text="boom")
+        return httpx.Response(
+            200, json={"content": [{"type": "text", "text": "ok"}],
+                        "usage": {"input_tokens": 3, "output_tokens": 4}}
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(
+        "rsi.llm.providers.time.sleep", lambda s: sleeps.append(s)
+    )
+    h = AnthropicCompatHandler(api_key="k", retry_max=3)
+    assert h("judge", "root_cause", {"prompt": "p"}) == "ok"
+    assert calls["n"] == 3
+    assert len(sleeps) == 2  # 两次失败各退避一次
+    assert all(0 < s <= 31 for s in sleeps)  # min(2^n,30)+抖动
+
+
+def test_handler_raises_after_retry_exhaustion(monkeypatch):
+    import httpx
+
+    def fake_post(url, **kw):
+        return httpx.Response(500, text="down")
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr("rsi.llm.providers.time.sleep", lambda s: None)
+    h = AnthropicCompatHandler(api_key="k", retry_max=3)
+    from rsi.llm.providers import RetryableProviderError
+
+    with pytest.raises(RetryableProviderError):
+        h("judge", "root_cause", {"prompt": "p"})
+
+
+def test_handler_no_retry_on_4xx(monkeypatch):
+    import httpx
+
+    calls = {"n": 0}
+
+    def fake_post(url, **kw):
+        calls["n"] += 1
+        return httpx.Response(401, text="bad key")
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    h = AnthropicCompatHandler(api_key="k", retry_max=3)
+    from rsi.llm.providers import ProviderHTTPError
+
+    with pytest.raises(ProviderHTTPError):
+        h("judge", "root_cause", {"prompt": "p"})
+    assert calls["n"] == 1  # 4xx 不重试

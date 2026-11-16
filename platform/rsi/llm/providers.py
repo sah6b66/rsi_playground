@@ -9,15 +9,29 @@ LLMClient 经 ``vars["prompt"]`` 传入（PromptLibrary 渲染产物）。
 from __future__ import annotations
 
 import json
+import random
+import time
 from typing import Any
 
 import httpx
 
 from rsi.log import get_logger
 
-__all__ = ["AnthropicCompatHandler"]
+__all__ = [
+    "AnthropicCompatHandler",
+    "RetryableProviderError",
+    "ProviderHTTPError",
+]
 
 logger = get_logger(__name__)
+
+
+class RetryableProviderError(RuntimeError):
+    """传输层重试耗尽（429/5xx/网络/超时）."""
+
+
+class ProviderHTTPError(RuntimeError):
+    """非重试类 provider HTTP 错误（4xx 等）."""
 
 
 class AnthropicCompatHandler:
@@ -30,12 +44,14 @@ class AnthropicCompatHandler:
         model: str = "glm-5.1",
         timeout_s: float = 120.0,
         max_tokens: int = 4096,
+        retry_max: int = 3,
     ) -> None:
         self.api_key = api_key
         self.base_url = (base_url or "https://api.anthropic.com").rstrip("/")
         self.model = model
         self.timeout_s = timeout_s
         self.max_tokens = max_tokens
+        self.retry_max = retry_max
 
     def __call__(
         self,
@@ -57,15 +73,34 @@ class AnthropicCompatHandler:
             "x-api-key": self.api_key,
             "Authorization": f"Bearer {self.api_key}",
         }
-        resp = httpx.post(
-            f"{self.base_url}/v1/messages",
-            json=body,
-            headers=headers,
-            timeout=self.timeout_s,
-        )
-        if resp.status_code != 200:
-            raise RuntimeError(
+        last_retryable: Exception | None = None
+        for attempt in range(self.retry_max):
+            try:
+                resp = httpx.post(
+                    f"{self.base_url}/v1/messages",
+                    json=body,
+                    headers=headers,
+                    timeout=self.timeout_s,
+                )
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                last_retryable = exc
+                time.sleep(min(2 ** attempt, 30) + random.uniform(0, 1))
+                continue
+            if resp.status_code == 200:
+                break
+            if resp.status_code == 429 or 500 <= resp.status_code < 600:
+                last_retryable = ProviderHTTPError(
+                    f"llm provider http {resp.status_code}: {resp.text[:300]}"
+                )
+                time.sleep(min(2 ** attempt, 30) + random.uniform(0, 1))
+                continue
+            raise ProviderHTTPError(
                 f"llm provider http {resp.status_code}: {resp.text[:300]}"
+            )
+        else:
+            raise RetryableProviderError(
+                f"llm provider unreachable after {self.retry_max} attempts: "
+                f"{last_retryable}"
             )
         data = resp.json()
         text = "".join(

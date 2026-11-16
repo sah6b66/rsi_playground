@@ -243,6 +243,7 @@ def build_services(
             api_key=_anth.api_key,
             base_url=_anth.base_url,
             model=(judge_cfg.model if judge_cfg and judge_cfg.model else "glm-5.1"),
+            retry_max=settings.llm.retry_max,
         )
         logger.info(
             "bootstrap.llm_real_provider",
