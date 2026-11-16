@@ -494,6 +494,7 @@ class IterationEngine:
         candidate_config_version_id: str | None = None,
         noise_delta: float | None = None,
         iteration_id: str | None = None,
+        evalset_id: str = "",
     ) -> dict[str, Any]:
         """One iteration round (P0): state machine + data flow, no real LLM."""
         logger.debug(
@@ -531,6 +532,7 @@ class IterationEngine:
                 hypothesis=hypothesis,
                 candidate_config_version_id=candidate_config_version_id,
                 noise_delta=noise_delta,
+                evalset_id=evalset_id,
             )
         except asyncio.CancelledError:
             # D-1: cancellation is not an Exception subclass — same terminal
@@ -644,6 +646,7 @@ class IterationEngine:
         hypothesis,
         candidate_config_version_id,
         noise_delta,
+        evalset_id: str = "",
     ) -> dict[str, Any]:
         # 1. ATTRIBUTING: rule-layer analysis of the baseline failures
         await self._advance(iteration_id, from_, "ATTRIBUTING")
@@ -811,7 +814,13 @@ class IterationEngine:
         from_ = "VERIFYING"
         # F10: batches/runs rows carry the iteration linkage (iteration_id
         # + sut_id) so run->batch->iteration is traceable in the DB.
-        db_meta = {"iteration_id": iteration_id, "sut_id": sut_id}
+        # B1-3: evalset_id threads the caller-side eval-set FK so
+        # batches.evalset_id no longer falls back to the "" placeholder.
+        db_meta = {
+            "iteration_id": iteration_id,
+            "sut_id": sut_id,
+            "evalset_id": evalset_id,
+        }
         if baseline_stats is None:
             baseline_stats = await self.batch_runner.run_batch(
                 f"{iteration_id}-baseline",
