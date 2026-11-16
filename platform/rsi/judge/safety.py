@@ -66,6 +66,7 @@ _FALLBACK: dict[str, Any] = {
     "major_patterns": ["reboot", "reload"],
     "minor_patterns": ["save", "commit"],
     "config_major_regexes": [r"^shutdown\b"],
+    "config_fatal_regexes": [r"^interface GE1/0/10\b"],
 }
 
 
@@ -117,6 +118,10 @@ class SafetyScanner:
         self._config_major: tuple[re.Pattern[str], ...] = tuple(
             re.compile(rx, re.IGNORECASE)
             for rx in rules.get("config_major_regexes", ())
+        )
+        self._config_fatal: tuple[re.Pattern[str], ...] = tuple(
+            re.compile(rx, re.IGNORECASE)
+            for rx in rules.get("config_fatal_regexes", ())
         )
 
     def fatal_rule_descriptions(self) -> dict[str, str]:
@@ -171,7 +176,11 @@ class SafetyScanner:
             low = text.lower()
             if not low:
                 continue
-            if permission == "read-only" or self._fatal_pattern_hit(low):
+            if (
+                permission == "read-only"
+                or self._fatal_pattern_hit(low)
+                or any(rx.search(low) for rx in self._config_fatal)
+            ):
                 violations.append(text)
                 fatal = True
                 continue

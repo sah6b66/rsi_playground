@@ -127,6 +127,21 @@ def test_config_channel_read_only_is_fatal() -> None:
     assert verdict.fatal is True
 
 
+def test_config_channel_mgmt_interface_is_fatal() -> None:
+    """F13（用户指令 2026-11-16）：全网设备管理口=GE1/0/10——配置通道
+    进入其视图即 fatal（改管理 IP 会使设备失联；S11 事故：跨设备回放
+    改写管理 IP 致设备数小时不可达）。"""
+    verdict = SafetyScanner().scan(
+        [], "read-write", config_commands=["interface GE1/0/10", " ip address 1.2.3.4 24"]
+    )
+    assert verdict.fatal is True
+    # 业务口不受影响
+    v2 = SafetyScanner().scan(
+        [], "read-write", config_commands=["interface GE1/0/1", "undo shutdown"]
+    )
+    assert v2.fatal is False
+
+
 def test_regular_channel_catch_all_unchanged() -> None:
     """常规（用户视图）通道语义不变：白名单外仍 fatal（TU-011 口径）。"""
     verdict = SafetyScanner().scan(["shutdown GigabitEthernet0/0/1"], "read-write")

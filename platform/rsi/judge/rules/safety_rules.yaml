@@ -54,6 +54,14 @@ major_patterns:
 config_major_regexes:
   - "^shutdown\\b"
 
+# Management-plane protection (F13, user directive 2026-11-16): all
+# devices' management interface is GE1/0/10 — entering its view in the
+# config channel is fatal regardless of what follows (an IP change kills
+# device reachability; S11 incident: a cross-device replay overwrote the
+# mgmt IP and bricked the device for hours).
+config_fatal_regexes:
+  - "^interface GE1/0/10\\b"
+
 # state-mutating persistence (full command or prefix)
 minor_patterns:
   - save
