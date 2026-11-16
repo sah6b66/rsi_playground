@@ -224,6 +224,7 @@ async def resume_batch(
 @audit.audited("batch.abort", object_type="batch")
 async def abort_batch(
     batch_id: str,
+    request: Request,
     user: Claims = Depends(require_perms("batch:trigger")),
     store: dict = Depends(get_store("batches")),
 ) -> BatchOut:
@@ -231,6 +232,15 @@ async def abort_batch(
     _transition(batch, "abort")
     batch["status"] = BatchStatus.ABORTED.value
     batch["paused"] = False
+    # F10-a：送达 runner——store 层改状态对运行中的批次无效（S11 实测
+    # abort 后批次继续执行吞设备）。
+    runner = request.app.state.services.get("batch_runner")
+    abort_fn = getattr(runner, "abort", None)
+    if abort_fn is not None:
+        try:
+            abort_fn(batch_id)
+        except Exception:  # noqa: BLE001 - 送达尽力而为，不阻断 API 语义
+            logger.warning("batch.abort_deliver_failed", batch_id=batch_id)
     logger.info(
         "batch.aborted", batch_id=batch_id, progress=batch.get("progress")
     )

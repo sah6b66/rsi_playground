@@ -480,6 +480,35 @@ class TestB6VendorReset:
         # 整 lab backend reset 同样从未触发
         assert resets == []
 
+    def test_restore_wraps_non_env_exceptions(self, tmp_path):
+        """F10-c（S11 实测）：netmiko 原生 ReadTimeout 穿透只捕 EnvError
+        的重试层直接杀死整批——非 EnvError 异常必须包装降级（重试→
+        EnvError→任务 env_failed），三 attempts 后抛 EnvError 而非原异常。"""
+        from rsi.core.errors import EnvError
+
+        backup = tmp_path / "R1.cfg"
+        backup.write_text("sysname R1\n", encoding="utf-8")
+
+        class _RaisingSession(_RecordingSession):
+            async def exec_config(self, lines):
+                self.config_calls.append(list(lines))
+                raise RuntimeError(
+                    "\nPattern not detected: '<[A-Za-z0-9._/-]+>' in output."
+                )
+
+        session = _RaisingSession(
+            SessionKey("10.0.0.9", 2022, "L1"), VENDOR_MAP["vrp"]
+        )
+        service = SandboxService(
+            backends={"fake": FakeSandboxBackend()},
+            labs_dir=tmp_path,
+            ssh_pool=_SingleSessionPool(session),
+        )
+        lab = asyncio.run(service.build_lab(_env_one()))
+        with pytest.raises(EnvError):
+            asyncio.run(service.restore_task(lab, self._applied(backup)))
+        assert len(session.config_calls) >= 3  # 1 + 2 retries
+
     def test_replay_skips_comment_and_volatile_lines(self, tmp_path):
         """F7-a：CE capture 的配置备份含 '!Software Version...' 等注释行，
         下发会在设备上报 ^Error:（S11 实测逐行恢复"中途易错"的一部分）。

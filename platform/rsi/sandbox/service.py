@@ -415,6 +415,19 @@ class SandboxService:
                     exc_type=type(exc).__name__,
                     error=str(exc)[:200],
                 )
+            except Exception as exc:  # noqa: BLE001 - netmiko/paramiko 原生异常
+                # S11 实测：ReadTimeout 等穿透重试层直接杀死整批——恢复
+                # 失败一律包装为 EnvError 走重试/env_failed 降级路径。
+                last = EnvError(
+                    f"restore failed: {type(exc).__name__}: {exc}",
+                    context={"lab_id": lab.lab_id},
+                )
+                logger.warning(
+                    "restore_task.retry_round",
+                    attempt=attempt + 1,
+                    exc_type=type(exc).__name__,
+                    error=str(exc)[:200],
+                )
         self._journal(lab).append(
             {
                 "record": "restore_task",

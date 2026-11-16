@@ -111,12 +111,25 @@ class NetmikoDeviceSession(DeviceSession):
     def _exec_config_sync(self, lines: list[str]) -> str:
         """配置批：显式 expect 串行，commit 行为由 VendorProfile 驱动（D2）。
 
-        netmiko huawei 驱动的 send_config_set 在 CE 上确定性失败：配置视图
-        提示符形如 ``[~Leaf-01]`` / 接口子视图 ``[~Leaf-01-GE1/0/1]``（含
-        ~ 与 /），且未 commit 时 ``return`` 触发 Y/N/C 交互提示。逐条
-        ``send_command(expect_string=...)`` 是唯一稳定形态；末尾是否补
-        ``commit`` 由 profile.two_phase_commit 决定（CE/VRP8 开，S 系关）。
+        与 _send_sync 同款断线自愈（S11 实测：池化会话在容器 exec 的
+        ~10 分钟里被设备掐掉，恢复/准备阶段的首次配置下发 ReadTimeout
+        裸抛——一次强制断开重连后重试即成功）。
         """
+        try:
+            return self._exec_config_once(lines)
+        except Exception as exc:  # noqa: BLE001 - 瞬时劣化统一重连重试一次
+            logger.warning(
+                "netmiko.exec_config_retry",
+                device=self._access.ip,
+                lines=len(lines),
+                error=str(exc)[:120],
+            )
+            self._force_disconnect()
+            _sleep(_RETRY_DELAYS[0])
+            return self._exec_config_once(lines)
+
+    def _exec_config_once(self, lines: list[str]) -> str:
+        """单次配置批下发（无重试）。"""
         conn = self._connect()
         v = self.vendor
         parts = [

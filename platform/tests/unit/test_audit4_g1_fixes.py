@@ -327,3 +327,35 @@ class TestWBProgress:
         dones = [u["progress"]["done"] for u in running]
         assert dones == sorted(dones) and dones[0] >= 1, dones  # monotonic
         assert running[-1]["progress"] == {"done": 2, "total": 2}
+
+    async def test_abort_request_stops_batch_at_task_boundary(self, tmp_path):
+        """F10-a（S11 实测）：API abort 只改 store 状态、runner 无感知，
+        批次继续执行吞设备。abort() 经共享 _abort_requests 送达（trigger
+        浅拷贝共享 set 引用），run_batch 在任务边界停止并报 aborted。"""
+        from tests.unit.test_batch_runner import Rig, _env, _task
+
+        rig = Rig(tmp_path)
+        tasks = [_task(1), _task(2), _task(3)]
+        env = _env()
+
+        def resolver(batch):
+            return env, tasks, "cfg-v1", "sut"
+
+        rig.runner.batch_resolver = resolver
+
+        # 模拟 API 在 run-1 完成后 abort：进度回调 done>=1 时向
+        # 服务级 runner 送达（生产路径同款）
+        def on_update(upd: dict) -> None:
+            if (
+                upd.get("status") == "running"
+                and upd.get("progress", {}).get("done", 0) >= 1
+            ):
+                rig.runner.abort("batch-ab")
+
+        copy = rig.runner.trigger({"id": "batch-ab"}, on_update=on_update)
+        await asyncio.wait_for(
+            asyncio.gather(*copy._tasks, return_exceptions=True), timeout=30
+        )
+        assert copy.last_status == "aborted"
+        # abort 集合已消费（不留残余影响后续批次）
+        assert "batch-ab" not in rig.runner._abort_requests

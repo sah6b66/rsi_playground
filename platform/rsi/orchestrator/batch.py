@@ -290,6 +290,14 @@ class BatchRunner:
         # introspection for tests/ops: latest batch status and task->run_id map
         self.last_status: str = "created"
         self.last_run_ids: dict[str, str] = {}
+        # F10-a：API abort 请求集——run_batch 任务循环在每个任务边界检查
+        # （S11 实测：store 层改状态 runner 无感知，批次继续吞设备）。
+        self._abort_requests: set[str] = set()
+
+    def abort(self, batch_id: str) -> None:
+        """Request a running batch to stop at the next task boundary."""
+        self._abort_requests.add(batch_id)
+        logger.info("batch.abort_requested", batch_id=batch_id)
 
     # -- API trigger (DD-13 §9.6 batch_runner wiring) ------------------------
 
@@ -573,6 +581,12 @@ class BatchRunner:
         cancelled = False
         try:
             for seq, task in enumerate(pending):
+                # a0. API abort 请求（F10-a）——任务边界停止
+                if batch_id in self._abort_requests:
+                    self._abort_requests.discard(batch_id)
+                    status = "aborted"
+                    logger.info("run_batch.abort", reason="api_request", seq=seq)
+                    break
                 # a. stop file -> abort
                 if self.budget.check_stop_file():
                     status = "aborted"
@@ -809,7 +823,9 @@ class BatchRunner:
                     applied = await self.sandbox.prepare(lab, task.task_id, task.prepare)
                     prepared = True
                     break
-                except EnvError as exc:
+                except Exception as exc:  # noqa: BLE001 - EnvError 及 netmiko 原生异常
+                    # S11 实测：prepare 阶段 ReadTimeout 裸抛杀死整批——
+                    # 任何 prepare 失败一律走重试/env_failed 任务降级。
                     logger.debug(
                         "run_task.prepare_retry", task_id=task.task_id, exc_type=type(exc).__name__
                     )

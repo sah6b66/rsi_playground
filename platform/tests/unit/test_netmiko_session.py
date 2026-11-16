@@ -240,6 +240,49 @@ def test_vendor_profile_prompt_and_commit_fields():
     assert ce.enter_config == "system-view" and ce.exit_config == "return"
 
 
+class _StaleConn(_ConfigConn):
+    """首个连接在配置下发中途 ReadTimeout（设备掐掉闲置会话的实测形态），
+    强制重连后的新连接成功。"""
+
+    n = 0
+
+    def send_command(self, cli, expect_string=None, **kw):
+        self.sent.append((cli, expect_string))
+        if cli == "interface GE1/0/2":
+            _StaleConn.n += 1
+            if _StaleConn.n == 1:
+                raise RuntimeError(
+                    "\nPattern not detected: '<[A-Za-z0-9._/-]+>' in output."
+                )
+        if cli == "system-view":
+            return "Enter system view [~Leaf-01]"
+        return "[~Leaf-01]"
+
+
+def test_exec_config_reconnects_once_on_stale_session(monkeypatch):
+    """F10-b（S11 实测）：池化会话在容器 exec ~10 分钟闲置后被设备掐掉，
+    恢复/准备阶段首次配置下发 ReadTimeout——exec_config 必须断开重连
+    重试一次（与 _send_sync 同款自愈），不得裸抛杀死批次。"""
+    import asyncio
+
+    import netmiko
+
+    monkeypatch.setattr(netmiko, "ConnectHandler", _StaleConn)
+    monkeypatch.setattr("rsi.sandbox.netmiko_session._sleep", lambda s: None)
+    from rsi.core.models import SshAccess
+    from rsi.sandbox.netmiko_session import netmiko_session_factory
+    from rsi.sandbox.sshpool import SessionKey
+
+    s = netmiko_session_factory(
+        SessionKey("5.6.7.8", 22, "l"), VENDOR_MAP["ce"],
+        SshAccess(ip="5.6.7.8", username="u", password="p"),
+    )
+    result = asyncio.run(s.exec_config(["interface GE1/0/2", "undo shutdown"]))
+    assert result.ok, result.matched_errors
+    # 第一连接在 interface 行超时；重连后完整序列成功
+    assert _StaleConn.n == 2
+
+
 class _PagingConn(_ConfigConn):
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
