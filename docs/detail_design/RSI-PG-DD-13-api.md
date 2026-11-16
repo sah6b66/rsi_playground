@@ -253,7 +253,7 @@ API 应用可创建、judge 冻结校验（FR7.6）、JWT/Master Key 安全 post
 明文密码扫描。所有检查非致命——任何单项异常都入 results（fail）而不抛出；
 CLI 形态 `python -m rsi.doctor`（退出码 1=has_errors）。
 
-> 注：当前实现无鉴权门禁（待议，B6 真机验收前须裁决是否加 require_perms）
+> 注：需登录且具备只读权限 view:read（B2 起加门禁，B1 终审安全交接项）。
 
 ## 6. 依赖矩阵
 

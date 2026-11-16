@@ -182,8 +182,14 @@ _DEFAULT_DEPS = [
 
 
 @router.get("/system/doctor")
-async def run_doctor() -> dict:
-    """Run full self-diagnostic and return structured results."""
+async def run_doctor(
+    user: Claims = Depends(require_perms("view:read")),
+) -> dict:
+    """Run full self-diagnostic and return structured results.
+
+    B2-T1 (B1 终审交接项)：doctor 会触发网络探活并暴露主机名/路径，
+    需登录且具备只读权限（对齐同文件只读端点的 view:read）。
+    """
     from rsi.doctor import Doctor
 
     doctor = Doctor()
