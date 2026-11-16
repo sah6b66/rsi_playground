@@ -578,6 +578,7 @@ class LlmProviderSettings(BaseModel):
     model_config = _C
     api_key: str = ""
     base_url: str = ""
+    backup_provider: Optional[str] = None
 
 
 class LlmModelSettings(BaseModel):

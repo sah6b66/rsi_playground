@@ -229,7 +229,7 @@ def build_services(
     # -- LLM (cassette off + 配了 anthropic key → 真实 handler；否则离线 mock) --
     from pathlib import Path as _Path
 
-    from rsi.llm.providers import AnthropicCompatHandler
+    from rsi.llm.providers import AnthropicCompatHandler, ProviderChain
 
     _prompts_root = _Path(__file__).parent / "llm" / "prompts"
     prompt_library = PromptLibrary()
@@ -245,6 +245,24 @@ def build_services(
             model=(judge_cfg.model if judge_cfg and judge_cfg.model else "glm-5.1"),
             retry_max=settings.llm.retry_max,
         )
+        # B1-6：配置了 backup_provider 且有效 → 主备故障转移链（DD-02 §5.1）
+        _bk_name = _anth.backup_provider
+        _bk = settings.llm.providers.get(_bk_name) if _bk_name else None
+        if _bk is not None and _bk.api_key:
+            _bk_model = (
+                settings.llm.defaults.get("judge").model
+                if settings.llm.defaults.get("judge")
+                else ""
+            )
+            handler = ProviderChain(
+                handler,
+                AnthropicCompatHandler(
+                    api_key=_bk.api_key,
+                    base_url=_bk.base_url,
+                    model=_bk_model or "glm-5.1",
+                    retry_max=settings.llm.retry_max,
+                ),
+            )
         logger.info(
             "bootstrap.llm_real_provider",
             base_url=_anth.base_url or "default",

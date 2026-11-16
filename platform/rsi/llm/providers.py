@@ -21,6 +21,7 @@ __all__ = [
     "AnthropicCompatHandler",
     "RetryableProviderError",
     "ProviderHTTPError",
+    "ProviderChain",
 ]
 
 logger = get_logger(__name__)
@@ -32,6 +33,33 @@ class RetryableProviderError(RuntimeError):
 
 class ProviderHTTPError(RuntimeError):
     """非重试类 provider HTTP 错误（4xx 等）."""
+
+
+class ProviderChain:
+    """主备 handler 链：主 RetryableProviderError → 切备；其余异常直抛（DD-02 §5.1）."""
+
+    def __init__(self, primary, backup=None):
+        self._primary = primary
+        self._backup = backup
+
+    def __call__(
+        self,
+        component: str,
+        prompt_name: str,
+        vars: dict[str, str],
+        *,
+        temperature: float = 0.0,
+    ) -> str:
+        try:
+            return self._primary(
+                component, prompt_name, vars, temperature=temperature
+            )
+        except RetryableProviderError:
+            if self._backup is None:
+                raise
+            return self._backup(
+                component, prompt_name, vars, temperature=temperature
+            )
 
 
 class AnthropicCompatHandler:
