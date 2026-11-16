@@ -533,6 +533,33 @@ class TestB6VendorReset:
             asyncio.run(service.restore_task(lab, self._applied(backup)))
         assert len(session.config_calls) >= 3  # 1 + 2 retries
 
+    def test_equivalence_section_header_noise_not_fatal(self, tmp_path):
+        """F10-g：display 节头行噪音（snmp-agent/mac-duplication 裸节头，
+        两次 capture 输出不稳定）不得假失败恢复——子集判定下 extras 仅
+        告警；真实缺失（备份行未回到设备）仍失败重试。"""
+        backup = tmp_path / "R1.cfg"
+        backup.write_text(
+            "sysname R1\nsnmp-agent local-engineid 800007DB\nreturn\n",
+            encoding="utf-8",
+        )
+        # 设备回显多了裸节头行（snmp-agent / mac-duplication）
+        session = _RecordingSession(
+            SessionKey("10.0.0.9", 2022, "L1"),
+            VENDOR_MAP["vrp"],
+            config_text=(
+                "sysname R1\nsnmp-agent\nsnmp-agent local-engineid 800007DB\n"
+                "mac-duplication\nreturn\n"
+            ),
+        )
+        service = SandboxService(
+            backends={"fake": FakeSandboxBackend()},
+            labs_dir=tmp_path,
+            ssh_pool=_SingleSessionPool(session),
+        )
+        lab = asyncio.run(service.build_lab(_env_one()))
+        # 不抛（extras 告警）——restore ok
+        asyncio.run(service.restore_task(lab, self._applied(backup)))
+
     def test_replay_skips_comment_and_volatile_lines(self, tmp_path):
         """F7-a：CE capture 的配置备份含 '!Software Version...' 等注释行，
         下发会在设备上报 ^Error:（S11 实测逐行恢复"中途易错"的一部分）。

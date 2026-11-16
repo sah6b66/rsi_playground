@@ -579,16 +579,28 @@ class SandboxService:
                     # 类告警），等价性抽查做最终裁决。
                     failed_batches = 0
                     batches = _replay_batches(lines)
+                    failed: list[list[str]] = []
                     for batch in batches:
+                        # F10-h：段间节拍——eNSP 对高频连续配置事务节流
+                        # （独立环实测连环下发 ~每 4 段一次 ReadTimeout）。
+                        await asyncio.sleep(0.2)
                         result = _run_sync(session.exec_config(batch))
                         if not result.ok:
-                            failed_batches += 1
+                            failed.append(batch)
+                    # F10-h：失败段补试一轮（多为节流抖动；幂等内容重发安全）
+                    still_failed: list[list[str]] = []
+                    for batch in failed:
+                        await asyncio.sleep(1.0)
+                        result = _run_sync(session.exec_config(batch))
+                        if not result.ok:
+                            still_failed.append(batch)
                             logger.warning(
                                 "restore_task.replay_batch_failed",
                                 device=device,
                                 head=batch[0][:60],
                                 errors=result.matched_errors or [],
                             )
+                    failed_batches = len(still_failed)
                     if failed_batches and failed_batches >= len(batches):
                         raise EnvError(
                             f"backup replay failed on {device}: "
@@ -618,15 +630,33 @@ class SandboxService:
                     encoding="utf-8"
                 )
                 captured = _run_sync(session.capture_config())
-                if normalize_config(captured) != normalize_config(backup_text):
+                # F10-g：等价性=子集判定（备份规范化行全部回到设备）。
+                # 严格相等会被 eNSP display 的节头行噪音假失败（snmp-agent/
+                # mac-duplication 等裸节头两次 capture 输出不稳定，S11
+                # 实测 missing=0 extra=2）。extras 降为 warning 留审计——
+                # 真实残留（如故障 shutdown 未消除）仍可见。
+                want = set(normalize_config(backup_text))
+                got = set(normalize_config(captured))
+                missing = want - got
+                extra = got - want
+                if missing:
                     logger.warning(
                         "restore_task.equivalence_mismatch",
                         device=device,
                         lab_id=lab.lab_id,
+                        missing=sorted(missing)[:5],
                     )
                     raise EnvError(
-                        f"post-restore config mismatch on {device}",
+                        f"post-restore config mismatch on {device}: "
+                        f"{len(missing)} lines missing",
                         context={"device": device, "lab_id": lab.lab_id},
+                    )
+                if extra:
+                    logger.warning(
+                        "restore_task.equivalence_extra_lines",
+                        device=device,
+                        lab_id=lab.lab_id,
+                        extra=sorted(extra)[:5],
                     )
         report = await backend.wait_ready(lab)
         if not report.passed:
