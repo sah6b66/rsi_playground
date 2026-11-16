@@ -512,19 +512,24 @@ class TestB6VendorReset:
     def test_replay_skips_comment_and_volatile_lines(self, tmp_path):
         """F7-a：CE capture 的配置备份含 '!Software Version...' 等注释行，
         下发会在设备上报 ^Error:（S11 实测逐行恢复"中途易错"的一部分）。
-        回放过滤器须与 normalize_config 的注释前缀口径一致。"""
+        F10-d：还须过滤 return/quit 视图导航行——下发 return 中途退出
+        配置视图，后续行/commit 的 expect 永远等不到配置提示符（S11
+        真机整文件回放从未成功的根因）。"""
         backup = tmp_path / "R1.cfg"
         backup.write_text(
             "!Software Version V300R025C10SPC500\n"
             "#\n"
             "sysname R1\n"
-            "interface GE0/0/1\n",
+            "interface GE0/0/1\n"
+            "return\n",
             encoding="utf-8",
         )
         session = _RecordingSession(
             SessionKey("10.0.0.9", 2022, "L1"),
             VENDOR_MAP["vrp"],
-            config_text="sysname R1\ninterface GE0/0/1\n",
+            # capture 同样以 return 结尾（display current-configuration 形态）
+            # ——等价性两侧一致，回放过滤不影响比较
+            config_text="sysname R1\ninterface GE0/0/1\nreturn\n",
         )
         service = SandboxService(
             backends={"fake": FakeSandboxBackend()},
@@ -535,6 +540,7 @@ class TestB6VendorReset:
         asyncio.run(service.restore_task(lab, self._applied(backup)))
         sent = [c for calls in session.config_calls for c in calls]
         assert "sysname R1" in sent
+        assert "return" not in sent and "quit" not in sent
         assert not any(
             line.startswith(("!", "#")) for line in sent if line != "#"
         )

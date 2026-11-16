@@ -48,6 +48,10 @@ READONLY_PREFIXES: tuple[str, ...] = (
 
 _RESTORE_MAX_ATTEMPTS = 3  # 1 initial + 2 retries (DD-04 §4.1 restore_task)
 _ERROR_OUTPUT_PREFIX = "Error:"
+# F10-d：display current-configuration 输出的结构尾巴——回放时下发会
+# 中途退出配置视图（后续行/commit 的 expect 永远等不到配置提示符 →
+# ReadTimeout，S11 真机整文件回放从未成功的根因）。
+_REPLAY_DROP_LINES = frozenset({"return", "quit", "system-view"})
 # B-7: "output contains a timestamp -> healthy" (DD-04 §4 health_check).
 _TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}:\d{2}")
 # B-6: volatile line prefixes dropped by the config-equivalence normalization
@@ -538,8 +542,11 @@ class SandboxService:
                     # F7-a：CE capture 的备份含 '!Software Version ...' 等
                     # 注释/易变行，下发会在设备报 ^Error:（与 normalize_config
                     # 的 _NORM_DROP_PREFIXES 口径一致）。
+                    # F10-d：过滤 return/quit/system-view 视图导航行（见
+                    # _REPLAY_DROP_LINES 注释）。
                     if line.strip()
                     and not line.startswith(_NORM_DROP_PREFIXES)
+                    and line.strip() not in _REPLAY_DROP_LINES
                 ]
                 if not lines:
                     continue
