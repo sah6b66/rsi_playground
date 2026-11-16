@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
+from typing import Any
 
 from rsi.core.models import SshAccess
 from rsi.log import get_logger
@@ -21,6 +23,26 @@ logger = get_logger(__name__)
 # E2 实测：eNSP Pro 设备 SSH 对快速重连直接 RST（banner 阶段 10054）。
 # 建连带退避重试（秒）。
 _RETRY_DELAYS = (1.0, 3.0, 8.0)
+
+# F10-e：设备确认提示（commit/退出时 Y/N、Y/N/C）——注意 [Y/N] 形状
+# 恰好匹配配置提示符正则，send_command 会误判已回提示符，须在输出
+# 尾部显式识别并应答。
+_CONFIRM_RE = re.compile(r"\[Y/N(?:/C)?\][:：]\s*$")
+
+
+def _drain_until(conn: Any, pattern: str, timeout_s: float) -> str:
+    """write_channel 应答后排水至 pattern 匹配（手动轮询 read_channel）。"""
+    rx = re.compile(pattern)
+    buf = ""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        time.sleep(0.2)
+        buf += conn.read_channel()
+        if rx.search(buf):
+            return buf
+    raise TimeoutError(
+        f"confirm-answer drain timeout, waiting for {pattern!r}"
+    )
 
 
 def _sleep(seconds: float) -> None:
@@ -133,31 +155,48 @@ class NetmikoDeviceSession(DeviceSession):
         conn = self._connect()
         v = self.vendor
         parts = [
-            conn.send_command(
-                v.enter_config, expect_string=v.config_prompt_pattern,
-                read_timeout=20,
-            )
+            self._send_step(conn, v.enter_config, v.config_prompt_pattern, 20)
         ]
         for line in lines:
             parts.append(
-                conn.send_command(
-                    line, expect_string=v.config_prompt_pattern, read_timeout=20
-                )
+                self._send_step(conn, line, v.config_prompt_pattern, 20)
             )
         if v.two_phase_commit:
             parts.append(
-                conn.send_command(
-                    "commit", expect_string=v.config_prompt_pattern,
-                    read_timeout=30,
-                )
+                self._send_step(conn, "commit", v.config_prompt_pattern, 30)
             )
         parts.append(
-            conn.send_command(
-                v.exit_config, expect_string=v.user_prompt_pattern,
-                read_timeout=20,
-            )
+            self._send_step(conn, v.exit_config, v.user_prompt_pattern, 20)
         )
-        return "\n".join(str(p) for p in parts)
+        return "\n".join(parts)
+
+    def _send_step(
+        self, conn: Any, cmd: str, expect_pattern: str, read_timeout: int
+    ) -> str:
+        """F10-e：单步下发 + 设备 Y/N 确认自动应答。
+
+        S11 真机实测：备份中的变更行（如 undo telnet server-source
+        all-interface）使 commit 弹 ``[Y/N]:`` 确认——而 ``[Y/N]`` 恰好
+        匹配配置提示符正则（字符类含字母与 /），send_command 误判已回
+        提示符、后续命令被发给确认提示 → 死等超时。恢复语义下确认即
+        下发备份，统一应答 ``y``；未 commit 退出的 Y/N/C 同答 y
+        （pending 即备份内容）。确认链最多 3 层。
+        """
+        out = str(
+            conn.send_command(cmd, expect_string=expect_pattern,
+                              read_timeout=read_timeout)
+        )
+        for _ in range(3):
+            if not _CONFIRM_RE.search(out):
+                break
+            logger.info(
+                "netmiko.config_confirm_answered",
+                device=self._access.ip,
+                cmd=cmd[:60],
+            )
+            conn.write_channel("y\n")
+            out += _drain_until(conn, expect_pattern, read_timeout)
+        return out
 
     async def exec_config(self, lines: list[str]):
         from rsi.sandbox.sshpool import ExecResult

@@ -240,6 +240,53 @@ def test_vendor_profile_prompt_and_commit_fields():
     assert ce.enter_config == "system-view" and ce.exit_config == "return"
 
 
+class _ConfirmConn(_ConfigConn):
+    """commit 弹 [Y/N]: 确认（undo telnet server-source 类变更行触发，
+    S11 实测形态）——[Y/N] 恰好匹配配置提示符正则，send_command 误判
+    已回提示符；应答 y 后回真提示符。"""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.wrote: list[str] = []
+        self.confirm_done = False
+
+    def send_command(self, cli, expect_string=None, **kw):
+        self.sent.append((cli, expect_string))
+        if cli == "commit" and not self.confirm_done:
+            return "[~Leaf-01]Error: Please choose 'YES' or 'NO' first before pressing 'Enter'. [Y/N]:"
+        if cli == "system-view":
+            return "Enter system view [~Leaf-01]"
+        return "[~Leaf-01]"
+
+    def write_channel(self, data):
+        self.wrote.append(data)
+        self.confirm_done = True
+
+    def read_channel(self):
+        return "Info: Configuration committed. [~Leaf-01]"
+
+
+def test_exec_config_answers_device_confirm_prompts(monkeypatch):
+    """F10-e：commit 的 [Y/N]: 确认自动应答 y——否则后续命令被发给确认
+    提示、最终 return 超时（S11 真机整文件回放失败的真正根因）。"""
+    import asyncio
+
+    import netmiko
+
+    monkeypatch.setattr(netmiko, "ConnectHandler", _ConfirmConn)
+    from rsi.core.models import SshAccess
+    from rsi.sandbox.netmiko_session import netmiko_session_factory
+    from rsi.sandbox.sshpool import SessionKey
+
+    s = netmiko_session_factory(
+        SessionKey("9.9.9.9", 22, "l"), VENDOR_MAP["ce"],
+        SshAccess(ip="9.9.9.9", username="u", password="p"),
+    )
+    result = asyncio.run(s.exec_config(["undo telnet server-source all-interface"]))
+    assert result.ok, result.matched_errors
+    assert s._conn.wrote == ["y\n"]
+
+
 class _StaleConn(_ConfigConn):
     """首个连接在配置下发中途 ReadTimeout（设备掐掉闲置会话的实测形态），
     强制重连后的新连接成功。"""

@@ -52,6 +52,24 @@ _ERROR_OUTPUT_PREFIX = "Error:"
 # 中途退出配置视图（后续行/commit 的 expect 永远等不到配置提示符 →
 # ReadTimeout，S11 真机整文件回放从未成功的根因）。
 _REPLAY_DROP_LINES = frozenset({"return", "quit", "system-view"})
+
+
+def _replay_batches(lines: list[str]) -> list[list[str]]:
+    """F10-f：按顶格行切段（顶格行 + 其缩进子行为一段）。
+
+    层级配置文本的视图语义重建：每段在系统视图下发顶格行后，缩进子行
+    自然落在正确子视图；段间由 exec_config 的 system-view/return 完成
+    视图复位。无顶格行开头的残余缩进行并入首段（容错）。
+    """
+    batches: list[list[str]] = []
+    for line in lines:
+        if not line[:1].isspace():
+            batches.append([line])
+        elif batches:
+            batches[-1].append(line)
+        else:
+            batches.append([line])
+    return batches
 # B-7: "output contains a timestamp -> healthy" (DD-04 §4 health_check).
 _TS_RE = re.compile(r"\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}:\d{2}")
 # B-6: volatile line prefixes dropped by the config-equivalence normalization
@@ -552,19 +570,30 @@ class SandboxService:
                     continue
                 session = self._pool_session(lab, device)
                 if session is not None:
-                    # F5/A3'：整文件单会话批量下发（1 次 system-view →
-                    # 全部行 → 1 次 commit）。逐行一个事务在 CE 两阶段
-                    # 提交下 ~300 次事务，慢且中途易错（S11 实测
-                    # restore_env_failed 根因）。
-                    result = _run_sync(session.exec_config(lines))
-                    if not result.ok:
-                        bad = result.matched_errors or [result.output[:80]]
+                    # F5/A3'/F10-f：display current-configuration 是层级
+                    # 文本——顶格行=系统视图命令、缩进行=当前顶格行的子
+                    # 视图命令。平铺整批下发会把顶格行发进上一个视图
+                    # （Unrecognized command，S11 真机实测）。按顶格行切段，
+                    # 每段独立 system-view→段行→commit→return（exec_config
+                    # 既有形态）；段级失败告警不中断（幂等重放存在已配置
+                    # 类告警），等价性抽查做最终裁决。
+                    failed_batches = 0
+                    batches = _replay_batches(lines)
+                    for batch in batches:
+                        result = _run_sync(session.exec_config(batch))
+                        if not result.ok:
+                            failed_batches += 1
+                            logger.warning(
+                                "restore_task.replay_batch_failed",
+                                device=device,
+                                head=batch[0][:60],
+                                errors=result.matched_errors or [],
+                            )
+                    if failed_batches and failed_batches >= len(batches):
                         raise EnvError(
-                            f"backup replay failed on {device}: {bad}",
-                            context={
-                                "device": device,
-                                "cli": f"<batch {len(lines)} lines>",
-                            },
+                            f"backup replay failed on {device}: "
+                            f"{failed_batches} batches all failed",
+                            context={"device": device},
                         )
                 else:
                     for line in lines:

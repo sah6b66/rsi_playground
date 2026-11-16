@@ -472,7 +472,10 @@ class TestF5BatchFileRestore:
             applied_at="",
         )]
         asyncio.run(svc.restore_task(lab, applied))
-        # 备份全部有效行合并为单次批量下发（1 次 system-view + 1 次 commit；
-        # F7-a 后无 vendor reset 前置步骤，批量回放即首个 config 调用）
-        assert calls[-1] == ["sysname R1", "interface GE1/0/1", " description up"]
-        assert not any(len(c) == 1 and c[0] == "sysname R1" for c in calls)
+        # F10-f：按顶格行切段——每段独立 system-view→段行→commit（层级
+        # 文本的视图语义重建：顶格行=系统视图命令，缩进行=上一顶格行的
+        # 子视图命令；平铺整批会把顶格行发进上一个视图 Unrecognized）。
+        assert ["sysname R1"] in calls
+        assert ["interface GE1/0/1", " description up"] in calls
+        # 不再存在跨视图的整批下发
+        assert ["sysname R1", "interface GE1/0/1", " description up"] not in calls
