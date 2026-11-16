@@ -319,6 +319,21 @@ class HostService:
         """
         return self._adapter_for(instance.carrier).trace_channels(instance)
 
+    def exec_probe(self, handle: RunHandle) -> dict:
+        """Adapter passthrough: 执行期心跳探针（F11）。
+
+        BatchRunner 心跳经门面调用——不经此处转发则门面无该方法，
+        心跳退化为 elapsed-only（S11 实测）。无探针实现的载体返回空。
+        """
+        instance = self._instances.get(handle.instance_id)
+        adapter = (
+            self._adapter_for(instance.carrier) if instance else self._default_adapter
+        )
+        probe = getattr(adapter, "exec_probe", None)
+        if probe is None:
+            return {}
+        return probe(handle)
+
     def destroy(self, instance: InstanceHandle) -> None:
         """Detach networks, release the host slot and stop tracking."""
         logger.debug("destroy.entry", instance_id=instance.instance_id, host=instance.host)

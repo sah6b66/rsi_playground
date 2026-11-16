@@ -357,6 +357,30 @@ class TestB5VerifyImage:
         assert check.image_ref == "sut:v1"
         assert "offline" in check.detail
 
+    def test_exec_probe_forwards_to_default_adapter(self):
+        """F11：BatchRunner 心跳拿到的 carrier 是 HostService 门面——
+        exec_probe 必须经门面转发到 adapter，否则心跳退化为
+        elapsed-only（S11 实测）。无探针实现的载体返回空 dict。"""
+
+        class _ProbingCarrier(FakeCarrier):
+            def exec_probe(self, handle):
+                return {"container": "running", "trace_parts": 2}
+
+        svc = HostService(
+            host_pool=HostPool(),
+            net_policy=NetPolicy(),
+            adapters={"fake": _ProbingCarrier()},
+        )
+        handle = SimpleNamespace(instance_id="no-such")
+        assert svc.exec_probe(handle) == {"container": "running", "trace_parts": 2}
+        # 无探针实现的 adapter -> 空 dict（心跳层走 elapsed-only）
+        svc2 = HostService(
+            host_pool=HostPool(),
+            net_policy=NetPolicy(),
+            adapters={"fake": FakeCarrier()},
+        )
+        assert svc2.exec_probe(handle) == {}
+
     def test_missing_image_ok_false(self):
         class FakeImages:
             def get(self, ref):
