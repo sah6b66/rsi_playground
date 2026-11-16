@@ -36,6 +36,17 @@ llm:
   cassette_mode: replay         # replay 回放录像 / record 录制 / off 真实调用
   max_concurrent_calls: 4       # 模型并发调用上限
 
+# ── 评估集与网络准备 API（ADR-27 API 模式会话）──
+# CLI 模式（离线评测集三件套 + SSH 设备准备）无需配置以下两段；
+# API 模式（在线拉取评测集 + 网络准备 API 完成环境编排）时按需填写。
+evalset_api:
+  url: ""                       # 评估集在线 API 地址（如 http://10.0.0.1:9090）；
+                                #   留空 = API 模式不可用（GET /evalsets/online 返回 not_configured）
+network_prep_api:
+  url: ""                       # 网络环境准备 API 地址（如 http://10.0.0.2:9090）；
+                                #   API 模式会话（prep_mode=api）必填，空串时该类批次启动即报错
+  timeout_s: 120                # 准备/恢复调用超时（秒）；缺省 120，范围 10–600
+
 # ── 裁判 ──
 judge:
   det_timeout_s: 120            # 确定性（规则型）评审单次执行超时（秒）
