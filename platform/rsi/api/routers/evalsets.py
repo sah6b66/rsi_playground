@@ -254,6 +254,7 @@ async def get_evalset(
 @router.put("/{evalset_id}", response_model=EvalsetOut)
 @audit.audited("evalset.update", object_type="evalset")
 async def update_evalset(
+    request: Request,
     evalset_id: str,
     body: EvalsetUpdate,
     user: Claims = Depends(require_perms("evalset:manage")),
@@ -269,6 +270,9 @@ async def update_evalset(
     if updates:
         es.update(updates)
         es["version"] += 1
+        from rsi.api.object_store import persist_record
+
+        persist_record(request.app.state.services, "evalsets", es)
     return _out(es)
 
 
@@ -291,6 +295,7 @@ async def delete_evalset(
 @router.post("/{evalset_id}:freeze", response_model=EvalsetOut)
 @audit.audited("evalset.freeze", object_type="evalset")
 async def freeze_evalset(
+    request: Request,
     evalset_id: str,
     user: Claims = Depends(require_perms("evalset:manage")),
     store: dict = Depends(get_store("evalsets")),
@@ -317,6 +322,9 @@ async def freeze_evalset(
             "created_at": _now(),
         }
     )
+    from rsi.api.object_store import persist_record
+
+    persist_record(request.app.state.services, "evalsets", es)
     return _out(es)
 
 
@@ -350,6 +358,7 @@ class AssignBody(BaseModel):
 @router.post("/{evalset_id}:assign", status_code=204)
 @audit.audited("evalset.assign", object_type="evalset")
 async def assign_evalset(
+    request: Request,
     evalset_id: str,
     body: AssignBody,
     user: Claims = Depends(require_perms("evalset:manage")),
@@ -358,6 +367,9 @@ async def assign_evalset(
     """用途分配 → 204（purpose 非法值由 pydantic Literal → 422）。"""
     es = _get(store, evalset_id)
     es["purpose"] = body.purpose
+    from rsi.api.object_store import persist_record
+
+    persist_record(request.app.state.services, "evalsets", es)
     return Response(status_code=204)
 
 
