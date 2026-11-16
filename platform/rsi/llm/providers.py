@@ -49,7 +49,7 @@ class ProviderChain:
         vars: dict[str, str],
         *,
         temperature: float = 0.0,
-    ) -> str:
+    ) -> object:
         try:
             return self._primary(
                 component, prompt_name, vars, temperature=temperature
@@ -88,7 +88,7 @@ class AnthropicCompatHandler:
         vars: dict[str, str],
         *,
         temperature: float = 0.0,
-    ) -> str:
+    ) -> tuple[str, dict[str, int]]:
         prompt = str(vars.get("prompt") or json.dumps(vars, ensure_ascii=False))
         body: dict[str, Any] = {
             "model": self.model,
@@ -147,4 +147,7 @@ class AnthropicCompatHandler:
             input_tokens=usage.get("input_tokens"),
             output_tokens=usage.get("output_tokens"),
         )
-        return text
+        return text, {
+            "input_tokens": int(usage.get("input_tokens", 0) or 0),
+            "output_tokens": int(usage.get("output_tokens", 0) or 0),
+        }

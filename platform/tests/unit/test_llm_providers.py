@@ -33,8 +33,9 @@ def test_call_posts_messages_api(monkeypatch):
         base_url="https://open.bigmodel.cn/api/anthropic",
         model="glm-5.1",
     )
-    out = h("judge", "root_cause", {"prompt": "判卷"}, temperature=0.0)
+    out, usage = h("judge", "root_cause", {"prompt": "判卷"}, temperature=0.0)
     assert out == "部分一部分二"
+    assert usage == {"input_tokens": 10, "output_tokens": 5}
     assert captured["url"] == "https://open.bigmodel.cn/api/anthropic/v1/messages"
     body = captured["kw"]["json"]
     assert body["model"] == "glm-5.1" and body["temperature"] == 0.0
@@ -108,7 +109,9 @@ def test_handler_retries_on_5xx(monkeypatch):
         "rsi.llm.providers.time.sleep", lambda s: sleeps.append(s)
     )
     h = AnthropicCompatHandler(api_key="k", retry_max=3)
-    assert h("judge", "root_cause", {"prompt": "p"}) == "ok"
+    out, usage = h("judge", "root_cause", {"prompt": "p"})
+    assert out == "ok"
+    assert usage == {"input_tokens": 3, "output_tokens": 4}
     assert calls["n"] == 3
     assert len(sleeps) == 2  # 两次失败各退避一次
     assert all(0 < s <= 31 for s in sleeps)  # min(2^n,30)+抖动

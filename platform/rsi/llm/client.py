@@ -44,7 +44,7 @@ logger = get_logger(__name__)
 
 Component = Literal["attribution", "hypothesis", "critic", "judge", "sft"]
 
-Handler = Callable[[str, str, dict[str, str]], str]
+Handler = Callable[..., object]  # str | tuple[str, dict] (B1-7 usage 协议)
 
 _MAX_SCHEMA_RETRIES = 2  # extra attempts after the initial one (DD-02 §5.1 ④)
 
@@ -161,6 +161,7 @@ class LLMClient:
                 prompt_version = f"v{v}"
 
         raw: str | None = None
+        usage_info: dict[str, Any] | None = None
         parsed: Any | None = None
         validation_error: str | None = None
         temperature = self._effective_temperature(component)
@@ -186,9 +187,13 @@ class LLMClient:
                 kwargs: dict[str, Any] = (
                     {"temperature": temperature} if pass_temperature else {}
                 )
-                raw = await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     self._handler, component, prompt_name, call_vars, **kwargs
                 )
+                if isinstance(result, tuple):
+                    raw, usage_info = result[0], result[1]
+                else:
+                    raw, usage_info = result, None
                 if schema is None:
                     break
                 parsed, validation_error = self._validate(raw, schema)
@@ -217,10 +222,22 @@ class LLMClient:
             run_id=run_id,
         )
 
+        if usage_info:
+            usage = LLMUsage(
+                input_tokens=int(usage_info.get("input_tokens", 0) or 0),
+                output_tokens=int(usage_info.get("output_tokens", 0) or 0),
+                estimated=False,
+            )
+        else:
+            usage = LLMUsage(
+                input_tokens=max(len(prompt_text or "") // 4, 1),
+                output_tokens=max(len(raw or "") // 4, 1),
+                estimated=True,
+            )
         resp = LLMResponse(
             content=raw or "",
             parsed=parsed,
-            usage=LLMUsage(),
+            usage=usage,
             model=self.model,
             prompt_version=prompt_version,
         )
@@ -237,8 +254,8 @@ class LLMClient:
                     "model": self.model,
                     "prompt_version": prompt_version,
                     "content": raw or "",
-                    "input_tokens": max(len(prompt_text or "") // 4, 1),
-                    "output_tokens": max(len(raw or "") // 4, 1),
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
                     "latency_ms": latency_ms,
                 },
             )
@@ -248,8 +265,8 @@ class LLMClient:
             component,
             prompt_version,
             self.model,
-            len(prompt_text or "") // 4,
-            len(raw or "") // 4,
+            usage.input_tokens,
+            usage.output_tokens,
             latency_ms,
             run_id,
             batch_id,

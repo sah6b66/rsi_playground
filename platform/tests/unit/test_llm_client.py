@@ -30,7 +30,7 @@ async def test_complete_returns_mock_response() -> None:
     assert resp.parsed is None
     assert resp.model == "mock"
     assert resp.prompt_version == "v1"
-    assert resp.usage.input_tokens == 0 and resp.usage.output_tokens == 0
+    assert resp.usage.estimated is True  # B1-7: 纯 str handler 走估算
 
 
 @pytest.mark.asyncio
@@ -150,3 +150,50 @@ async def test_handler_exception_propagates_uncached() -> None:
     with pytest.raises(RuntimeError):
         await client.complete("judge", "classify", {})
     assert client.cassette == {}
+
+
+@pytest.mark.asyncio
+async def test_complete_uses_real_usage_from_handler() -> None:
+    def handler(component, prompt_name, vars, *, temperature=0.0):
+        return "plain text", {"input_tokens": 11, "output_tokens": 22}
+
+    client = _make(handler)
+    resp = await client.complete("judge", "root_cause", {"q": "x"})
+    assert resp.usage.input_tokens == 11
+    assert resp.usage.output_tokens == 22
+    assert resp.usage.estimated is False
+
+
+@pytest.mark.asyncio
+async def test_complete_estimates_usage_for_str_handler() -> None:
+    def handler(component, prompt_name, vars, *, temperature=0.0):
+        return "plain text"
+
+    client = _make(handler)
+    resp = await client.complete("judge", "root_cause", {"q": "x"})
+    assert resp.usage.estimated is True
+    assert resp.usage.input_tokens >= 1
+
+
+@pytest.mark.asyncio
+async def test_cassette_record_stores_real_usage(tmp_path) -> None:
+    import json as _json
+
+    from rsi.llm.cassette import CassetteStore
+
+    def handler(component, prompt_name, vars, *, temperature=0.0):
+        return "ok", {"input_tokens": 7, "output_tokens": 9}
+
+    cs = CassetteStore(root=tmp_path, mode="record")
+    client = LLMClient(handler=handler, cassette=cs)
+    await client.complete("judge", "root_cause", {"q": "y"})
+    files = list(tmp_path.rglob("*.ndjson"))
+    assert files, "cassette record should persist"
+    lines = [
+        _json.loads(ln)
+        for ln in files[0].read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    entry = lines[-1]
+    assert entry.get("input_tokens") == 7
+    assert entry.get("output_tokens") == 9

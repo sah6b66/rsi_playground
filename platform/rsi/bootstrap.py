@@ -236,7 +236,7 @@ def build_services(
     prompt_library.load_root(_prompts_root)
     accountant = Accountant(session_factory=session_factory)  # C-7: llm_calls rows
     judge_cfg = settings.llm.defaults.get("judge")
-    handler: Callable[..., str] = _offline_llm_handler
+    handler: Callable[..., object] = _offline_llm_handler
     _anth = settings.llm.providers.get("anthropic")
     if settings.llm.cassette_mode == "off" and _anth is not None and _anth.api_key:
         handler = AnthropicCompatHandler(
