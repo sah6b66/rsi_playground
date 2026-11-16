@@ -137,7 +137,7 @@ class OpenCodeAdapter(CarrierAdapter):
             cmd=cmd,
             env=env,
         )
-        logger.debug("opencode.submit_task", run_id=instance.run_id)
+        logger.info("opencode.submit_task", run_id=instance.run_id)
         return handle
 
     def collect_result(self, handle: RunHandle, timeout_s: float) -> str:

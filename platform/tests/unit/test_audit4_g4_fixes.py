@@ -245,6 +245,61 @@ def test_ingest_trace_channels_quiet_when_no_files(tmp_path: Path) -> None:
     assert extra == []
 
 
+def test_collect_run_events_ingests_each_stream_once(tmp_path: Path) -> None:
+    """F9-e：wiretap 事件经 tail_ndjson 已入 collector——run_task 组装时
+    不得再经外层 ingest 重复入（S11 发现：collector/traces 查询与 F9-b
+    持久化 events.ndjson 证据文件将出现重复行；判分用本地列表不受影响
+    正是掩盖原因）。"""
+    from rsi.core.models import TaskResult
+    from rsi.orchestrator.batch import BatchRunner
+
+    wiretap = tmp_path / "wiretap.ndjson"
+    wiretap.write_text(
+        json.dumps(
+            {
+                "type": "assembled",
+                "kind": "context",
+                "at": "2026-01-01T00:00:00Z",
+                "system": [{"text": "sys"}],
+                "messages": [{"content": "hello"}],
+                "model": "claude-x",
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "type": "http",
+                "kind": "primary",
+                "at": "2026-01-01T00:00:01Z",
+                "body": json.dumps({"messages": [{"role": "u", "content": "q"}]}),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    col = TraceCollector(SeqAllocator(), None)
+    store = TraceStore(col)
+    from functools import partial
+
+    runner = SimpleNamespace(
+        carrier=_ChannelsCarrier([str(wiretap)]),
+        collector=col,
+        _trace_events=BatchRunner._trace_events,
+    )
+    runner._ingest_trace_channels = partial(
+        BatchRunner._ingest_trace_channels, runner
+    )
+    result = TaskResult(task_complete=True)
+    events = BatchRunner._collect_run_events(
+        runner, "run-d", _task().task, _lab(), result, SimpleNamespace()
+    )
+    # wiretap 2 帧 + 合成 1 条 TASK_END——collector 恰好各一份
+    all_events = store.query(TraceFilter(run_ids=["run-d"]), None, 50)[0]
+    assert len(all_events) == 3
+    # 判分用本地列表同样 3 条
+    assert len(events) == 3
+
+
 # -- F2: prompt hash includes the template body --------------------------------
 
 

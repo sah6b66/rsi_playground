@@ -20,9 +20,12 @@ from rsi.core.errors import (
     NotFoundError,
     ValidationError,
 )
+from rsi.log import get_logger
 from rsi.security.auth import Claims
 
 router = APIRouter(prefix="/iterations", tags=["iterations"])
+
+logger = get_logger(__name__)
 
 _TERMINAL = {IterationState.ABORTED, IterationState.FINISHED,
              IterationState.ARCHIVED}
@@ -218,6 +221,14 @@ async def create_iteration(
     from rsi.api.object_store import persist_record
 
     persist_record(request.app.state.services, "iterations", it)
+    logger.info(
+        "iteration.created",
+        iteration_id=it["id"],
+        sut_id=it["sut_id"],
+        mode=it["mode"],
+        prep_mode=it["prep_mode"],
+        evalset_id=it["evalset_id"],
+    )
     return {"iteration_id": it["id"]}
 
 
@@ -454,6 +465,9 @@ async def pause_iteration(
     )
     it["paused_from"] = it["state"]
     it["state"] = IterationState.PAUSED.value
+    logger.info(
+        "iteration.paused", iteration_id=iteration_id, step=it["current_step"]
+    )
     return _out(it)
 
 
@@ -473,6 +487,7 @@ async def resume_iteration(
         )
     it["state"] = it["paused_from"] or IterationState.ATTRIBUTING.value
     it["paused_from"] = None
+    logger.info("iteration.resumed", iteration_id=iteration_id, state=it["state"])
     return _out(it)
 
 
@@ -488,6 +503,7 @@ async def abort_iteration(
     _transition(it, "abort")
     it["state"] = IterationState.ABORTED.value
     it["paused_from"] = None
+    logger.info("iteration.aborted", iteration_id=iteration_id)
     return _out(it)
 
 
@@ -506,6 +522,7 @@ async def delete_iteration(
     from rsi.api.object_store import persist_record
 
     persist_record(request.app.state.services, "iterations", it)
+    logger.info("iteration.archived", iteration_id=iteration_id)
     return Response(status_code=204)
 
 
@@ -616,6 +633,16 @@ def _gate_router(name: str, required_step: str, next_step: str):
         it["gates"].append(
             {"gate": name, "step": required_step, "by": str(user.sub),
              "at": _now()}
+        )
+        logger.info(
+            "iteration.gate",
+            gate=name,
+            iteration_id=iteration_id,
+            by=str(user.sub),
+            step_from=required_step,
+            step_to=it["current_step"],
+            state_to=it["state"],
+            engine=engine is not None,
         )
         from rsi.api.object_store import persist_record as _persist_it
 

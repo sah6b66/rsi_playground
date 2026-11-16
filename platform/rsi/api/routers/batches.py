@@ -15,9 +15,12 @@ from rsi.api.deps import audit, get_current_user, get_store, require_perms
 from rsi.api.pagination import DEFAULT_LIMIT, paginate
 from rsi.core.enums import BatchStatus
 from rsi.core.errors import InvalidTransitionError, NotFoundError
+from rsi.log import get_logger
 from rsi.security.auth import Claims
 
 router = APIRouter(prefix="/batches", tags=["batches"])
+
+logger = get_logger(__name__)
 
 _TERMINAL = {BatchStatus.FINALIZED, BatchStatus.FAILED, BatchStatus.ABORTED}
 
@@ -111,6 +114,14 @@ async def trigger_batch(
         "created_at": _now(),
     }
     store[batch["id"]] = batch
+    logger.info(
+        "batch.triggered",
+        batch_id=batch["id"],
+        evalset_id=body.evalset_id,
+        sut_id=body.sut_id,
+        purpose=body.purpose,
+        permission=(body.params or {}).get("permission"),
+    )
     runner = request.app.state.services.get("batch_runner")
     if runner is not None:
         # audit3 W2: the runner only writes the DB, so give it an
@@ -186,6 +197,7 @@ async def pause_batch(
             context={"batch_id": batch_id, "from_state": batch["status"]},
         )
     batch["paused"] = True
+    logger.info("batch.paused", batch_id=batch_id)
     return BatchOut(**batch)
 
 
@@ -204,6 +216,7 @@ async def resume_batch(
             context={"batch_id": batch_id, "from_state": batch["status"]},
         )
     batch["paused"] = False
+    logger.info("batch.resumed", batch_id=batch_id)
     return BatchOut(**batch)
 
 
@@ -218,6 +231,9 @@ async def abort_batch(
     _transition(batch, "abort")
     batch["status"] = BatchStatus.ABORTED.value
     batch["paused"] = False
+    logger.info(
+        "batch.aborted", batch_id=batch_id, progress=batch.get("progress")
+    )
     return BatchOut(**batch)
 
 

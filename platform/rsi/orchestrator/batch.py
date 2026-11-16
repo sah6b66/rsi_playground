@@ -762,7 +762,7 @@ class BatchRunner:
         # 4. aggregate verdicts -> BatchStats
         stats = self.stats_agg.aggregate(verdicts, task_ids=verdict_task_ids)
         await asyncio.to_thread(self._db_finish_batch, batch_id, status, stats)
-        logger.debug(
+        logger.info(
             "run_batch.exit", batch_id=batch_id, status=status, n=stats.n
         )
         if task_exc is not None:
@@ -787,7 +787,7 @@ class BatchRunner:
     ) -> tuple[TaskResult, Verdict]:
         run_id = new_id("run")
         self.last_run_ids[task.task_id] = run_id
-        logger.debug("run_task.entry", run_id=run_id, task_id=task.task_id, seq=seq)
+        logger.info("run_task.entry", run_id=run_id, task_id=task.task_id, seq=seq)
 
         # 1. prepare (backup + exec_cli/call_api), retry <= 2, then env_failed.
         #    DD-12 §5.2 order: restore_task -> prepare between attempts, so a
@@ -970,14 +970,7 @@ class BatchRunner:
 
                 # 6. collect trace events (P0: synthesized from the result
                 #    actions + wiretap channel files tailed into the collector)
-                events = self._trace_events(run_id, task, lab, result)
-                # F1.2 (audit4): tail the carrier's wiretap ndjson channel(s)
-                # so real OpenCode runs contribute LLM_REQUEST/usage events
-                # (one-shot read; missing files are skipped quietly).
-                events.extend(
-                    self._ingest_trace_channels(run_id, task, lab, instance)
-                )
-                self.collector.ingest(events)
+                events = self._collect_run_events(run_id, task, lab, result, instance)
             finally:
                 self.collector.finalize(run_id)
 
@@ -1423,6 +1416,27 @@ class BatchRunner:
         # F6/R5：build_lab 已登记 post-build snap0（service.py 登记 + ops
         # journal 落记录）——复用之，不再补拍（否则每 lab 两条 snap0 记录）。
         return lab, self.sandbox.snapshots(lab.lab_id)[-1]
+
+    def _collect_run_events(
+        self,
+        run_id: str,
+        task: TaskRecord,
+        lab: LabHandle,
+        result: TaskResult,
+        instance: Any,
+    ) -> list[TraceEvent]:
+        """Assemble the judge event list + ingest each stream exactly once.
+
+        F1.2/F9-e：wiretap 事件由 ``tail_ndjson`` 在摄取通道时已进入
+        collector——外层不得再对同一批事件 ingest（否则 collector/traces
+        查询与持久化 events.ndjson 证据文件出现重复行；判分走本地列表
+        恰好掩盖了这一点）。
+        """
+        wiretap_events = self._ingest_trace_channels(run_id, task, lab, instance)
+        events = self._trace_events(run_id, task, lab, result)
+        self.collector.ingest(events)
+        events.extend(wiretap_events)
+        return events
 
     def _ingest_trace_channels(
         self,

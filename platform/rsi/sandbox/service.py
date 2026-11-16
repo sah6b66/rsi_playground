@@ -170,7 +170,7 @@ class SandboxService:
             report = await backend.wait_ready(lab, self._ready_timeout_s)
             if report.passed:
                 break
-            logger.debug("build_lab.not_ready", lab_id=lab.lab_id, summary=report.summary())
+            logger.warning("build_lab.not_ready", lab_id=lab.lab_id, summary=report.summary())
             await backend.destroy(lab)
             last_error = EnvError(
                 f"lab for env {env.name!r} not ready: {report.summary()}",
@@ -200,7 +200,7 @@ class SandboxService:
             {"record": "snapshot", "name": "snap0", "snapshot_id": snap0.snapshot_id}
         )
         self._persist_lab_row(lab, env, selection.backend_key)
-        logger.debug("build_lab.exit", lab_id=lab.lab_id, snap0=snap0.snapshot_id)
+        logger.info("build_lab.exit", lab_id=lab.lab_id, snap0=snap0.snapshot_id)
         return lab
 
     def _persist_lab_row(
@@ -327,14 +327,14 @@ class SandboxService:
     async def prepare(
         self, lab: LabHandle, task_id: str, actions: list[PrepareAction]
     ) -> list[AppliedAction]:
-        logger.debug(
+        logger.info(
             "prepare.entry", lab_id=lab.lab_id, task_id=task_id, actions=len(actions)
         )
         env = self._require_env(lab)
         applied: list[AppliedAction] = []
         for action in actions:
             applied.append(await self._prepare_exec_cli(lab, task_id, env, action))
-        logger.debug("prepare.exit", applied_count=len(applied))
+        logger.info("prepare.exit", applied_count=len(applied))
         return applied
 
     async def _prepare_exec_cli(

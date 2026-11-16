@@ -166,6 +166,16 @@ class LLMClient:
         temperature = self._effective_temperature(component)
         pass_temperature = _accepts_temperature(self._handler)
         started = time.perf_counter()
+        # F9-f：LLM 调用全程此前静默（llm_calls 表也是完成才落行），挂起
+        # 无感知——开始/完成各一条 info（带 run_id 上下文）。
+        logger.info(
+            "llm.call",
+            phase="start",
+            component=component,
+            prompt=prompt_name,
+            model=self.model,
+            run_id=run_id,
+        )
         async with self._semaphore:
             for _attempt in range(_MAX_SCHEMA_RETRIES + 1):
                 call_vars = dict(vars)
@@ -196,6 +206,16 @@ class LLMClient:
                     },
                 )
         latency_ms = int((time.perf_counter() - started) * 1000)
+        logger.info(
+            "llm.call",
+            phase="done",
+            component=component,
+            prompt=prompt_name,
+            model=self.model,
+            latency_ms=latency_ms,
+            output_chars=len(raw or ""),
+            run_id=run_id,
+        )
 
         resp = LLMResponse(
             content=raw or "",

@@ -79,7 +79,7 @@ class JudgeService:
         only: they are persisted with the Judgment row (eval_context_json)
         and never reach the judge LLM prompts (audit3 N2 blind-eval fix).
         """
-        logger.debug(
+        logger.info(
             "judge_run.entry",
             task=task.task.title,
             events=len(events),

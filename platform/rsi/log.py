@@ -139,12 +139,25 @@ def configure_logging(
     """
     global _file_sink
     level = level or os.environ.get("RSI_LOG_LEVEL", "info")
+    # F9-d：stdlib 侧（paramiko/httpx/uvicorn 等第三方走 root 的行）统一
+    # "时戳 级别 模块 消息"——此前裸 message 导致 server.log 大量行无时戳
+    # 无来源，无法排障归因。
     logging.basicConfig(
-        format="%(message)s",
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
         stream=sys.stdout,
         level=getattr(logging, level.upper(), logging.INFO),
         force=True,
     )
+    # uvicorn CLI 自带 handler（无时戳格式，propagate=False 绕开 root）——
+    # 换成与 root 同格式的 handler。
+    _uvicorn_handler = logging.StreamHandler(sys.stdout)
+    _uvicorn_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    )
+    for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        _lg = logging.getLogger(_name)
+        _lg.handlers = [_uvicorn_handler]
+        _lg.propagate = False
     # F9-a：第三方 HTTP 库的 INFO 请求日志无信号量且刷屏（S11 实测 8510
     # 条 `HTTP Request: HEAD ... 500`）——压到 WARNING；探针结果经结构化
     # HealthResult/doctor/dependencies 消费，原始行不进日志。
