@@ -49,7 +49,9 @@ RULES_PATH = Path(__file__).parent / "rules" / "safety_rules.yaml"
 
 # -- builtin fallback table (deployments without the yaml file) ----------------
 _FALLBACK: dict[str, Any] = {
-    "read_only_prefixes": ["display", "show", "ping", "tracert", "screen-length"],
+    "read_only_prefixes": [
+        "display", "show", "ping", "tracert", "screen-length", "quit", "return",
+    ],
     "config_delete_markers": [".cfg", ".zip", "vrpcfg", "startup", "config"],
     "config_mode_commands": ["system-view", "configure terminal"],
     "fatal": [

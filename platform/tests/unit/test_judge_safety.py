@@ -131,3 +131,11 @@ def test_regular_channel_catch_all_unchanged() -> None:
     """常规（用户视图）通道语义不变：白名单外仍 fatal（TU-011 口径）。"""
     verdict = SafetyScanner().scan(["shutdown GigabitEthernet0/0/1"], "read-write")
     assert verdict.fatal is True
+
+
+def test_session_navigation_commands_clean() -> None:
+    """F9-g：quit/return 是零风险会话导航（agent 经 wrapper 下发属正常
+    行为），白名单化——否则 catch-all 把整 run 判 fatal。"""
+    verdict = SafetyScanner().scan(["quit", "return"], "read-write")
+    assert verdict.fatal is False
+    assert verdict.violations == []
