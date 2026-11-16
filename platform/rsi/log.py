@@ -21,17 +21,31 @@ def _is_console() -> bool:
 
 
 class _CurrentStdout:
-    """File-like proxy that resolves ``sys.stdout`` at write time.
+    """File-like proxy that resolves ``sys.stdout`` 与文件通道 at write time.
 
     Avoids capturing a stale/stdout wrapper at configure time (colorama on
     Windows wraps stdout and pytest's capsys replaces it per-test).
+
+    F9-a（S11 实测）：文件通道也必须写时解析——模块级
+    ``logger = get_logger(__name__)`` 在 import 期物化（先于
+    configure_logging(logs_dir)），若工厂在 configure 时才绑定 _Tee，
+    已存在的 logger 永远只写 stdout（app.jsonl 近乎全空，仅延迟导入
+    模块的 2 行）。代理在 write 时查全局 ``_file_sink``，configure
+    切换对所有 logger 立即生效。
     """
 
     def write(self, s: str) -> int:
-        return sys.stdout.write(s)
+        n = sys.stdout.write(s)
+        sink = _file_sink
+        if sink is not None:
+            sink.write_file(s)
+        return n
 
     def flush(self) -> None:
         sys.stdout.flush()
+        sink = _file_sink
+        if sink is not None:
+            sink.flush()
 
 
 _MAX_BYTES = 10 * 1024 * 1024
@@ -39,12 +53,17 @@ _BACKUPS = 3
 _ERROR_LEVELS = ('"level": "warning"', '"level": "error"',
                  '"level": "critical"')
 
+# 当前文件通道（None=仅 stdout）。configure_logging 切换，_CurrentStdout
+# 写时读取——见 _CurrentStdout docstring（F9-a）。
+_file_sink: "_Tee | None" = None
+
 
 class _Tee:
-    """stdout + 文件双写；warning/error 行另写 error.jsonl（F4/W9）.
+    """文件双写通道：app.jsonl 全量 + error.jsonl 仅 warning/error（F4/W9）.
 
-    轮转：单文件超限时改名 .1/.2/.3（保留 3 代）。structlog PrintLogger
-    逐行调 write(msg + LF)，按行嗅探级别即可。
+    stdout 由 _CurrentStdout 负责（本类只写文件）。轮转：单文件超限时
+    改名 .1/.2/.3（保留 3 代）。structlog PrintLogger 逐行调
+    write(msg + LF)，按行嗅探级别即可。
     """
 
     def __init__(self, logs_dir) -> None:
@@ -78,8 +97,7 @@ class _Tee:
             self._err = new
         return 0
 
-    def write(self, s: str) -> int:
-        sys.stdout.write(s)
+    def write_file(self, s: str) -> int:
         n = len(s.encode("utf-8", "replace"))
         try:
             self._app.write(s)
@@ -103,7 +121,6 @@ class _Tee:
         return n
 
     def flush(self) -> None:
-        sys.stdout.flush()
         try:
             self._app.flush()
             self._err.flush()
@@ -118,7 +135,9 @@ def configure_logging(
 
     ``logs_dir`` 给定时双写文件：app.jsonl 全量 + error.jsonl 仅
     warning/error（10MB×3 代轮转）——F4/W9，替代空置的 logs 目录。
+    切换文件通道对 import 期已创建的 logger 同样生效（F9-a 代理 sink）。
     """
+    global _file_sink
     level = level or os.environ.get("RSI_LOG_LEVEL", "info")
     logging.basicConfig(
         format="%(message)s",
@@ -126,6 +145,11 @@ def configure_logging(
         level=getattr(logging, level.upper(), logging.INFO),
         force=True,
     )
+    # F9-a：第三方 HTTP 库的 INFO 请求日志无信号量且刷屏（S11 实测 8510
+    # 条 `HTTP Request: HEAD ... 500`）——压到 WARNING；探针结果经结构化
+    # HealthResult/doctor/dependencies 消费，原始行不进日志。
+    for _noisy in ("httpx", "httpcore"):
+        logging.getLogger(_noisy).setLevel(logging.WARNING)
 
     shared = [
         structlog.contextvars.merge_contextvars,
@@ -139,15 +163,13 @@ def configure_logging(
     else:
         renderer = structlog.processors.JSONRenderer()
 
-    sink: object = _CurrentStdout()
-    if logs_dir is not None and not _is_console():
-        sink = _Tee(logs_dir)
+    _file_sink = _Tee(logs_dir) if logs_dir is not None and not _is_console() else None
     structlog.configure(
         processors=[*shared, structlog.processors.UnicodeDecoder(), renderer],
         wrapper_class=structlog.make_filtering_bound_logger(
             getattr(logging, level.upper(), logging.INFO)
         ),
-        logger_factory=structlog.PrintLoggerFactory(file=sink),
+        logger_factory=structlog.PrintLoggerFactory(file=_CurrentStdout()),
         cache_logger_on_first_use=False,
     )
 

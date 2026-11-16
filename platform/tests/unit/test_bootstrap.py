@@ -59,8 +59,9 @@ def _settings(tmp_path: Path) -> Settings:
     )
 
 
-def test_build_services_offline_safe() -> None:
+def test_build_services_offline_safe(tmp_path: Path) -> None:
     """Default Settings assembly: no docker/LLM/key/network required."""
+    _settings(tmp_path)
     services = build_services()
     assert EXPECTED_KEYS <= set(services.keys())
     # cred chain wired (T2-1)
@@ -71,6 +72,12 @@ def test_build_services_offline_safe() -> None:
     assert services["judge_service"]._session_factory is services["session_factory"]
     # collector <-> store circular dep established via public API
     assert services["tracing_collector"]._store is services["trace_store"]
+    # F9-b：collector 持久化接线 traces_dir——H7 已实现逐 run
+    # events.ndjson/meta.json 落盘，此前 bootstrap 漏接导致 storage/traces
+    # 恒空、重启即丢轨迹证据（S11 实测 51 run 零文件）
+    assert services["tracing_collector"]._persistence_dir == (
+        tmp_path / "storage" / "traces"
+    )
     # API DI keys present (T2-4)
     for key in ("auth_service", "audit_log", "batch_runner", "users"):
         assert key in services

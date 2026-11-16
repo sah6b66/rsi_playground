@@ -220,7 +220,9 @@ def build_services(
         )
 
     # -- Tracing (collector <-> store circular dep via attach_store) ------
-    collector = TraceCollector(SeqAllocator(), None)
+    # F9-b：持久化接线 traces_dir（H7 逐 run events.ndjson/meta.json 落盘）
+    # ——此前漏接导致 storage/traces 恒空、重启即丢轨迹证据（S11 实测）。
+    collector = TraceCollector(SeqAllocator(), None, settings.traces_dir)
     trace_store = TraceStore(collector)
     collector.attach_store(trace_store)
 
