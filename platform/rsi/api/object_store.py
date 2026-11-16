@@ -5,9 +5,10 @@
 ``<RSI_HOME>/storage/object-store/<collection>/<id>.json`` 一对象一文件
 落盘（写失败不阻断主流程），bootstrap 时水合回灌（内存已有同名 id 不覆盖）。
 
-关系表（suts/evalsets/iterations DDL）保持原用途（报表/审计），不在此
-强映射——iterations 表 CHECK(mode IN p1,p2) 与 p0 冲突、evalsets 表无
-载荷列，文件库是统一且无迁移负担的载体。
+关系表同步：suts/evalsets 每次 persist/delete 同步 upsert/remove DB 存在性
+行（payload 不入 DB，失败 warning 降级不阻断），保证 batches/runs 外键
+引用与跨表 join 完整。iterations 表 CHECK(mode IN p1,p2) 与 p0 冲突，
+不映射——文件库仍是统一载体。
 """
 
 from __future__ import annotations
@@ -18,7 +19,12 @@ from typing import Any
 
 from rsi.log import get_logger
 
-__all__ = ["ObjectFileStore", "hydrate_object_stores", "persist_record"]
+__all__ = [
+    "ObjectFileStore",
+    "delete_record",
+    "hydrate_object_stores",
+    "persist_record",
+]
 
 logger = get_logger(__name__)
 
@@ -100,26 +106,117 @@ def hydrate_object_stores(stores: dict[str, Any], root: Path | str) -> None:
     )
 
 
-def persist_record(
-    services: dict[str, Any] | None, collection: str, record: dict[str, Any]
-) -> None:
-    """路由侧便捷写：从 services 取 settings 定位根目录后落盘。"""
+def _resolve_store(services: dict[str, Any] | None) -> ObjectFileStore | None:
+    """优先取 services 内已装配的 store，否则按 settings.home 定位根目录。"""
+    st = (services or {}).get("object_store")
+    if isinstance(st, ObjectFileStore):
+        return st
     settings = (services or {}).get("settings")
     root = getattr(settings, "home", None)
     if root is None:
+        return None
+    return ObjectFileStore(Path(root) / "storage" / "object-store")
+
+
+def _upsert_db_row(services: dict[str, Any] | None, collection: str,
+                   record: dict[str, Any]) -> None:
+    """Best-effort DB 存在性行同步（失败 warning 不阻断——项目 DB 写入铁律）."""
+    if collection not in ("suts", "evalsets"):
         return
-    ObjectFileStore(Path(root) / "storage" / "object-store").save(
-        collection, record
-    )
+    sf = (services or {}).get("session_factory")
+    if sf is None:
+        return
+    try:
+        from sqlmodel import select
+
+        if collection == "suts":
+            from rsi.db.tables import Sut as _T
+        else:
+            from rsi.db.tables import EvalSet as _T
+        with sf() as session:
+            row = session.exec(
+                select(_T).where(_T.id == record["id"])
+            ).first()
+            if row is None:
+                if collection == "suts":
+                    row = _T(
+                        id=record["id"],
+                        name=record.get("name", record["id"]),
+                        carrier=record.get("carrier", "opencode"),
+                        image_ref=record.get("image_ref", ""),
+                        description=record.get("description", ""),
+                        created_at=record.get("created_at", ""),
+                    )
+                else:
+                    row = _T(
+                        id=record["id"],
+                        name=record.get("name", record["id"]),
+                        purpose=record.get("purpose", "iterate"),
+                        created_at=record.get("created_at", ""),
+                    )
+                session.add(row)
+            else:
+                row.name = record.get("name", row.name)
+                if collection == "suts":
+                    row.image_ref = record.get("image_ref", row.image_ref)
+                    row.description = record.get("description", row.description)
+                else:
+                    row.purpose = record.get("purpose", row.purpose)
+            session.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "object_store.db_upsert_failed",
+            collection=collection,
+            id=record.get("id"),
+            error=str(exc)[:120],
+        )
+
+
+def _remove_db_row(services: dict[str, Any] | None, collection: str,
+                   obj_id: str) -> None:
+    if collection not in ("suts", "evalsets"):
+        return
+    sf = (services or {}).get("session_factory")
+    if sf is None:
+        return
+    try:
+        from sqlmodel import select
+
+        if collection == "suts":
+            from rsi.db.tables import Sut as _T
+        else:
+            from rsi.db.tables import EvalSet as _T
+        with sf() as session:
+            row = session.exec(select(_T).where(_T.id == obj_id)).first()
+            if row is not None:
+                session.delete(row)
+                session.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "object_store.db_delete_failed",
+            collection=collection,
+            id=obj_id,
+            error=str(exc)[:120],
+        )
+
+
+def persist_record(
+    services: dict[str, Any] | None, collection: str, record: dict[str, Any]
+) -> None:
+    """路由侧便捷写：JSON 落盘 + suts/evalsets 同步 upsert DB 行。"""
+    store = _resolve_store(services)
+    if store is None:
+        return
+    store.save(collection, record)
+    _upsert_db_row(services, collection, record)
 
 
 def delete_record(
     services: dict[str, Any] | None, collection: str, obj_id: str
 ) -> None:
-    settings = (services or {}).get("settings")
-    root = getattr(settings, "home", None)
-    if root is None:
+    """JSON 删盘 + suts/evalsets 同步移除 DB 行。"""
+    store = _resolve_store(services)
+    if store is None:
         return
-    ObjectFileStore(Path(root) / "storage" / "object-store").delete(
-        collection, obj_id
-    )
+    store.delete(collection, obj_id)
+    _remove_db_row(services, collection, obj_id)

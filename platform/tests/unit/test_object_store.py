@@ -2,7 +2,12 @@
 import json
 from pathlib import Path
 
-from rsi.api.object_store import ObjectFileStore, hydrate_object_stores
+from rsi.api.object_store import (
+    ObjectFileStore,
+    delete_record,
+    hydrate_object_stores,
+    persist_record,
+)
 
 
 def test_save_load_delete_roundtrip(tmp_path: Path):
@@ -49,3 +54,73 @@ def test_hydrate_does_not_overwrite_memory(tmp_path: Path):
     hydrate_object_stores(stores, tmp_path)
     assert stores["suts"]["sut-1"]["name"] == "memory"
 
+
+
+def _sf(tmp_path):
+    import sqlite3
+
+    from sqlmodel import SQLModel, Session, create_engine
+
+    engine = create_engine(f"sqlite:///{tmp_path/'t.db'}")
+    SQLModel.metadata.create_all(engine)
+    return lambda: Session(engine)
+
+
+def test_persist_record_upserts_sut_db_row(tmp_path):
+    st = ObjectFileStore(tmp_path)
+    sf = _sf(tmp_path)
+    services = {"object_store": st, "session_factory": sf}
+    rec = {"id": "sut-1", "name": "n1", "carrier": "opencode",
+           "image_ref": "img:1", "description": "", "created_at": "2026-01-01"}
+    persist_record(services, "suts", rec)
+    from sqlmodel import select
+
+    from rsi.db.tables import Sut
+
+    with sf() as s:
+        assert s.exec(select(Sut)).one().name == "n1"
+    rec["name"] = "n2"
+    persist_record(services, "suts", rec)  # upsert 不重复插行
+    with sf() as s:
+        rows = s.exec(select(Sut)).all()
+        assert len(rows) == 1 and rows[0].name == "n2"
+
+
+def test_persist_record_upserts_evalset_db_row(tmp_path):
+    st = ObjectFileStore(tmp_path)
+    sf = _sf(tmp_path)
+    services = {"object_store": st, "session_factory": sf}
+    rec = {"id": "es-1", "name": "e1", "purpose": "iterate",
+           "created_at": "2026-01-01"}
+    persist_record(services, "evalsets", rec)
+    from sqlmodel import select
+
+    from rsi.db.tables import EvalSet
+
+    with sf() as s:
+        assert s.exec(select(EvalSet)).one().purpose == "iterate"
+
+
+def test_persist_record_degrades_without_session_factory(tmp_path):
+    st = ObjectFileStore(tmp_path)
+    services = {"object_store": st}
+    persist_record(services, "suts", {"id": "sut-1", "name": "n",
+                                      "carrier": "opencode", "image_ref": "i",
+                                      "description": "", "created_at": "x"})
+    assert st.load_all("suts")[0]["name"] == "n"  # JSON 落盘不受影响
+
+
+def test_delete_record_removes_db_row(tmp_path):
+    st = ObjectFileStore(tmp_path)
+    sf = _sf(tmp_path)
+    services = {"object_store": st, "session_factory": sf}
+    rec = {"id": "es-1", "name": "e1", "purpose": "iterate",
+           "created_at": "2026-01-01"}
+    persist_record(services, "evalsets", rec)
+    delete_record(services, "evalsets", "es-1")
+    from sqlmodel import select
+
+    from rsi.db.tables import EvalSet
+
+    with sf() as s:
+        assert s.exec(select(EvalSet)).all() == []
