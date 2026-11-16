@@ -118,6 +118,14 @@ def _resolve_store(services: dict[str, Any] | None) -> ObjectFileStore | None:
     return ObjectFileStore(Path(root) / "storage" / "object-store")
 
 
+_CARRIER_WHITELIST = ("claude_code", "opencode", "hermes", "custom")
+
+
+def _normalize_carrier(value: Any) -> str:
+    """suts 表 CHECK 约束白名单收敛——法外值落 custom，避免 IntegrityError 断链。"""
+    return value if value in _CARRIER_WHITELIST else "custom"
+
+
 def _upsert_db_row(services: dict[str, Any] | None, collection: str,
                    record: dict[str, Any]) -> None:
     """Best-effort DB 存在性行同步（失败 warning 不阻断——项目 DB 写入铁律）."""
@@ -142,7 +150,7 @@ def _upsert_db_row(services: dict[str, Any] | None, collection: str,
                     row = _T(
                         id=record["id"],
                         name=record.get("name", record["id"]),
-                        carrier=record.get("carrier", "opencode"),
+                        carrier=_normalize_carrier(record.get("carrier", "opencode")),
                         image_ref=record.get("image_ref", ""),
                         description=record.get("description", ""),
                         created_at=record.get("created_at", ""),
@@ -158,6 +166,7 @@ def _upsert_db_row(services: dict[str, Any] | None, collection: str,
             else:
                 row.name = record.get("name", row.name)
                 if collection == "suts":
+                    row.carrier = _normalize_carrier(record.get("carrier", row.carrier))
                     row.image_ref = record.get("image_ref", row.image_ref)
                     row.description = record.get("description", row.description)
                 else:

@@ -57,8 +57,6 @@ def test_hydrate_does_not_overwrite_memory(tmp_path: Path):
 
 
 def _sf(tmp_path):
-    import sqlite3
-
     from sqlmodel import SQLModel, Session, create_engine
 
     engine = create_engine(f"sqlite:///{tmp_path/'t.db'}")
@@ -108,6 +106,24 @@ def test_persist_record_degrades_without_session_factory(tmp_path):
                                       "carrier": "opencode", "image_ref": "i",
                                       "description": "", "created_at": "x"})
     assert st.load_all("suts")[0]["name"] == "n"  # JSON 落盘不受影响
+
+
+def test_persist_record_sut_carrier_whitelist_collapse(tmp_path):
+    st = ObjectFileStore(tmp_path)
+    sf = _sf(tmp_path)
+    services = {"object_store": st, "session_factory": sf}
+    persist_record(services, "suts", {
+        "id": "sut-x", "name": "nx", "carrier": "claude-code",
+        "image_ref": "", "description": "", "created_at": "2026-01-01",
+    })
+    from sqlmodel import select
+
+    from rsi.db.tables import Sut
+
+    with sf() as s:
+        assert s.exec(select(Sut)).one().carrier == "custom"
+    # JSON 落盘保留 payload 原始值，仅 DB 存在性行收敛
+    assert st.load_all("suts")[0]["carrier"] == "claude-code"
 
 
 def test_delete_record_removes_db_row(tmp_path):
