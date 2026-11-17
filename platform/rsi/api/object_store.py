@@ -6,9 +6,11 @@
 落盘（写失败不阻断主流程），bootstrap 时水合回灌（内存已有同名 id 不覆盖）。
 
 关系表同步：suts/evalsets 每次 persist/delete 同步 upsert/remove DB 存在性
-行（payload 不入 DB，失败 warning 降级不阻断），保证 batches/runs 外键
-引用与跨表 join 完整。iterations 表 CHECK(mode IN p1,p2) 与 p0 冲突，
-不映射——文件库仍是统一载体。
+行；hypotheses（B2-T5 修复）persist 同步 upsert——闭环 FR6.2/FR6.3：
+bootstrap._opt_history_lookup 读 hypotheses 表，无 writer 则生产归因
+"已试过 X 未果"输入恒空。payload 不入 DB，失败 warning 降级不阻断，
+保证 batches/runs 外键引用与跨表 join 完整。iterations 表
+CHECK(mode IN p1,p2) 与 p0 冲突，不映射——文件库仍是统一载体。
 """
 
 from __future__ import annotations
@@ -126,10 +128,42 @@ def _normalize_carrier(value: Any) -> str:
     return value if value in _CARRIER_WHITELIST else "custom"
 
 
+#: ck_hypotheses_status 约束集（tables.py Hypothesis.__table_args__）
+_HYP_DB_STATUSES = ("draft", "proposed", "critic_passed", "applied",
+                    "accepted", "rejected", "withdrawn")
+#: API store 状态 -> DB 约束状态（人工门②提交态 submitted 语义即 proposed）
+_HYP_STATUS_MAP = {"submitted": "proposed"}
+
+
+def _normalize_hyp_status(value: Any) -> str:
+    """hypotheses 表 ck_hypotheses_status 白名单收敛——法外值落 draft。
+
+    门控端点写入的 API store 状态是 ``submitted``（hypotheses 路由
+    _VALID_STATUS 域），不在 DB CHECK 集内；直写必 IntegrityError ->
+    warning 断链。与 _normalize_carrier 同一约定。
+    """
+    if value in _HYP_DB_STATUSES:
+        return str(value)
+    return _HYP_STATUS_MAP.get(str(value) if value else "", "draft")
+
+
+def _hyp_payload_json(record: dict[str, Any]) -> str:
+    """hypothesis_json 列构造：draft schema 载荷 + 合并顶层 target。
+
+    必须合并顶层 ``target``——_opt_history_lookup 读 payload 的
+    target/target_path 字段，而 HypothesisDraftOut 九字段无 target，
+    不合并则回读 target 恒 None。draft 非法（非 dict）时降级仅 target。
+    """
+    draft = record.get("hypothesis_json")
+    payload = dict(draft) if isinstance(draft, dict) else {}
+    payload["target"] = record.get("target")
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def _upsert_db_row(services: dict[str, Any] | None, collection: str,
                    record: dict[str, Any]) -> None:
     """Best-effort DB 存在性行同步（失败 warning 不阻断——项目 DB 写入铁律）."""
-    if collection not in ("suts", "evalsets"):
+    if collection not in ("suts", "evalsets", "hypotheses"):
         return
     sf = (services or {}).get("session_factory")
     if sf is None:
@@ -139,8 +173,10 @@ def _upsert_db_row(services: dict[str, Any] | None, collection: str,
 
         if collection == "suts":
             from rsi.db.tables import Sut as _T
-        else:
+        elif collection == "evalsets":
             from rsi.db.tables import EvalSet as _T
+        else:
+            from rsi.db.tables import Hypothesis as _T
         with sf() as session:
             row = session.exec(
                 select(_T).where(_T.id == record["id"])
@@ -155,14 +191,30 @@ def _upsert_db_row(services: dict[str, Any] | None, collection: str,
                         description=record.get("description", ""),
                         created_at=record.get("created_at", ""),
                     )
-                else:
+                elif collection == "evalsets":
                     row = _T(
                         id=record["id"],
                         name=record.get("name", record["id"]),
                         purpose=record.get("purpose", "iterate"),
                         created_at=record.get("created_at", ""),
                     )
+                else:
+                    row = _T(
+                        id=record["id"],
+                        sut_id=record["sut_id"],
+                        iteration_id=record.get("iteration_id"),
+                        hypothesis_json=_hyp_payload_json(record),
+                        status=_normalize_hyp_status(
+                            record.get("status", "submitted")
+                        ),
+                        created_at=record.get("created_at", ""),
+                    )
                 session.add(row)
+            elif collection == "hypotheses":
+                row.hypothesis_json = _hyp_payload_json(record)
+                row.status = _normalize_hyp_status(
+                    record.get("status", row.status)
+                )
             else:
                 row.name = record.get("name", row.name)
                 if collection == "suts":
@@ -212,7 +264,7 @@ def _remove_db_row(services: dict[str, Any] | None, collection: str,
 def persist_record(
     services: dict[str, Any] | None, collection: str, record: dict[str, Any]
 ) -> None:
-    """路由侧便捷写：JSON 落盘 + suts/evalsets 同步 upsert DB 行。"""
+    """路由侧便捷写：JSON 落盘 + suts/evalsets/hypotheses 同步 upsert DB 行。"""
     store = _resolve_store(services)
     if store is None:
         return
