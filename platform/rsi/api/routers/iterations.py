@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
+from pydantic import ValidationError as PydanticValidationError
 
 from rsi.api.db_reads import db_verdict, list_runs_for_batch
 from rsi.api.deps import audit, get_current_user, get_store, require_perms
@@ -148,6 +149,27 @@ class HypothesisDraftOut(BaseModel):
     risk: str = ""
     verification_task_ids: list[str] = []
     predicted_affected_tasks: list[str] = []
+
+
+def _validated_gate_draft(body: GateBody) -> dict | None:
+    """人工门② body.draft → FR6.3 schema 校验（B2-T5）。
+
+    无 draft 返回 None（纯字符串老路径不变）；校验失败抛 ValidationError
+    （422）且消息列出全部非法字段——在任何状态推进前调用。
+    """
+    raw = body.model_extra.get("draft") if body.model_extra else None
+    if raw is None:
+        return None
+    try:
+        return HypothesisDraftOut.model_validate(raw).model_dump()
+    except PydanticValidationError as exc:
+        fields = sorted(
+            {str(e["loc"][0]) for e in exc.errors() if e.get("loc")}
+        )
+        raise ValidationError(
+            f"draft 未通过 FR6.3 schema 校验，非法字段: {', '.join(fields)}",
+            context={"gate": "hypothesis", "fields": fields},
+        ) from None
 
 
 def _now() -> str:
@@ -657,6 +679,10 @@ async def _engine_gate(engine, name: str, body: GateBody) -> str | None:
             for key in ("target", "predicted_effect"):
                 if key in body.model_extra:
                     hyp[key] = body.model_extra[key]
+        # B2-T5: FR6.3 全 schema 草稿并入引擎载荷（gate_hypothesis）
+        draft = _validated_gate_draft(body)
+        if draft is not None:
+            hyp.update(draft)
         return await engine.gate_hypothesis(hyp)
     if name == "review":
         # a) explicit approval required: a missing ``approved`` (None) is a
@@ -717,6 +743,11 @@ def _gate_router(name: str, required_step: str, next_step: str):
                 "review gate requires an explicit approved (true/false)",
                 context={"gate": name, "approved": None},
             )
+        # B2-T5: 人工门②可携带 FR6.3 全 schema draft —— 在任何状态推进/
+        # 引擎桥接之前校验，失败 422（迭代保持原 paused 等待位不被推进）。
+        draft: dict | None = (
+            _validated_gate_draft(body) if name == "hypothesis" else None
+        )
         # D-3 bridge (id-space note, R1#5): this endpoint keys the registry by
         # the API-minted ``iter-<uuid8>`` id. The API itself never starts an
         # IterationEngine — a store-only iteration therefore finds no engine
@@ -774,7 +805,15 @@ def _gate_router(name: str, required_step: str, next_step: str):
                 "created_at": _now(),
                 "updated_at": _now(),
             }
+            # B2-T5: FR6.3 全 schema 落 store（hypothesis_json 列随行），
+            # 仅 draft 路径持久化——纯字符串老路径行为不变
+            if draft is not None:
+                hyp["hypothesis_json"] = draft
             hypotheses[hyp["id"]] = hyp
+            if draft is not None:
+                from rsi.api.object_store import persist_record
+
+                persist_record(request.app.state.services, "hypotheses", hyp)
             return Response(
                 status_code=201,
                 content=json.dumps({"hypothesis_id": hyp["id"]}),
