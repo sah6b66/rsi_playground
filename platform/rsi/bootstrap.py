@@ -477,12 +477,13 @@ def build_services(
     )
     # B2-T2：真实 LLM（与 llm_client 同一判定：cassette off + provider key）
     # 时包一层 LLM 精分类；离线/mock 形态保持裸规则层。
-    attribution_analyzer = AttributionAnalyzer()
-    if (
+    _real_llm = (
         settings.llm.cassette_mode == "off"
         and _anth is not None
         and _anth.api_key
-    ):
+    )
+    attribution_analyzer = AttributionAnalyzer()
+    if _real_llm:
         from rsi.optimizer.attribution_llm import LLMRefinedAttributionAnalyzer
 
         attribution_analyzer = LLMRefinedAttributionAnalyzer(
@@ -495,6 +496,8 @@ def build_services(
         no_gain_rounds=settings.optimizer.sft.no_gain_rounds,
         min_samples=settings.optimizer.sft.min_samples,
         artifacts_dir=settings.artifacts_dir,
+        # B2-7 FR6.9：真实 LLM 才接报告起草增强段；离线完全走老路径
+        llm=llm_client if _real_llm else None,
     )
 
     # -- Orchestrator -------------------------------------------------------

@@ -103,7 +103,7 @@ async def sft_report(
     assessor = request.app.state.services.get("sft_assessor")
     suggestion = None
     if assessor is not None:
-        suggestion = assessor.assess(
+        suggestion = await assessor.assess(
             exp.get("defect_b_clusters", []),
             exp.get("opt_history", []),
             int(exp.get("failed_sample_count", 0)),
