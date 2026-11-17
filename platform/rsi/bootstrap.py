@@ -326,11 +326,14 @@ def build_services(
 
     # -- Judge (session_factory wired -> judgments table persistence) -----
     llm_judge = LLMJudge(llm_client, TraceSummarizer())
+    # FR7.2 pairwise：detector 同一实例既进 JudgeService 也注册进 services，
+    # runs pairwise 端点经 services["antihack"] 取用（B2-T6 修复）。
+    antihack = AntiHackDetector()
     judge_service = JudgeService(
         det=DeterministicJudge(timeout_s=float(settings.judge.det_timeout_s)),
         safety=SafetyScanner(),
         llm=llm_judge,
-        antihack=AntiHackDetector(),
+        antihack=antihack,
         agg=VerdictAggregator(),
         session_factory=session_factory,
         # C-1: freeze-audit fingerprint of the judge prompt actually used
@@ -616,6 +619,8 @@ def build_services(
         "llm_judge": llm_judge,
         # judge
         "judge_service": judge_service,
+        # FR7.2 runs pairwise 刷分信号通道（与 JudgeService 共享同一实例）
+        "antihack": antihack,
         # carrier
         "host_service": host_service,
         "host_pool": host_pool,

@@ -20,6 +20,7 @@ from httpx import ASGITransport, AsyncClient
 from rsi.api.app import create_app
 from rsi.core.errors import ConfigError
 from rsi.core.models import PairwiseReport
+from rsi.judge.antihack import AntiHackDetector
 from rsi.judge.llm_judge import LLMJudge
 from rsi.llm.client import LLMClient
 from rsi.security.audit import AuditLog
@@ -200,6 +201,8 @@ def make_services(handler=_ok_handler) -> dict:
         "auth_service": auth,
         "audit_log": AuditLog(),
         "llm_judge": LLMJudge(LLMClient(handler=handler)),
+        # B2-T6 修复：与 bootstrap 装配一致——pairwise 信号通道取此键
+        "antihack": AntiHackDetector(),
         "users": {
             "admin": {
                 "user_id": "u-admin",
@@ -299,3 +302,45 @@ async def test_endpoint_unknown_run_404(client):
         "/api/v1/runs/zz/pairwise", json={"other_run_id": "rb"}, headers=h
     )
     assert resp.status_code == 404, resp.text
+
+
+async def test_endpoint_antihack_signals_skipped_steps():
+    """B2-T6 修复回归：candidate 跳过关键步 → antihack_signals 非空。
+
+    task_ctx（dict 形态 critical_steps）+ store 事件（type 键 dict）经
+    垫片进 detect——ra 轨迹缺 critical_steps 证据 → skipped_steps 记入。
+    """
+    seen = {}
+
+    def cap_handler(component, prompt_name, vars, *, temperature=0.0):
+        seen.update(vars=dict(vars))
+        return json.dumps(_PW, ensure_ascii=False)
+
+    services = make_services(handler=cap_handler)
+    app = create_app(services)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as c:
+        stores = c._transport.app.state.stores
+        stores["evalsets"]["es1"] = {
+            "tasks": [
+                {
+                    "id": "t-1",
+                    "title": "接口故障定位",
+                    "expected": {
+                        "critical_steps": [{"evidence": "display interface"}],
+                    },
+                }
+            ]
+        }
+        _seed_pair(c)  # ra 只跑 display version——缺关键步证据
+        h = await admin_headers(c)
+        resp = await c.post(
+            "/api/v1/runs/ra/pairwise", json={"other_run_id": "rb"}, headers=h
+        )
+        assert resp.status_code == 200, resp.text
+    sig = seen["vars"]["antihack_signals"]
+    assert sig, "antihack 信号通道仍为空串——垫片/注册未生效"
+    assert "skipped_steps=" in sig
+    assert "display interface" in sig  # ra 缺证据 → 该步记为 skipped
+    assert "missing_trial=false" in sig  # status=done 正常透传

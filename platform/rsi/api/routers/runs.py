@@ -183,24 +183,64 @@ def _task_context(stores: dict, task_id: str) -> dict:
     return {"task_id": task_id, "title": task_id, "expected": {}}
 
 
-def _antihack_signal_text(services: dict, task: dict, events: list, result: Any) -> str:
-    """AntiHackDetector 信号拼接；detector 未装配或事件形态不符 → 空串。
+def _antihack_signal_text(
+    services: dict, task: dict, events: list, result: Any, run_status: str | None = None
+) -> str:
+    """AntiHackDetector 信号拼接；detector 未装配或适配失败 → 空串。
 
+    store/collector 里的事件与 runs 记录是 JSON dict，而 ``detect`` 期望
+    EvalTask/TraceEvent/TaskResult 对象——按 detect 实际访问的字段做只读
+    垫片（task.task.expected.critical_steps[].evidence、event_type/data、
+    result.instance_crashed），非 stub：skipped_steps/missing_trial 两类
+    刷分信号在真实数据上可产出（FR7.2，B6 验收依赖）。
     信号属增强项：任何失败都不阻断对比（空串即"无附加信号"）。
     """
     detector = services.get("antihack")
     if detector is None or not events:
         return ""
     try:
+        from types import SimpleNamespace
+
         from rsi.core.models import PathQuality
         from rsi.judge.deterministic import DetScores
         from rsi.judge.llm_judge import SemanticScores
 
+        expected = (task.get("expected") or {}) if isinstance(task, dict) else {}
+        steps = [
+            SimpleNamespace(
+                evidence=str(s.get("evidence") or "") if isinstance(s, dict) else str(s)
+            )
+            for s in (expected.get("critical_steps") or [])
+            if s
+        ]
+        evs = [
+            e
+            if not isinstance(e, dict)
+            else SimpleNamespace(
+                # collector 产 event_type；内存 traces store 种子常见 type
+                event_type=e.get("event_type") or e.get("type"),
+                data=e.get("data") or {},
+            )
+            for e in events
+        ]
+        res = (
+            SimpleNamespace(instance_crashed=bool(result.get("instance_crashed")))
+            if isinstance(result, dict)
+            else result
+        )
         sem = SemanticScores(
+            # 旁路不做语义打分：mismatch 维度诚实置 False（结构上恒 False）
             root_cause_match=None,
             path_quality=PathQuality(verdict="pass", reasoning="pairwise-sideband"),
         )
-        sig = detector.detect(task, events, DetScores(), sem, result=result)
+        sig = detector.detect(
+            SimpleNamespace(task=SimpleNamespace(expected=SimpleNamespace(critical_steps=steps))),
+            evs,
+            DetScores(),
+            sem,
+            result=res,
+            run_status=run_status,
+        )
         return "; ".join(
             [
                 "skipped_steps=" + (",".join(sig.skipped_steps) or "none"),
@@ -269,13 +309,18 @@ async def pairwise_compare(
             None,
             [
                 _antihack_signal_text(
-                    request.app.state.services, task_ctx, events_a, run.get("result")
+                    request.app.state.services,
+                    task_ctx,
+                    events_a,
+                    run.get("result"),
+                    run_status=run.get("status"),
                 ),
                 _antihack_signal_text(
                     request.app.state.services,
                     task_ctx,
                     events_b,
                     other.get("result"),
+                    run_status=other.get("status"),
                 ),
             ],
         )
