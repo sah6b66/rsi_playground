@@ -69,6 +69,8 @@ async def test_draft_returns_structured_hypothesis(tmp_path, monkeypatch):
         return json.dumps(_DRAFT, ensure_ascii=False)
 
     app = create_app(make_services(LLMClient(handler=handler)))
+    # B2 终审 Minor#4：端点校验迭代存在性 → 先种 iter-1
+    app.state.stores["iterations"]["iter-1"] = {"id": "iter-1"}
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as c:
@@ -100,6 +102,7 @@ async def test_draft_returns_structured_hypothesis(tmp_path, monkeypatch):
 async def test_draft_503_when_llm_unconfigured(tmp_path, monkeypatch):
     monkeypatch.setenv("RSI_HOME", str(tmp_path))
     app = create_app(make_services(None))
+    app.state.stores["iterations"]["iter-1"] = {"id": "iter-1"}
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as c:
@@ -128,6 +131,7 @@ async def test_draft_caps_element_texts(tmp_path, monkeypatch):
 
     big = "x" * 5000
     app = create_app(make_services(LLMClient(handler=handler)))
+    app.state.stores["iterations"]["iter-1"] = {"id": "iter-1"}
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as c:
@@ -160,6 +164,7 @@ async def test_draft_invalid_llm_output_503(tmp_path, monkeypatch):
         return "这不是 JSON"
 
     app = create_app(make_services(LLMClient(handler=handler)))
+    app.state.stores["iterations"]["iter-1"] = {"id": "iter-1"}
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as c:
@@ -177,3 +182,28 @@ async def test_draft_invalid_llm_output_503(tmp_path, monkeypatch):
     body = resp.json()
     assert body["code"] == "SERVICE_UNAVAILABLE"
     assert "propose" in body["message"] or "schema" in body["message"]
+
+
+async def test_draft_unknown_iteration_404(tmp_path, monkeypatch):
+    """B2 终审 Minor#4：未知 iteration → 404（不再对不存在会话静默起草）。"""
+    monkeypatch.setenv("RSI_HOME", str(tmp_path))
+
+    def handler(component, prompt_name, vars, *, temperature=0.0):
+        return json.dumps(_DRAFT, ensure_ascii=False)
+
+    app = create_app(make_services(LLMClient(handler=handler)))
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as c:
+        resp = await c.post(
+            "/api/v1/iterations/iter-404/hypotheses:draft",
+            headers=await _hdr(c),
+            json={
+                "problem_statement": "p",
+                "element_texts": {},
+                "enabled_targets": [],
+                "failed_hypotheses": [],
+            },
+        )
+    assert resp.status_code == 404, resp.text
+    assert "iter-404" in resp.json()["message"]

@@ -334,6 +334,7 @@ class LLMClient:
             usage=LLMUsage(
                 input_tokens=int(record.get("input_tokens", 0) or 0),
                 output_tokens=int(record.get("output_tokens", 0) or 0),
+                estimated=bool(record.get("estimated", False)),  # B2 终审 延迟#4
             ),
             model=str(record.get("model", self.model)),
             prompt_version=str(record.get("prompt_version", self.prompt_version)),

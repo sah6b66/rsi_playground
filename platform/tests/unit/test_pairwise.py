@@ -209,6 +209,12 @@ def make_services(handler=_ok_handler) -> dict:
                 "role": "admin",
                 "password_hash": auth.hash_password("admin-pw"),
             },
+            # B2 终审 Fix3：无 iteration:manage 角色（仅 view:read）
+            "researcher": {
+                "user_id": "u-researcher",
+                "role": "researcher",
+                "password_hash": auth.hash_password("researcher-pw"),
+            },
         },
     }
 
@@ -344,3 +350,70 @@ async def test_endpoint_antihack_signals_skipped_steps():
     assert "skipped_steps=" in sig
     assert "display interface" in sig  # ra 缺证据 → 该步记为 skipped
     assert "missing_trial=false" in sig  # status=done 正常透传
+
+
+# ---------------------------------------------------------------------------
+# B2 终审修复回归：dict 路径摘要上限 + 端点权限收紧/自比较拒绝
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_side_summary_dict_events_total_capped():
+    """B2 终审 Fix2：raw-dict 事件路径无 summarizer budget 兜底——
+    超长轨迹拼接后截断到 _SUMMARY_TOTAL_CAP 并带 …(truncated) 标记。"""
+    from rsi.judge.llm_judge import _SUMMARY_TOTAL_CAP
+
+    big_output = "x" * 400
+    events = [
+        {
+            "seq": i,
+            "type": "tool_call",
+            "data": {"command": f"display big-{i}", "output": big_output},
+        }
+        for i in range(60)  # 60 × ~440 字符 ≈ 26k >> 8000
+    ]
+    seen = {}
+
+    def handler(component, prompt_name, vars, *, temperature=0.0):
+        seen.update(vars=vars)
+        return json.dumps(_PW, ensure_ascii=False)
+
+    judge = LLMJudge(LLMClient(handler=handler))
+    await judge.pairwise(
+        dict(_TASK), ({"root_cause": "b"}, events), ({"root_cause": "c"}, events)
+    )
+    for key in ("baseline_summary", "candidate_summary"):
+        s = seen["vars"][key]
+        assert len(s) <= _SUMMARY_TOTAL_CAP + len("…(truncated)")
+        assert s.endswith("…(truncated)")
+        assert "display big-0" in s  # 截断保留头部证据
+
+
+async def test_endpoint_requires_iteration_manage_and_rejects_self_compare(client):
+    """B2 终审 Fix3：pairwise 触发 LLM 计费——权限收敛到 iteration:manage
+    （同 :re-judge 先例）；自比较（other_run_id == run_id）→ 422。"""
+    _seed_pair(client)
+    # 无 token → 401
+    resp = await client.post(
+        "/api/v1/runs/ra/pairwise", json={"other_run_id": "rb"}
+    )
+    assert resp.status_code == 401, resp.text
+    # researcher（仅 view:read，无 iteration:manage）→ 403
+    r = await client.post(
+        "/api/v1/auth/login",
+        json={"username": "researcher", "password": "researcher-pw"},
+    )
+    assert r.status_code == 200, r.text
+    resp = await client.post(
+        "/api/v1/runs/ra/pairwise",
+        json={"other_run_id": "rb"},
+        headers={"Authorization": f"Bearer {r.json()['token']}"},
+    )
+    assert resp.status_code == 403, resp.text
+    # admin 有权限但自比较 → 422（且不消费 LLM：同 run 无对比意义）
+    h = await admin_headers(client)
+    resp = await client.post(
+        "/api/v1/runs/ra/pairwise", json={"other_run_id": "ra"}, headers=h
+    )
+    assert resp.status_code == 422, resp.text
+    assert "distinct" in resp.json()["message"]

@@ -606,13 +606,16 @@ async def draft_hypothesis(
     body: DraftBody,
     request: Request,
     user: Claims = Depends(require_perms("approval:decide")),
+    store: dict = Depends(get_store("iterations")),
 ) -> dict:
     """FR6.3（无状态）：渲染 ``hypothesis/propose`` 提示，LLM 起草结构化假设。
 
     人工门①（归因确认）之后调用，草稿仅预填人工门②表单——人工仍在环，
-    可改可弃，不落任何 store。LLM 未装配或输出反复不过 schema 都属部署/
-    服务端问题 → 503（ConfigError 既有映射 SERVICE_UNAVAILABLE）。
+    可改可弃，不落任何 store。未知 iteration → 404（存在性校验，内容不读）。
+    LLM 未装配或输出反复不过 schema 都属部署/服务端问题 → 503
+    （ConfigError 既有映射 SERVICE_UNAVAILABLE）。
     """
+    _get(store, iteration_id)  # B2 终审 Minor#4：未知迭代 404，不静默起草
     llm = request.app.state.services.get("llm_client")
     if llm is None:
         raise ConfigError(

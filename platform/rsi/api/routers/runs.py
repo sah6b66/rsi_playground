@@ -259,7 +259,7 @@ async def pairwise_compare(
     run_id: str,
     body: PairwiseBody,
     request: Request,
-    user: Claims = Depends(get_current_user),
+    user: Claims = Depends(require_perms("iteration:manage")),
     store: dict = Depends(get_store("runs")),
     traces: dict = Depends(get_store("traces")),
 ) -> PairwiseReport:
@@ -267,9 +267,16 @@ async def pairwise_compare(
 
     与 ``POST /judgments:pairwise``（P0 分数启发式）互补：本端点走
     judge/pairwise 模板三维度语义比对 + 刷分嫌疑标记，不改 ADR-23
-    单 run 主判决路径。跨任务/事件缺失 → 422；LLM 失败 → 503。
+    单 run 主判决路径。跨任务/事件缺失/自比较 → 422；LLM 失败 → 503。
+    权限同 ``:re-judge`` 先例（``iteration:manage``）——触发 LLM 计费。
     """
     run = _get_anywhere(request, store, run_id)
+    if body.other_run_id == run_id:
+        raise ValidationError(
+            "pairwise comparison requires two distinct runs; other_run_id "
+            "must differ from run_id",
+            context={"run_id": run_id, "other_run_id": body.other_run_id},
+        )
     other = _get_anywhere(request, store, body.other_run_id)
     task_id = _run_task_id(run)
     if task_id != _run_task_id(other):

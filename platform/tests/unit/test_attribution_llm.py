@@ -103,3 +103,92 @@ async def test_opt_history_vars_capped():
     report = await ana.analyze([_failed_run()], {"f.md": "x"}, huge)
     assert report.source == "llm"
     assert len(seen["vars"]["opt_history"]) <= _OPT_HISTORY_CAP
+
+
+def _trace_event(run_id: str, command: str, seq: int = 0):
+    """真实 TraceEvent（tracing collector 生产形态）——B2 终审 Fix1."""
+    from datetime import UTC, datetime
+
+    from rsi.core.enums import EventType
+    from rsi.core.models import TraceEvent
+
+    return TraceEvent(
+        run_id=run_id,
+        task_id="fault/demo-01",
+        lab_id="lab-1",
+        sut_id="sut-1",
+        seq=seq,
+        ts=datetime.now(UTC).isoformat(timespec="milliseconds"),
+        event_type=EventType.TOOL_CALL,
+        data={"args": {"command": command}},
+    )
+
+
+@pytest.mark.asyncio
+async def test_traceevent_and_ducktyped_events_sample_commands():
+    """B2 终审 Fix1：failed_runs 事件为 TraceEvent / duck-typed 对象形态
+    不再 AttributeError 炸整轮 ATTRIBUTING，且命令进 cluster_samples."""
+    from types import SimpleNamespace
+
+    from rsi.core.enums import EventType
+    from rsi.llm.client import LLMClient
+
+    run = {
+        "run_id": "r-obj",
+        "events": [
+            # 真实 TraceEvent（pydantic 对象）
+            _trace_event("r-obj", "display version"),
+            # duck-typed 事件对象（如垫片/适配层产出的轻量对象）
+            SimpleNamespace(
+                event_type=EventType.TOOL_CALL,
+                data={"command": "display interface"},
+            ),
+        ],
+    }
+    seen = {}
+
+    def handler(component, prompt_name, vars, *, temperature=0.0):
+        seen["vars"] = dict(vars)
+        return _schema_json()
+
+    llm = LLMClient(handler=handler)
+    ana = LLMRefinedAttributionAnalyzer(AttributionAnalyzer(), llm)
+    report = await ana.analyze([run], {"f.md": "x"}, [])
+    assert report.source == "llm"  # 对象形态事件不再炸整轮
+    samples = seen["vars"]["cluster_samples"]
+    assert "display version" in samples  # TraceEvent 命令被提取
+    assert "display interface" in samples  # duck-typed 对象命令被提取
+
+
+@pytest.mark.asyncio
+async def test_collector_store_dict_shape_sample_commands():
+    """B2 终审 Fix1：collector/store 形态 dict（type+data）命令被提取——
+    此前只认测试桩 kind/payload 形态，命令恒空 → LLM 零证据静默精分类."""
+    from rsi.llm.client import LLMClient
+
+    run = {
+        "run_id": "r-store",
+        "events": [
+            {"seq": 1, "type": "TOOL_CALL", "data": {"command": "display bgp peer"}},
+            {"seq": 2, "type": "tool_result", "data": {"output": "ok"}},
+        ],
+    }
+    seen = {}
+
+    def handler(component, prompt_name, vars, *, temperature=0.0):
+        seen["vars"] = dict(vars)
+        return _schema_json()
+
+    llm = LLMClient(handler=handler)
+    ana = LLMRefinedAttributionAnalyzer(AttributionAnalyzer(), llm)
+    report = await ana.analyze([run], {}, [])
+    assert report.source == "llm"
+    samples = seen["vars"]["cluster_samples"]
+    assert samples == "r-store: display bgp peer"  # 命令进样本；tool_result 不混入
+    # 大小写不敏感：kind 大写 TOOL_CALL 同样命中
+    run_upper_kind = {
+        "run_id": "r-kind",
+        "events": [{"kind": "TOOL_CALL", "payload": {"command": "display clock"}}],
+    }
+    await ana.analyze([run_upper_kind], {}, [])
+    assert "display clock" in seen["vars"]["cluster_samples"]

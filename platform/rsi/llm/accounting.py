@@ -88,8 +88,6 @@ class Accountant:
         """
         if self._session_factory is None:
             return
-        from rsi.db.tables import LlmCall
-
         row_kwargs: dict = {
             "ts": ts,
             "component": component,
@@ -104,6 +102,10 @@ class Accountant:
             "estimated": estimated,
         }
         try:
+            # B2 终审 Minor#7：import 在 try 圈内——db.tables 导入失败
+            # （如缺 DB 依赖）同样降级 warning，不炸调用路径（C-7 铁律）
+            from rsi.db.tables import LlmCall
+
             with self._session_factory() as session:
                 session.add(LlmCall(**row_kwargs))
                 session.commit()

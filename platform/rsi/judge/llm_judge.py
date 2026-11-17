@@ -32,6 +32,11 @@ __all__ = [
 
 logger = get_logger(__name__)
 
+# B2 终审 Fix2：pairwise 单侧摘要总量上限（仿 attribution 层 cap 常量风格）。
+# raw-dict 事件路径没有 summarizer budget 兜底（runs 端点生产源），超长
+# 轨迹逐行拼接会撑爆 pairwise 提示词——拼接后整体截断并标记。
+_SUMMARY_TOTAL_CAP = 8000
+
 
 class _M(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -299,6 +304,8 @@ class LLMJudge:
                 if summary
                 else f"final_answer={conclusion}"
             )
+        if len(summary) > _SUMMARY_TOTAL_CAP:
+            summary = summary[:_SUMMARY_TOTAL_CAP] + "…(truncated)"
         return summary or "(no trace events)"
 
     @staticmethod

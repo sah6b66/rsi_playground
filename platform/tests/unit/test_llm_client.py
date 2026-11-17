@@ -197,3 +197,38 @@ async def test_cassette_record_stores_real_usage(tmp_path) -> None:
     entry = lines[-1]
     assert entry.get("input_tokens") == 7
     assert entry.get("output_tokens") == 9
+
+
+@pytest.mark.asyncio
+async def test_cassette_replay_restores_estimated_flag(tmp_path) -> None:
+    """B2 终审 延迟#4：replay 重建 LLMUsage 时恢复 estimated 标记——
+    估算型记录回放不得伪装成真实 usage（预算口径失真）。"""
+    from rsi.llm.cassette import CassetteStore
+
+    cs = CassetteStore(root=tmp_path, mode="record")
+    client = LLMClient(handler=lambda c, p, v: "ok", cassette=cs)
+    first = await client.complete("judge", "root_cause", {"q": "z"})
+    assert first.usage.estimated is True  # 纯 str handler → 字符估算
+
+    replay = LLMClient(
+        handler=lambda c, p, v: (_ for _ in ()).throw(AssertionError("no")),
+        cassette=CassetteStore(root=tmp_path, mode="replay"),
+    )
+    resp = await replay.complete("judge", "root_cause", {"q": "z"})
+    assert resp.content == "ok"
+    assert resp.usage.estimated is True  # 记录里的 estimated 标记随回放恢复
+
+    # 真实 usage 记录（estimated=False）回放同样不走样
+    cs2 = CassetteStore(root=tmp_path / "real", mode="record")
+    real = LLMClient(
+        handler=lambda c, p, v: ("ok", {"input_tokens": 3, "output_tokens": 4}),
+        cassette=cs2,
+    )
+    first_real = await real.complete("judge", "root_cause", {"q": "w"})
+    assert first_real.usage.estimated is False
+    replay2 = LLMClient(
+        handler=lambda c, p, v: (_ for _ in ()).throw(AssertionError("no")),
+        cassette=CassetteStore(root=tmp_path / "real", mode="replay"),
+    )
+    resp2 = await replay2.complete("judge", "root_cause", {"q": "w"})
+    assert resp2.usage.estimated is False
