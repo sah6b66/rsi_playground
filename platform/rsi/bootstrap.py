@@ -163,6 +163,51 @@ def _hydrate_users(session_factory: Callable[[], Any]) -> dict[str, dict]:
     return users
 
 
+def _opt_history_lookup(
+    session_factory: Callable[[], Any], sut_id: str
+) -> list[dict]:
+    """B2-T3 (FR6.2): sut_id -> 近期优化历史（hypotheses 表近 20 条）.
+
+    归因（ATTRIBUTING）输入的"此簇已尝试 X 未果"数据基础：每条映射为
+    ``{failure_mode, decision, proposal_type, target}``（decision 即行 status）。
+    表按 ``created_at`` 倒序（hypotheses 无 updated_at 列）；单行 JSON 损坏
+    只丢该行字段、库缺失/未 init 整体降级 ``[]`` —— 历史输入缺失绝不阻断
+    归因主流程（与 _hydrate_users 同一诚实降级约定）。
+    """
+    try:
+        from sqlmodel import select
+
+        from rsi.db.tables import Hypothesis as _Hyp
+
+        out: list[dict] = []
+        with session_factory() as session:
+            rows = session.exec(
+                select(_Hyp)
+                .where(_Hyp.sut_id == sut_id)
+                .order_by(_Hyp.created_at.desc())
+                .limit(20)
+            ).all()
+            for row in rows:
+                try:
+                    payload = json.loads(row.hypothesis_json or "{}")
+                    if not isinstance(payload, dict):
+                        payload = {}
+                except Exception:  # noqa: BLE001 - 单行损坏不丢整批历史
+                    payload = {}
+                out.append(
+                    {
+                        "failure_mode": payload.get("failure_type", ""),
+                        "decision": row.status,
+                        "proposal_type": payload.get("proposal_type"),
+                        "target": payload.get("target_path")
+                        or payload.get("target"),
+                    }
+                )
+        return out
+    except Exception:  # noqa: BLE001 - 历史输入缺失不阻断归因
+        return []
+
+
 def build_services(
     settings: Settings | None = None,
     session_factory: Callable[[], Any] | None = None,
@@ -535,6 +580,9 @@ def build_services(
         decision_recorder=decision_recorder,
         gitstore=git_store,
         noise_lookup=_noise_lookup,
+        # B2-T3 (FR6.2): opt_history 生产装配——引擎在调用方未显式传入时经此
+        # 闭包查 hypotheses 表该 SUT 近 20 条假设，归因输入不再恒为空。
+        opt_history_fn=partial(_opt_history_lookup, session_factory),
         state_store=pause_store,
         # U7b: per-SUT optimization scope (suts store record) narrows RSI
         # auto-optimization to the explicitly defined paths; missing/empty
