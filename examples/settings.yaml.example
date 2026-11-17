@@ -99,6 +99,7 @@ tracing:
     enabled: true               # 入库前按规则抹除密钥等敏感内容
   archive:
     hot_days: 90                # 热数据保留天数；超期转入冷归档
+    cold_days: 0                # 归档超期清理天数；0=只归档不删
 
 # ── 日志 ──
 logging:
