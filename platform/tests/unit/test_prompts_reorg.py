@@ -2,7 +2,8 @@
 
 覆盖：
 * 目录布局——模板全部位于 rsi/llm/prompts/<component>/，旧 rsi/judge/prompts/ 移除；
-* DD-02 §7 初始 8 个模板齐备（judge 3 + attribution 1 + hypothesis 2 + critic 1 + sft 1），
+* DD-02 §7 初始 8 个模板 + B2-T6 pairwise 齐备（judge 4 + attribution 1 +
+  hypothesis 2 + critic 1 + sft 1），
   占位符集合与登记快照一致（前向契约：P1/P2 接入调用方时对齐）；
 * 正文中文；JSON 输出键名保持英文（schema 校验硬约束）；
 * 在用模板（root_cause/path_quality）以 llm_judge 实际 vars 渲染成功；
@@ -33,6 +34,11 @@ EXPECTED_TEMPLATES: dict[str, set[str]] = {
         "sut_actions", "task_complete", "actions",
     },
     "judge/checklist.v1": {"checklist_items", "sut_actions"},
+    # B2-T6 FR7.2 pairwise 对比判决（五占位符契约与 LLMJudge.pairwise vars 对齐）
+    "judge/pairwise.v1": {
+        "task_title", "expected", "baseline_summary", "candidate_summary",
+        "antihack_signals",
+    },
     "attribution/classify.v1": {
         "cluster_samples", "sut_evidence", "failure_modes", "opt_history",
     },

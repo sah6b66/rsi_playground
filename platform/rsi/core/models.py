@@ -44,6 +44,7 @@ __all__ = [
     "Efficiency",
     "SafetyVerdict",
     "Verdict",
+    "PairwiseReport",
     "ProblemStatement",
     "FAILURE_MODES",
     "Hypothesis",
@@ -398,6 +399,23 @@ class Verdict(_M):
     safety: SafetyVerdict
     reward_hacking_suspect: bool = False
     missing: bool = False  # missing run kept in denominator (aggregation layer)
+
+
+class PairwiseReport(_M):
+    """FR7.2 pairwise comparison verdict (DD-08): two same-task runs judged
+    side by side — winner + three-dimension rationale + hack-suspect flag.
+
+    Side-band output of ``LLMJudge.pairwise``; the ADR-23 single-run primary
+    judgment path is deliberately untouched.
+    """
+
+    winner: Literal["baseline", "candidate", "tie"]
+    root_cause_dim: str
+    path_quality_dim: str
+    consistency_dim: str
+    rationale: str
+    hack_suspect: bool = False
+    hack_reasons: list[str] = []
 
 
 # ---------------------------------------------------------------------------
