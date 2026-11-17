@@ -169,6 +169,41 @@ class TestFallbackChinese:
 
 
 # ---------------------------------------------------------------------------
+# B2-T8：模板输出 JSON 键与下游 schema 逐字对齐
+# （真实 LLM 路径缺键 → schema 校验必败 → 细化/起草字段失效）
+# ---------------------------------------------------------------------------
+
+_CLASSIFY_KEYS = (
+    "failure_mode", "defect_class", "evidence_refs", "rationale", "directions",
+)
+_PROPOSE_KEYS = (
+    "problem_trace_ids", "failure_type", "defect_class", "proposal_type",
+    "diff_content", "expected_improve", "risk", "verification_task_ids",
+    "predicted_affected_tasks",
+)
+
+
+class TestSchemaKeyAlignment:
+    def test_classify_keys_match_refined_cluster_out(self):
+        lib = _load_real_library()
+        body = lib._templates["attribution/classify.v1"]
+        for key in _CLASSIFY_KEYS:
+            assert f'"{key}"' in body, f"classify.v1 输出指令缺契约键 {key}"
+        # 旧键 evidence 已下线（契约键为 evidence_refs）
+        assert '"evidence"' not in body
+
+    def test_propose_keys_match_hypothesis_draft_out(self):
+        lib = _load_real_library()
+        body = lib._templates["hypothesis/propose.v1"]
+        for key in _PROPOSE_KEYS:
+            assert f'"{key}"' in body, f"propose.v1 输出指令缺契约键 {key}"
+        for legacy in ("target_path", "model_config_patch", "rationale"):
+            assert f'"{legacy}"' not in body, (
+                f"propose.v1 残留非契约键 {legacy}（HypothesisDraftOut 九键之外）"
+            )
+
+
+# ---------------------------------------------------------------------------
 # freeze 清单适配新布局
 # ---------------------------------------------------------------------------
 

@@ -148,3 +148,52 @@ def test_handler_no_retry_on_4xx(monkeypatch):
     with pytest.raises(ProviderHTTPError):
         h("judge", "root_cause", {"prompt": "p"})
     assert calls["n"] == 1  # 4xx 不重试
+
+
+def test_handler_retries_on_429_then_succeeds(monkeypatch):
+    """B2-T8：429 限流一次 → 退避重试 → 第二次 200 成功."""
+    import httpx
+
+    calls = {"n": 0}
+
+    def fake_post(url, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, text="rate limited")
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "ok"}],
+                  "usage": {"input_tokens": 3, "output_tokens": 4}},
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr("rsi.llm.providers.time.sleep", lambda s: None)
+    h = AnthropicCompatHandler(api_key="k", retry_max=3)
+    out, usage = h("judge", "root_cause", {"prompt": "p"})
+    assert out == "ok"
+    assert usage == {"input_tokens": 3, "output_tokens": 4}
+    assert calls["n"] == 2  # 429 一次重试后成功
+
+
+def test_handler_retries_on_connect_timeout_then_succeeds(monkeypatch):
+    """B2-T8：连接超时一次 → 退避重试 → 第二次 200 成功."""
+    import httpx
+
+    calls = {"n": 0}
+
+    def fake_post(url, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectTimeout("timed out")
+        return httpx.Response(
+            200,
+            json={"content": [{"type": "text", "text": "ok"}],
+                  "usage": {"input_tokens": 3, "output_tokens": 4}},
+        )
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr("rsi.llm.providers.time.sleep", lambda s: None)
+    h = AnthropicCompatHandler(api_key="k", retry_max=3)
+    out, usage = h("judge", "root_cause", {"prompt": "p"})
+    assert out == "ok"
+    assert calls["n"] == 2

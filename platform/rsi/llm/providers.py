@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import random
 import time
-from typing import Any
+from typing import Any, Union
 
 import httpx
 
@@ -19,12 +19,17 @@ from rsi.log import get_logger
 
 __all__ = [
     "AnthropicCompatHandler",
+    "HandlerResult",
     "RetryableProviderError",
     "ProviderHTTPError",
     "ProviderChain",
 ]
 
 logger = get_logger(__name__)
+
+# B2-T8：Handler 返回值契约收紧（原 ``Callable[..., object]`` 太宽）——
+# 裸 str（无 usage）或 (text, usage_dict) 二元组（B1-7 usage 协议）。
+HandlerResult = Union[str, tuple[str, dict[str, Any]]]
 
 
 class RetryableProviderError(RuntimeError):
@@ -49,7 +54,7 @@ class ProviderChain:
         vars: dict[str, str],
         *,
         temperature: float = 0.0,
-    ) -> object:
+    ) -> HandlerResult:
         try:
             return self._primary(
                 component, prompt_name, vars, temperature=temperature

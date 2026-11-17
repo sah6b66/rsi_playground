@@ -20,6 +20,8 @@ logger = get_logger(__name__)
 
 _RUN_SUMMARY_CAP = 800
 _SUT_EVIDENCE_CAP = 4000
+# B2-T8：opt_history 序列化后同风格截断——超长近史不撑爆归因提示词
+_OPT_HISTORY_CAP = 4000
 
 
 class RefinedClusterOut(BaseModel):
@@ -114,7 +116,9 @@ class LLMRefinedAttributionAnalyzer:
         vars = {
             "cluster_samples": "\n".join(samples),
             "failure_modes": cluster.failure_mode,
-            "opt_history": json.dumps(opt_history or [], ensure_ascii=False),
+            "opt_history": json.dumps(
+                opt_history or [], ensure_ascii=False
+            )[:_OPT_HISTORY_CAP],
             "sut_evidence": sut_ev or "（无配置原文）",
         }
         try:

@@ -30,6 +30,7 @@ from pydantic import BaseModel, ValidationError
 from rsi.core.errors import LLMOutputInvalid
 from rsi.core.models import LLMResponse, LLMUsage
 from rsi.llm.cassette import CassetteMissError
+from rsi.llm.providers import HandlerResult
 from rsi.llm.salvage import salvage_json
 from rsi.log import get_logger
 
@@ -44,7 +45,9 @@ logger = get_logger(__name__)
 
 Component = Literal["attribution", "hypothesis", "critic", "judge", "sft"]
 
-Handler = Callable[..., object]  # str | tuple[str, dict] (B1-7 usage 协议)
+# B2-T8 注解收紧：原 ``Callable[..., object]`` → providers.HandlerResult
+# （str | tuple[str, dict]，B1-7 usage 协议）。
+Handler = Callable[..., HandlerResult]
 
 _MAX_SCHEMA_RETRIES = 2  # extra attempts after the initial one (DD-02 §5.1 ④)
 
@@ -226,7 +229,7 @@ class LLMClient:
             usage = LLMUsage(
                 input_tokens=int(usage_info.get("input_tokens", 0) or 0),
                 output_tokens=int(usage_info.get("output_tokens", 0) or 0),
-                estimated=False,
+                estimated=bool(usage_info.get("estimated", False)),
             )
         else:
             usage = LLMUsage(
@@ -256,6 +259,7 @@ class LLMClient:
                     "content": raw or "",
                     "input_tokens": usage.input_tokens,
                     "output_tokens": usage.output_tokens,
+                    "estimated": usage.estimated,
                     "latency_ms": latency_ms,
                 },
             )
@@ -270,6 +274,7 @@ class LLMClient:
             latency_ms,
             run_id,
             batch_id,
+            estimated=usage.estimated,
         )
         return resp
 
@@ -285,6 +290,8 @@ class LLMClient:
         latency_ms: int,
         run_id: str | None,
         batch_id: str | None,
+        *,
+        estimated: bool = False,
     ) -> None:
         """Account one call (real or replayed) through the Accountant."""
         if self.accountant is None:
@@ -298,6 +305,7 @@ class LLMClient:
             latency_ms=latency_ms,
             run_id=run_id,
             batch_id=batch_id,
+            estimated=estimated,
         )
 
     def _replay(
@@ -341,6 +349,7 @@ class LLMClient:
             int(record.get("latency_ms", 0) or 0),
             run_id,
             batch_id,
+            estimated=bool(record.get("estimated", False)),
         )
         return resp
 

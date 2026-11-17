@@ -79,3 +79,27 @@ async def test_cassette_record_replay_roundtrip(tmp_path):
         cassette=CassetteStore(root=tmp_path, mode="replay"))
     ana2 = LLMRefinedAttributionAnalyzer(AttributionAnalyzer(), llm2)
     assert (await ana2.analyze([_failed_run()], {"f.md": "x"}, [])).source == "llm"
+
+
+@pytest.mark.asyncio
+async def test_opt_history_vars_capped():
+    """B2-T8：opt_history json.dumps 后截断（同 _SUT_EVIDENCE_CAP 风格），
+    超长近史不撑爆归因提示词，且截断不影响归因主流程."""
+    from rsi.llm.client import LLMClient
+    from rsi.optimizer.attribution_llm import _OPT_HISTORY_CAP
+
+    seen = {}
+
+    def handler(component, prompt_name, vars, *, temperature=0.0):
+        seen["vars"] = dict(vars)
+        return _schema_json()
+
+    llm = LLMClient(handler=handler)
+    ana = LLMRefinedAttributionAnalyzer(AttributionAnalyzer(), llm)
+    huge = [
+        {"failure_mode": "x" * 200, "decision": "rejected", "target": "p.md"}
+        for _ in range(100)
+    ]
+    report = await ana.analyze([_failed_run()], {"f.md": "x"}, huge)
+    assert report.source == "llm"
+    assert len(seen["vars"]["opt_history"]) <= _OPT_HISTORY_CAP

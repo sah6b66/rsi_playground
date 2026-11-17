@@ -40,6 +40,7 @@ from rsi.judge.summarizer import TraceSummarizer
 from rsi.llm.accounting import Accountant
 from rsi.llm.client import LLMClient
 from rsi.llm.prompts import PromptLibrary
+from rsi.llm.providers import HandlerResult
 from rsi.log import get_logger
 from rsi.optimizer.applier import ChangeApplier
 from rsi.optimizer.attribution import AttributionAnalyzer
@@ -281,37 +282,37 @@ def build_services(
     prompt_library.load_root(_prompts_root)
     accountant = Accountant(session_factory=session_factory)  # C-7: llm_calls rows
     judge_cfg = settings.llm.defaults.get("judge")
-    handler: Callable[..., object] = _offline_llm_handler
+    handler: Callable[..., HandlerResult] = _offline_llm_handler
     _anth = settings.llm.providers.get("anthropic")
     if settings.llm.cassette_mode == "off" and _anth is not None and _anth.api_key:
+        # B2-T8：model 解析——各 provider 自己的 model 键优先（跨族备胎不再
+        # 抄 judge 默认 → 404），空值回退 judge 默认，再回退 handler 内置默认。
+        _judge_default = (
+            judge_cfg.model if judge_cfg and judge_cfg.model else "glm-5.1"
+        )
         handler = AnthropicCompatHandler(
             api_key=_anth.api_key,
             base_url=_anth.base_url,
-            model=(judge_cfg.model if judge_cfg and judge_cfg.model else "glm-5.1"),
+            model=(_anth.model or _judge_default),
             retry_max=settings.llm.retry_max,
         )
         # B1-6：配置了 backup_provider 且有效 → 主备故障转移链（DD-02 §5.1）
         _bk_name = _anth.backup_provider
         _bk = settings.llm.providers.get(_bk_name) if _bk_name else None
         if _bk is not None and _bk.api_key:
-            _bk_model = (
-                settings.llm.defaults.get("judge").model
-                if settings.llm.defaults.get("judge")
-                else ""
-            )
             handler = ProviderChain(
                 handler,
                 AnthropicCompatHandler(
                     api_key=_bk.api_key,
                     base_url=_bk.base_url,
-                    model=_bk_model or "glm-5.1",
+                    model=(_bk.model or _judge_default),
                     retry_max=settings.llm.retry_max,
                 ),
             )
         logger.info(
             "bootstrap.llm_real_provider",
             base_url=_anth.base_url or "default",
-            model=(judge_cfg.model if judge_cfg and judge_cfg.model else "glm-5.1"),
+            model=(_anth.model or _judge_default),
         )
     llm_client = LLMClient(
         handler=handler,
