@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
@@ -15,8 +15,10 @@ from rsi.api.deps import audit, get_current_user, get_store, require_perms
 from rsi.api.pagination import DEFAULT_LIMIT, paginate
 from rsi.core.enums import IterationState
 from rsi.core.errors import (
+    ConfigError,
     ConflictError,
     InvalidTransitionError,
+    LLMOutputInvalid,
     NotFoundError,
     ValidationError,
 )
@@ -119,6 +121,33 @@ class GateBody(BaseModel):
     decision: str | None = Field(
         default=None, json_schema_extra={"example": "apply_exp_exp-11223344"}
     )
+
+
+class DraftBody(BaseModel):
+    """FR6.3 无状态起草请求：人工门①（归因确认）后的上下文快照。"""
+
+    problem_statement: str = Field(json_schema_extra={"example": "漏查接口状态"})
+    element_texts: dict[str, str] = Field(default_factory=dict)
+    enabled_targets: list[str] = Field(default_factory=list)
+    failed_hypotheses: list[str] = Field(default_factory=list)
+
+
+class HypothesisDraftOut(BaseModel):
+    """LLM 起草的结构化假设草稿（预填人工门②表单，人工仍在环）。"""
+
+    problem_trace_ids: list[str] = []
+    failure_type: str = Field(
+        json_schema_extra={"example": "missed_critical_command"}
+    )
+    defect_class: Literal["A", "B"]
+    proposal_type: str = Field(
+        json_schema_extra={"example": "modify_prompt"}
+    )
+    diff_content: str
+    expected_improve: str = ""
+    risk: str = ""
+    verification_task_ids: list[str] = []
+    predicted_affected_tasks: list[str] = []
 
 
 def _now() -> str:
@@ -524,6 +553,86 @@ async def delete_iteration(
     persist_record(request.app.state.services, "iterations", it)
     logger.info("iteration.archived", iteration_id=iteration_id)
     return Response(status_code=204)
+
+
+# FR6.3 element_texts 拼接上限：单条正文截断 1500 字符、多行总长 cap 8000
+_ELEMENT_LINE_CAP = 1500
+_ELEMENT_TOTAL_CAP = 8000
+
+
+def _render_element_texts(texts: dict[str, str]) -> str:
+    """dict[str, str] → ``"path: content[:1500]"`` 多行文本，总长 cap 8000。
+
+    按 path 排序保证确定性（cassette 键与测试断言依赖稳定顺序）；
+    超出总长的尾部条目直接丢弃（提示词超限比缺尾部更危险）。
+    """
+    lines: list[str] = []
+    total = 0
+    for path in sorted(texts):
+        line = f"{path}: {(texts[path] or '')[:_ELEMENT_LINE_CAP]}"
+        if total + len(line) > _ELEMENT_TOTAL_CAP:
+            break
+        lines.append(line)
+        total += len(line)
+    return "\n".join(lines)
+
+
+@router.post("/{iteration_id}/hypotheses:draft")
+@audit.audited("iteration.draft_hypothesis", object_type="iteration")
+async def draft_hypothesis(
+    iteration_id: str,
+    body: DraftBody,
+    request: Request,
+    user: Claims = Depends(require_perms("approval:decide")),
+) -> dict:
+    """FR6.3（无状态）：渲染 ``hypothesis/propose`` 提示，LLM 起草结构化假设。
+
+    人工门①（归因确认）之后调用，草稿仅预填人工门②表单——人工仍在环，
+    可改可弃，不落任何 store。LLM 未装配或输出反复不过 schema 都属部署/
+    服务端问题 → 503（ConfigError 既有映射 SERVICE_UNAVAILABLE）。
+    """
+    llm = request.app.state.services.get("llm_client")
+    if llm is None:
+        raise ConfigError(
+            "LLM client not configured: hypotheses:draft unavailable",
+            context={
+                "missing_service": "llm_client",
+                "iteration_id": iteration_id,
+            },
+        )
+    vars = {
+        "problem_statement": body.problem_statement,
+        "element_texts": _render_element_texts(body.element_texts),
+        "enabled_targets": "\n".join(body.enabled_targets),
+        "failed_hypotheses": "\n".join(body.failed_hypotheses),
+    }
+    try:
+        resp = await llm.complete(
+            "hypothesis", "propose", vars, schema=HypothesisDraftOut
+        )
+    except LLMOutputInvalid as exc:
+        # 端点语义：起草失败 = 服务当前不可用（503），错误摘要透出。
+        # 不改全局 EXCEPTION_MAP（LLMOutputInvalid 在 judge 域仍是 502）。
+        summary = str(exc.context.get("last_error") or exc)
+        raise ConfigError(
+            f"LLM hypothesis draft invalid after retries (hypothesis/propose): "
+            f"{summary}",
+            context={
+                "component": "hypothesis",
+                "prompt": "propose",
+                "iteration_id": iteration_id,
+                "last_error": summary[:500],
+            },
+        ) from exc
+    draft = resp.parsed
+    assert isinstance(draft, HypothesisDraftOut)  # schema-validated by client
+    logger.info(
+        "iteration.hypothesis_drafted",
+        iteration_id=iteration_id,
+        proposal_type=draft.proposal_type,
+        defect_class=draft.defect_class,
+    )
+    return {"draft": draft.model_dump()}
 
 
 async def _engine_gate(engine, name: str, body: GateBody) -> str | None:
