@@ -219,6 +219,42 @@ async def preview_online_evalset(name: str):
     evalset_api.url 未配置→409 CONFIG；上游非 2xx/超时→502 含 detail。"""
 ```
 
+### 5.5 自检报告端点（doctor.py 契约，FR10.9②）
+
+```python
+@router.get("/system/doctor")
+async def run_doctor() -> dict:
+    """全量自检并返回结构化结果（DoctorReport.model_dump()）。"""
+    report = await Doctor().run_all()
+    return report.model_dump()
+```
+
+`GET /system/doctor` → `DoctorReport`（实现源 `rsi/doctor.py`，字段名以此为准）：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| results | CheckResult[] | 逐项检查结果 |
+| generated_at | str(datetime) | 报告生成时间（ISO 8601） |
+| hostname | str | 主机名 |
+| passed / warned / failed | int | 三态计数（computed，响应顶层） |
+| has_errors | bool | failed > 0（computed，响应顶层） |
+
+`CheckResult`：`category ∈ {runtime, config, external, internal, security}`、
+`name`（检查项标识）、`status ∈ {pass, warn, fail}`、`message`、
+`fix_hint`（str | null，失败/警告时给出修复建议）。
+
+检查面（以实现清单为准滚动）：Python 版本与依赖包、RSI_HOME 可写、
+settings.yaml 存在/语法/必需段/server.port/database.url/carrier.hosts/
+sandbox.backends（kind/url 枚举+旧 SSH 字段检测）、子网格式与重叠、
+密钥环境变量（RSI_JWT_SECRET/RSI_MASTER_KEY/LLM API Key）、
+Git 与 git 身份、Docker、仿真平台 URL 探活、远端 carrier 主机可达、
+rsi.* 模块导入、Git 裸仓、数据库目录、traces/artifacts/logs 目录、
+API 应用可创建、judge 冻结校验（FR7.6）、JWT/Master Key 安全 posture、
+明文密码扫描。所有检查非致命——任何单项异常都入 results（fail）而不抛出；
+CLI 形态 `python -m rsi.doctor`（退出码 1=has_errors）。
+
+> 注：需登录且具备只读权限 view:read（B2 起加门禁，B1 终审安全交接项）。
+
 ## 6. 依赖矩阵
 
 - imports：fastapi、uvicorn、pydantic、rsi/core、rsi/security、rsi/settings；各业务模块服务（仅 import 接口类）。

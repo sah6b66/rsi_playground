@@ -30,6 +30,7 @@ from pydantic import BaseModel, ValidationError
 from rsi.core.errors import LLMOutputInvalid
 from rsi.core.models import LLMResponse, LLMUsage
 from rsi.llm.cassette import CassetteMissError
+from rsi.llm.providers import HandlerResult
 from rsi.llm.salvage import salvage_json
 from rsi.log import get_logger
 
@@ -44,7 +45,9 @@ logger = get_logger(__name__)
 
 Component = Literal["attribution", "hypothesis", "critic", "judge", "sft"]
 
-Handler = Callable[[str, str, dict[str, str]], str]
+# B2-T8 注解收紧：原 ``Callable[..., object]`` → providers.HandlerResult
+# （str | tuple[str, dict]，B1-7 usage 协议）。
+Handler = Callable[..., HandlerResult]
 
 _MAX_SCHEMA_RETRIES = 2  # extra attempts after the initial one (DD-02 §5.1 ④)
 
@@ -161,6 +164,7 @@ class LLMClient:
                 prompt_version = f"v{v}"
 
         raw: str | None = None
+        usage_info: dict[str, Any] | None = None
         parsed: Any | None = None
         validation_error: str | None = None
         temperature = self._effective_temperature(component)
@@ -186,9 +190,13 @@ class LLMClient:
                 kwargs: dict[str, Any] = (
                     {"temperature": temperature} if pass_temperature else {}
                 )
-                raw = await asyncio.to_thread(
+                result = await asyncio.to_thread(
                     self._handler, component, prompt_name, call_vars, **kwargs
                 )
+                if isinstance(result, tuple):
+                    raw, usage_info = result[0], result[1]
+                else:
+                    raw, usage_info = result, None
                 if schema is None:
                     break
                 parsed, validation_error = self._validate(raw, schema)
@@ -217,10 +225,22 @@ class LLMClient:
             run_id=run_id,
         )
 
+        if usage_info:
+            usage = LLMUsage(
+                input_tokens=int(usage_info.get("input_tokens", 0) or 0),
+                output_tokens=int(usage_info.get("output_tokens", 0) or 0),
+                estimated=bool(usage_info.get("estimated", False)),
+            )
+        else:
+            usage = LLMUsage(
+                input_tokens=max(len(prompt_text or "") // 4, 1),
+                output_tokens=max(len(raw or "") // 4, 1),
+                estimated=True,
+            )
         resp = LLMResponse(
             content=raw or "",
             parsed=parsed,
-            usage=LLMUsage(),
+            usage=usage,
             model=self.model,
             prompt_version=prompt_version,
         )
@@ -237,8 +257,9 @@ class LLMClient:
                     "model": self.model,
                     "prompt_version": prompt_version,
                     "content": raw or "",
-                    "input_tokens": max(len(prompt_text or "") // 4, 1),
-                    "output_tokens": max(len(raw or "") // 4, 1),
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "estimated": usage.estimated,
                     "latency_ms": latency_ms,
                 },
             )
@@ -248,11 +269,12 @@ class LLMClient:
             component,
             prompt_version,
             self.model,
-            len(prompt_text or "") // 4,
-            len(raw or "") // 4,
+            usage.input_tokens,
+            usage.output_tokens,
             latency_ms,
             run_id,
             batch_id,
+            estimated=usage.estimated,
         )
         return resp
 
@@ -268,6 +290,8 @@ class LLMClient:
         latency_ms: int,
         run_id: str | None,
         batch_id: str | None,
+        *,
+        estimated: bool = False,
     ) -> None:
         """Account one call (real or replayed) through the Accountant."""
         if self.accountant is None:
@@ -281,6 +305,7 @@ class LLMClient:
             latency_ms=latency_ms,
             run_id=run_id,
             batch_id=batch_id,
+            estimated=estimated,
         )
 
     def _replay(
@@ -309,6 +334,7 @@ class LLMClient:
             usage=LLMUsage(
                 input_tokens=int(record.get("input_tokens", 0) or 0),
                 output_tokens=int(record.get("output_tokens", 0) or 0),
+                estimated=bool(record.get("estimated", False)),  # B2 终审 延迟#4
             ),
             model=str(record.get("model", self.model)),
             prompt_version=str(record.get("prompt_version", self.prompt_version)),
@@ -324,6 +350,7 @@ class LLMClient:
             int(record.get("latency_ms", 0) or 0),
             run_id,
             batch_id,
+            estimated=bool(record.get("estimated", False)),
         )
         return resp
 

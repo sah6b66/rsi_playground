@@ -16,6 +16,7 @@ Three conceptual layers; P0 implements the two rule layers
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from typing import Any
 
 from rsi.core.enums import EventType
@@ -35,11 +36,29 @@ _FACTOR_NONE = 1.0
 
 
 def _event_fields(event: Any) -> tuple[str, dict[str, Any]]:
-    """Normalize a TraceEvent or a plain dict into (event_type, data)."""
+    """Normalize an event of any supported shape into ``(event_type, data)``.
+
+    Shared by the rule layer (``_RunFeatures``) and the LLM refinement layer
+    (``attribution_llm``); covers all three production/test shapes:
+
+    * :class:`TraceEvent` objects (tracing collector in-memory path);
+    * store/collector dicts ``{"event_type"|"type", "seq", "data": {...}}``;
+    * test-rig dicts ``{"kind", "payload": {...}}`` (B2 终审 Fix1 — 事件
+      对象误入规则/LLM 层此前 AttributeError，collector 形态此前恒取空命令).
+    """
     if isinstance(event, TraceEvent):
         return str(event.event_type), dict(event.data)
-    data = dict(event.get("data") or {})
-    return str(event.get("event_type", "")), data
+    etype = getattr(event, "event_type", None)  # duck-typed event objects
+    if etype is not None:
+        data = getattr(event, "data", None)
+        return str(etype), dict(data) if isinstance(data, Mapping) else {}
+    if not isinstance(event, Mapping):
+        return "", {}
+    etype = event.get("event_type") or event.get("type") or event.get("kind") or ""
+    data = event.get("data")
+    if not isinstance(data, Mapping):
+        data = event.get("payload") if isinstance(event.get("payload"), Mapping) else {}
+    return str(etype), dict(data)
 
 
 class _RunFeatures:
@@ -61,7 +80,13 @@ class _RunFeatures:
         self.knowledge_queries: list[tuple[str, int]] = []  # D-15 Layer1 feature
         for ev in run.get("events") or []:
             etype, data = _event_fields(ev)
-            seq = int(getattr(ev, "seq", -1) if isinstance(ev, TraceEvent) else (ev or {}).get("seq", -1))
+            # B2 终审 Fix1：seq 提取与 _event_fields 同走三形态归一化——
+            # duck-typed 事件对象（无 .get）此前同样 AttributeError
+            seq = int(
+                ev.get("seq", -1)
+                if isinstance(ev, Mapping)
+                else getattr(ev, "seq", -1)
+            )
             if etype == EventType.KNOWLEDGE_QUERY:
                 query = data.get("query") or data.get("q")
                 if isinstance(query, str) and query.strip():
@@ -90,7 +115,7 @@ class _RunFeatures:
 class AttributionAnalyzer:
     """Rule-layer attribution over pre-computed failed-run data (P0)."""
 
-    def analyze(
+    async def analyze(
         self,
         failed_runs: list[dict],
         sut_config: dict[str, str],

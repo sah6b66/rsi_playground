@@ -44,6 +44,7 @@ __all__ = [
     "Efficiency",
     "SafetyVerdict",
     "Verdict",
+    "PairwiseReport",
     "ProblemStatement",
     "FAILURE_MODES",
     "Hypothesis",
@@ -400,6 +401,23 @@ class Verdict(_M):
     missing: bool = False  # missing run kept in denominator (aggregation layer)
 
 
+class PairwiseReport(_M):
+    """FR7.2 pairwise comparison verdict (DD-08): two same-task runs judged
+    side by side — winner + three-dimension rationale + hack-suspect flag.
+
+    Side-band output of ``LLMJudge.pairwise``; the ADR-23 single-run primary
+    judgment path is deliberately untouched.
+    """
+
+    winner: Literal["baseline", "candidate", "tie"]
+    root_cause_dim: str
+    path_quality_dim: str
+    consistency_dim: str
+    rationale: str
+    hack_suspect: bool = False
+    hack_reasons: list[str] = []
+
+
 # ---------------------------------------------------------------------------
 # §3.4 Hypothesis and attribution
 # ---------------------------------------------------------------------------
@@ -466,10 +484,13 @@ class AttributionCluster(_M):
     cluster_size: int
     sample_run_ids: list[str]
     evidence: list[str]  # trace refs + SUT source refs (v2.10)
+    rationale: str | None = None  # B2-T2: LLM 精分类归因依据
 
 
 class AttributionReport(_M):
     clusters: list[AttributionCluster]  # sorted by size x fixability desc
+    source: str = "rules"  # rules | llm（B2-T2 可审计）
+    directions: list[str] = []  # B2-T2: LLM 细化给出的优化方向
 
 
 # ---------------------------------------------------------------------------

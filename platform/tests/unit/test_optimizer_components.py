@@ -144,8 +144,9 @@ class TestSftAssessor:
         ]
         return hist
 
-    def test_all_criteria_met_returns_report(self) -> None:
-        report = SftAssessor().assess(self._clusters(), self._history(5), 60)
+    @pytest.mark.asyncio
+    async def test_all_criteria_met_returns_report(self) -> None:
+        report = await SftAssessor().assess(self._clusters(), self._history(5), 60)
         assert report is not None
         assert report["recommendation"] == "SFT/DPO"
         assert report["only_suggest"] is True
@@ -153,18 +154,28 @@ class TestSftAssessor:
         assert report["failed_sample_count"] == 60
         assert all(report["criteria"].values())
 
-    def test_too_few_no_gain_rounds_returns_none(self) -> None:
-        assert SftAssessor().assess(self._clusters(), self._history(4), 60) is None
+    @pytest.mark.asyncio
+    async def test_too_few_no_gain_rounds_returns_none(self) -> None:
+        assert (
+            await SftAssessor().assess(self._clusters(), self._history(4), 60)
+            is None
+        )
 
-    def test_too_few_failed_samples_returns_none(self) -> None:
-        assert SftAssessor().assess(self._clusters(), self._history(6), 49) is None
+    @pytest.mark.asyncio
+    async def test_too_few_failed_samples_returns_none(self) -> None:
+        assert (
+            await SftAssessor().assess(self._clusters(), self._history(6), 49)
+            is None
+        )
 
-    def test_knowledge_not_tried_returns_none(self) -> None:
+    @pytest.mark.asyncio
+    async def test_knowledge_not_tried_returns_none(self) -> None:
         history = [
             {"failure_mode": "missed_critical_command", "decision": "reverted"}
             for _ in range(6)
         ]
-        assert SftAssessor().assess(self._clusters(), history, 100) is None
+        assert await SftAssessor().assess(self._clusters(), history, 100) is None
 
-    def test_no_clusters_returns_none(self) -> None:
-        assert SftAssessor().assess([], self._history(6), 100) is None
+    @pytest.mark.asyncio
+    async def test_no_clusters_returns_none(self) -> None:
+        assert await SftAssessor().assess([], self._history(6), 100) is None

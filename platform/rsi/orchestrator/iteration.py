@@ -275,6 +275,7 @@ class IterationEngine:
         no_gain_rounds: int = 3,
         noise_lookup: Callable[[str], dict[str, float]] | None = None,
         sut_scope_fn: Callable[[str], list[str] | None] | None = None,
+        opt_history_fn: Callable[[str], list[dict]] | None = None,
     ) -> None:
         self.batch_runner = batch_runner
         self.attribution_analyzer = attribution_analyzer
@@ -301,6 +302,12 @@ class IterationEngine:
         # RSI auto-optimization only touches the explicitly defined scope;
         # manual file edits are NOT bounded by it (global whitelist only).
         self.sut_scope_fn = sut_scope_fn
+        # B2-T3 (FR6.2): optional per-SUT optimization-history lookup
+        # (sut_id -> recent hypothesis rows) — production wiring feeds the
+        # ATTRIBUTING input ("this cluster already tried X in vain") when the
+        # caller does not pass ``opt_history`` explicitly. None keeps the
+        # previous behaviour (empty history) for existing stub rigs.
+        self.opt_history_fn = opt_history_fn
         self.round = 0
         # introspection for tests/ops
         self.last_iteration_id: str | None = None
@@ -494,6 +501,7 @@ class IterationEngine:
         candidate_config_version_id: str | None = None,
         noise_delta: float | None = None,
         iteration_id: str | None = None,
+        evalset_id: str = "",
     ) -> dict[str, Any]:
         """One iteration round (P0): state machine + data flow, no real LLM."""
         logger.debug(
@@ -512,6 +520,19 @@ class IterationEngine:
             iteration_id = new_id("iter")
         self.last_iteration_id = iteration_id
         from_ = None
+        # B2-T3 (FR6.2): opt_history 生产装配——调用方未显式传入（None）时经
+        # opt_history_fn(sut_id) 取该 SUT 近期优化历史（bootstrap 接 hypotheses
+        # 表近 20 条）；显式传参优先于 fn，取数失败降级 [] 不阻断归因。
+        if opt_history is None and self.opt_history_fn is not None:
+            try:
+                opt_history = list(self.opt_history_fn(sut_id))
+            except Exception as exc:  # noqa: BLE001 - 历史输入缺失不阻断归因
+                logger.warning(
+                    "iteration.opt_history_lookup_failed",
+                    sut_id=sut_id,
+                    error=str(exc),
+                )
+                opt_history = []
         self._warn_stale_pauses(iteration_id)
         RUNNING_ENGINES[iteration_id] = self
         try:
@@ -531,6 +552,7 @@ class IterationEngine:
                 hypothesis=hypothesis,
                 candidate_config_version_id=candidate_config_version_id,
                 noise_delta=noise_delta,
+                evalset_id=evalset_id,
             )
         except asyncio.CancelledError:
             # D-1: cancellation is not an Exception subclass — same terminal
@@ -644,11 +666,12 @@ class IterationEngine:
         hypothesis,
         candidate_config_version_id,
         noise_delta,
+        evalset_id: str = "",
     ) -> dict[str, Any]:
         # 1. ATTRIBUTING: rule-layer analysis of the baseline failures
         await self._advance(iteration_id, from_, "ATTRIBUTING")
         from_ = "ATTRIBUTING"
-        report = self.attribution_analyzer.analyze(
+        report = await self.attribution_analyzer.analyze(
             failed_runs or [], sut_config or {}, opt_history or []
         )
 
@@ -811,7 +834,13 @@ class IterationEngine:
         from_ = "VERIFYING"
         # F10: batches/runs rows carry the iteration linkage (iteration_id
         # + sut_id) so run->batch->iteration is traceable in the DB.
-        db_meta = {"iteration_id": iteration_id, "sut_id": sut_id}
+        # B1-3: evalset_id threads the caller-side eval-set FK so
+        # batches.evalset_id no longer falls back to the "" placeholder.
+        db_meta = {
+            "iteration_id": iteration_id,
+            "sut_id": sut_id,
+            "evalset_id": evalset_id,
+        }
         if baseline_stats is None:
             baseline_stats = await self.batch_runner.run_batch(
                 f"{iteration_id}-baseline",

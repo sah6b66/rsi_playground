@@ -1172,12 +1172,21 @@ class BatchRunner:
             from rsi.db.tables import Batch
 
             meta = db_meta or {}
+            evalset_id = str(meta.get("evalset_id", ""))
+            if not evalset_id:
+                # B1-3: empty-string placeholder breaks the batches->evalsets
+                # join; keep writing it (NOT NULL, FK off) but leave a trace.
+                logger.warning(
+                    "batch.db_meta_missing_evalset_id",
+                    batch_id=batch_id,
+                    hint="caller should thread the real evalset_id via db_meta",
+                )
             purpose = self._batch_purpose(batch_id)
             with self.session_factory() as session:
                 session.add(
                     Batch(
                         id=batch_id,
-                        evalset_id=str(meta.get("evalset_id", "")),
+                        evalset_id=evalset_id,
                         sut_id=str(meta.get("sut_id", "")),
                         config_version_id=config_version_id,
                         purpose=self._DB_PURPOSE_MAP.get(purpose, purpose),

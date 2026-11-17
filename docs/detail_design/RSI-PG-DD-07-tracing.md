@@ -3,7 +3,7 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DD-07 |
-| 版本 | v1.0 |
+| 版本 | v1.1（B3：Redactor/TraceArchiver 落地 + TraceFilter 扩维 + 归档老化注记展开，2026-11-17） |
 | 上游 | 设计 3.5、接口 §5/§8；FR2、ADR-3；ADR-22（OpenCode P0） |
 | 交付切片 | S5（collector+store+seq） |
 
@@ -21,7 +21,8 @@ rsi/tracing/collector.py     # TraceCollector（tail/ingest/finalize/WS hub）
 rsi/tracing/parsers.py       # OpenCodeWiretapParser / NdjsonEventParser（P2: StreamJsonParser/OtelEvents）
 rsi/tracing/seq.py           # SeqAllocator
 rsi/tracing/store.py         # TraceStore（query/stats/cluster P1）+ meta.json
-rsi/tracing/redact.py        # Redactor（P1）
+rsi/tracing/redact.py        # Redactor（FR2.7，B3 落地）
+rsi/tracing/archive.py       # TraceArchiver（FR2.6，B3 落地）
 rsi/tracing/differ.py        # TraceDiffer（P1，FR10.8）
 ```
 
@@ -63,6 +64,8 @@ class SeqAllocator:
 class TraceStore:
     async def query(self, f: TraceFilter, cursor: str | None, limit: int) -> Page[TraceEventRef]
         # events.ndjson 读 + trace_events_index 预过滤；游标=(run_id, seq)
+        # query 的 TraceFilter 扩维：lab_id/sut_id（事件自带）/batch_id/config_version_id（runs⨝batches DB join 解析为 run 集）
+        # 内容水合顺序=内存 buffer→events.ndjson 冷读（run 级缓存 64）
     async def stats(self, f: TraceFilter) -> TraceStats               # token/步数/耗时分布
     async def cluster_failures(self, f, group_by: FailureFeature) -> Clusters   # P1（FR2.5）
 
@@ -71,9 +74,11 @@ class TraceDiffer:   # P1
         # 事件级对齐：归一化步骤序（LLM 轮次 × tool 名）；输出新增/消失工具调用、
         # 命令序列 diff、system/messages 差异摘要、逐步时延与 token 对比
 
-class Redactor:      # P1
+class Redactor:      # B3 已落地
     def redact(self, ev: TraceEvent, fingerprints: list[SecretFingerprint]) -> TraceEvent
         # 精确匹配（secret 原值+base64 → '***'，仅命中子串替换，其余逐字节保留）+ 规则表 regex
+        # fingerprint_provider: Callable[[], Iterable[SecretFingerprint]] | None（静态指纹源=CredentialStore.all_fingerprints）
+        # run 级指纹经 TraceCollector.set_fingerprints(run_id, fps) 注册（BatchRunner._resolve_cred 推送）
 ```
 
 ## 5. 内部逻辑
@@ -122,4 +127,4 @@ parse(§5.1/5.2 或 events.ndjson 原生 TraceEvent 行)
 
 **测试**：TU-031（wiretap 解析：assembled/http 帧、kind 差异、协议差异、过滤 title/compaction）、IN-014（P0 断言：llm_request 含完整 system+messages+tools、per-run 文件归属、多源统一 seq 单调）、EE-008（>1MB 输出全量入库、逐事件 ts、SUT 日志归档）、TU-018（Redactor P1）、IN-016（query/stats+轨迹-版本反查）。
 
-**实施注记**：① **OTLP 接收为 P2**（Claude Code 载体启用时）：实现路径=grpc.aio 挂 opentelemetry-proto 的 `LogsService` 服务定义（opentelemetry-proto 包含 pb2/grpc_py 生成物），事件映射按附 C.2（api_request→usage 维度、user_prompt→任务输入…）——P0 不引入该依赖；② collector 与 platform-api 同进程不同 Task（P0 单机简化）或独立进程（compose 部署形态）——接口不变；③ wiretap 原文不删不改动（审计原文），最终轨迹 events.ndjson 是独立产物；④ 归档老化（P1）：zstd 压缩 var/traces 中已 finalize 超过 hot_days 的 run 目录，在线数据不动；⑤ WS hub 有界队列（每订阅者 256，满则丢旧保新，与 EventBus 语义一致）。
+**实施注记**：① **OTLP 接收为 P2**（Claude Code 载体启用时）：实现路径=grpc.aio 挂 opentelemetry-proto 的 `LogsService` 服务定义（opentelemetry-proto 包含 pb2/grpc_py 生成物），事件映射按附 C.2（api_request→usage 维度、user_prompt→任务输入…）——P0 不引入该依赖；② collector 与 platform-api 同进程不同 Task（P0 单机简化）或独立进程（compose 部署形态）——接口不变；③ wiretap 原文不删不改动（审计原文），最终轨迹 events.ndjson 是独立产物；④ 归档老化（B3 已落地）：TraceArchiver——已 finalize（meta.json 存在）且超 tracing.archive.hot_days 的 run 目录 → <run_id>.tar.zst（codec 可配 zstd|gzip|none），在线热数据不动；experiments.decision=promoted 引用批次的 run 按 keep_promoted_forever 跳过；归档文件超 tracing.archive.cold_days（>0 才启用）删除，默认 0=只归档不删；启动 lifespan 一次性执行 + doctor 报告存储量；归档后 run 的内容查询降级为不可见（索引行保留，DB 统计仍可用）；⑤ WS hub 有界队列（每订阅者 256，满则丢旧保新，与 EventBus 语义一致）。

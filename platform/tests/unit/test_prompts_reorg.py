@@ -2,7 +2,8 @@
 
 覆盖：
 * 目录布局——模板全部位于 rsi/llm/prompts/<component>/，旧 rsi/judge/prompts/ 移除；
-* DD-02 §7 初始 8 个模板齐备（judge 3 + attribution 1 + hypothesis 2 + critic 1 + sft 1），
+* DD-02 §7 初始 8 个模板 + B2-T6 pairwise 齐备（judge 4 + attribution 1 +
+  hypothesis 2 + critic 1 + sft 1），
   占位符集合与登记快照一致（前向契约：P1/P2 接入调用方时对齐）；
 * 正文中文；JSON 输出键名保持英文（schema 校验硬约束）；
 * 在用模板（root_cause/path_quality）以 llm_judge 实际 vars 渲染成功；
@@ -33,6 +34,11 @@ EXPECTED_TEMPLATES: dict[str, set[str]] = {
         "sut_actions", "task_complete", "actions",
     },
     "judge/checklist.v1": {"checklist_items", "sut_actions"},
+    # B2-T6 FR7.2 pairwise 对比判决（五占位符契约与 LLMJudge.pairwise vars 对齐）
+    "judge/pairwise.v1": {
+        "task_title", "expected", "baseline_summary", "candidate_summary",
+        "antihack_signals",
+    },
     "attribution/classify.v1": {
         "cluster_samples", "sut_evidence", "failure_modes", "opt_history",
     },
@@ -160,6 +166,41 @@ class TestFallbackChinese:
     def test_fallback_empty_library(self):
         lib = PromptLibrary()
         assert "组件: critic" in lib.render("critic", "review", {"a": 1})
+
+
+# ---------------------------------------------------------------------------
+# B2-T8：模板输出 JSON 键与下游 schema 逐字对齐
+# （真实 LLM 路径缺键 → schema 校验必败 → 细化/起草字段失效）
+# ---------------------------------------------------------------------------
+
+_CLASSIFY_KEYS = (
+    "failure_mode", "defect_class", "evidence_refs", "rationale", "directions",
+)
+_PROPOSE_KEYS = (
+    "problem_trace_ids", "failure_type", "defect_class", "proposal_type",
+    "diff_content", "expected_improve", "risk", "verification_task_ids",
+    "predicted_affected_tasks",
+)
+
+
+class TestSchemaKeyAlignment:
+    def test_classify_keys_match_refined_cluster_out(self):
+        lib = _load_real_library()
+        body = lib._templates["attribution/classify.v1"]
+        for key in _CLASSIFY_KEYS:
+            assert f'"{key}"' in body, f"classify.v1 输出指令缺契约键 {key}"
+        # 旧键 evidence 已下线（契约键为 evidence_refs）
+        assert '"evidence"' not in body
+
+    def test_propose_keys_match_hypothesis_draft_out(self):
+        lib = _load_real_library()
+        body = lib._templates["hypothesis/propose.v1"]
+        for key in _PROPOSE_KEYS:
+            assert f'"{key}"' in body, f"propose.v1 输出指令缺契约键 {key}"
+        for legacy in ("target_path", "model_config_patch", "rationale"):
+            assert f'"{legacy}"' not in body, (
+                f"propose.v1 残留非契约键 {legacy}（HypothesisDraftOut 九键之外）"
+            )
 
 
 # ---------------------------------------------------------------------------

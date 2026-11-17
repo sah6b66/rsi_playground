@@ -72,10 +72,10 @@ class StubRunner:
 
 
 class StubAttribution:
-    def analyze(self, failed_runs, sut_config, opt_history):
+    async def analyze(self, failed_runs, sut_config, opt_history):
         from rsi.optimizer.attribution import AttributionAnalyzer
 
-        return AttributionAnalyzer().analyze(failed_runs, sut_config, opt_history)
+        return await AttributionAnalyzer().analyze(failed_runs, sut_config, opt_history)
 
 
 class RecordingSelector:

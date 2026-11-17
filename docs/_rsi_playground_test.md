@@ -3,13 +3,13 @@
 | 项目 | 内容 |
 |------|------|
 | 文档编号 | RSI-PG-DES-004 |
-| 版本 | v2.4（ADR-27 会话双模式联动） |
-| 日期 | 2026-11-10 |
+| 版本 | v2.5（B2 批 LLM 核心用例映射） |
+| 日期 | 2026-11-16 |
 | 状态 | 待评审 |
 | 上游文档 | 需求 RSI-PG-REQ-001 v0.26；设计 RSI-PG-DES-001 v2.13 |
 | 关联文档 | 接口定义 RSI-PG-DES-003（被测接口签名/数据契约）；配置设计 RSI-PG-DES-002（测试相关配置：cassette_mode/seed） |
 
-> 本文档承载**测试策略与用例设计**（原主设计文档第 7 章），含分层策略、测试基础设施（Fake 全家桶）、63 条用例清单（TU/IN/EE/SIM，映射需求验收）与 CI 流水线；主设计文档第 9 章追踪矩阵中的用例 ID 定义以本文档 §3 为准。
+> 本文档承载**测试策略与用例设计**（原主设计文档第 7 章），含分层策略、测试基础设施（Fake 全家桶）、72 条用例清单（TU/IN/EE/SIM，映射需求验收）与 CI 流水线；主设计文档第 9 章追踪矩阵中的用例 ID 定义以本文档 §3 为准。
 
 ---
 
@@ -72,6 +72,15 @@ fixture_sut_oc     # OpenCode 最小示例 SUT 配置树（1 skill + 1 MCP(echo)
 | TU-035 | 单元 | exec_readonly 白名单 | 前缀白名单内命令（display/show/ping 等）通过；白名单外（配置类/未知动词）拒绝；大小写与全路径变体 | FR7.1/设计 3.4.1 |
 | TU-038 | 单元 | NetworkPrepClient（ADR-27，DD-04 §5.8） | prepare/restore/status 三方法请求组装与响应解析（mock httpx：端点路径/body 字段={params,session_id}/{env_id,params}/status→ready）；超时与非 2xx→EnvError（含响应体摘要）；status 探测语义——连接拒绝/超时/非 2xx→返回 False 不抛；base_url 空串→构造即 ConfigError | FR4.1/设计 3.13 |
 | TU-039 | 单元 | API 评估集解析（ADR-27，DD-01 ApiEvalsetTask） | 评估集在线 API 响应 → ApiEvalsetTask 转换（tasks[] 逐行：network_env{name,params}/task{prompt}/expected{root_cause,final_state,critical_steps,checklist} 字段映射与缺字段校验拒绝）；与 CLI 类 TaskRecord 在 expected 判定维度同构 | FR3.1/设计 3.13 |
+| TU-040 | 单元 | 归因 LLM 精分类（cassette，B2） | AttributionAnalyzer → LLMRefinedAttributionAnalyzer：失败簇逐簇 classify.v1 细化（RefinedClusterOut 五键 schema 校验）；单簇 LLM 失败/JSON 无效 → 逐簇降级规则结果（整体不失败）；source=llm 审计落 AttributionReport；opt_history 超 4000 字符截断 | FR6.2 |
+| TU-041 | 单元 | opt_history 生产装配（B2） | 引擎缺参经 opt_history_fn 取数（fn 异常降级空表、显式传参优先）；bootstrap 闭包 hypotheses 表该 SUT 近 20 条 → 归因输入行映射；无 fn 默认 [] 不回归 | FR6.2 |
+| TU-042 | 单元 | LLM 假设起草端点（cassette，B2） | POST /iterations/{id}/hypotheses:draft：propose.v1 渲染（vars 缺备→ConfigError→503）；HypothesisDraftOut 九键 schema 校验；LLM 未配/失败 → 503 不推进状态；端点无状态（不落库） | FR6.3 |
+| TU-043 | 单元 | 人工门② FR6.3 全 schema（B2） | POST /iterations/{id}/hypothesis 携带 draft（FR6.3 全字段）→ HypothesisDraftOut 校验 → hypotheses 记录 + persist_record 落 DB 行（opt_history 闭环，submitted→proposed 收敛）；纯字符串老路径不变；无效 draft → 422 且迭代状态不推进 | FR6.3/FR10.2 |
+| TU-044 | 单元 | pairwise 三维度对比判决（cassette，B2） | LLMJudge pairwise.v1：三维度+刷分嫌疑 → PairwiseReport；模板占位符契约 + cassette record/replay round-trip；POST /runs/{id}/pairwise 端点（跨任务对比 422/缺轨迹事件 422/LLM 失败 503/未知 run 404）；antihack skipped_critical_steps 信号进对比上下文 | FR7.2 |
+| TU-045 | 单元 | SFT 报告 LLM 分析段（cassette，B2） | SftAssessor draft.v1 分析段接线；LLM 未配/失败 → 回退纯规则报告不阻断 | FR6.9 |
+| TU-046 | 单元 | provider 重试/主备链/per-provider model（B2） | AnthropicCompatHandler：429/ConnectTimeout 一次重试后成功、5xx 重试、耗尽 raise、4xx 不重试；ProviderChain 主连败切备；bootstrap 主/备各取自身条目 model（空回退 judge 默认） | FR5.7/DD-02 §5.1 |
+| TU-047 | 单元 | llm_calls estimated 落列（B2） | estimated 列（FR5.6 预算真实性标记）：新库 create_all 建列；旧库缺列 → Accountant._persist 捕 SQLite 错误 ALTER 自迁移重试一次（幂等） | FR5.6 |
+| TU-048 | 单元 | /system/doctor 鉴权门禁（B2） | 未登录 → 401（doctor 触发网络探活并暴露主机名/路径）；view:read 角色通过 | NFR8 |
 | IN-001 | 集成 | BatchRunner 全链线 | Fake 全家桶：3 任务批次 → 全部 done、Verdict/轨迹/checkpoint 落库 | FR5.1 |
 | IN-002 | 集成 | 断点续跑 | 批次中断（第 2 个任务抛错）→ 重启恢复 → 仅补跑未完成任务 | FR5.5 |
 | IN-003 | 集成 | 评测缓存 | 同 cache_key 二次执行 → status=cached 且不重跑；重判不重测 | FR9.1 |
@@ -89,7 +98,7 @@ fixture_sut_oc     # OpenCode 最小示例 SUT 配置树（1 skill + 1 MCP(echo)
 | IN-015 | 集成 | 资源回收 | lab 超时自动销毁、批次结束自动回收；labs.status=destroyed 落库 | FR4.7 |
 | IN-016 | 集成 | 轨迹-版本反查 | run_id→runs→batches.config_version→Git 文件树全链反查；TraceStore.query/stats 过滤维度验证 | FR8.5/2.5 |
 | IN-017 | 集成 | 评估集导入导出 | 三件套原格式导入→git 管理→导出 round-trip 内容一致 | FR3.5 |
-| IN-018 | 集成 | LLMJudge 全链（cassette） | P0（ADR-23）：root_cause 语义/路径质量/checklist 命中/结论-过程一致性 → Verdict 聚合一票否决；pairwise 新旧轨迹对比报告（P1 部分） | FR7.2/7.5 |
+| IN-018 | 集成 | LLMJudge 全链（cassette） | P0（ADR-23）：root_cause 语义/路径质量/checklist 命中/结论-过程一致性 → Verdict 聚合一票否决；pairwise 新旧轨迹对比报告（P1 部分 B2 落地，三维度+端点详列 TU-044） | FR7.2/7.5 |
 | IN-019 | 集成 | 自优化模式（ADR-21） | P0 人工模式：人工两批（基线/候选）→ 人工 promote（双批引用+理由）→ experiments 自动登记证据链；P1 模式：iterations 全状态流转含 smoke 失败短路→REVERT 不进全量、人工门等待/通过；mode=p2 于 P2 开放前返回 409 | FR10.2/ADR-21 |
 | IN-020 | 集成 | 人工门工作流端点（v2.11） | 四门推进全链：confirm-direction→hypothesis（写 hypotheses.iteration_id）→review→decision；非法状态（门序错乱）409；每门写 audit_log；:resume/DELETE（进行中 409 先 abort） | FR10.2 |
 | IN-021 | 集成 | 运维观测端点集（v2.11） | instances 列表/清理；DELETE :stop 熔断恢复后批次可续；/system/logs 按 run_id 检索命中；/audit-logs 过滤；/system/freeze 与 health 组件级；SUT files CRUD（staging→commit 走 TargetRegistry 校验、越界 409）；sft-report/noise-bands/evalsets versions 返回 | FR10.1/10.9 |
@@ -118,4 +127,4 @@ fixture_sut_oc     # OpenCode 最小示例 SUT 配置树（1 skill + 1 MCP(echo)
 
 ---
 
-> 修订记录：v2.4 — **ADR-27 会话双模式联动（2026-11-10）**：新增 TU-038（NetworkPrepClient 三方法+超时/异常/status 探测语义）、TU-039（API 评估集在线响应→ApiEvalsetTask 转换）、IN-023（API 模式会话端到端：mock API→prepare→SUT→restore→判决，断言不注入 DEV_*/不走 SandboxService）；TU-023 中 call_api 组装部分随 config_apis 废除删除；用例总数 60→63。v2.3 — P0 多实例并行联动（ADR-24）：新增 IN-022（双批并行互不干扰/端点映射唯一/SshPool (ip,port) 隔离/同 lab 任务锁）；用例总数 59→60。v2.2 — 二轮交叉审查修复：EE-003/SIM-003 改写为 ADR-23 双口径（客观断言一致 + 语义判决一致率）；TU-032 增温度 0 稳定性断言；新增 TU-035（exec_readonly 前缀白名单）；用例总数 58→59。v2.1 — 平台 API 与 WEB 全量补齐联动（设计 v2.11/A–N）：新增 TU-034（settings 动态/静态管理与热更）、IN-020（人工门四端点工作流）、IN-021（运维观测端点集：instances/STOP 恢复/日志/审计/冻结/健康/文件 CRUD/报告/噪声带）；用例总数 55→58。v2.0 — 归因原文输入联动（设计 v2.10）：新增 TU-033（归因原文对照：提示词/知识库有无 → 不同失败模式、B 类原文证据引用、token 裁剪）；IN-006 增归因原文输入与证据断言；用例总数 54→55。v1.9 — LLM 主判决层联动（ADR-23）：TU-010 改写（客观断言：终态/证据命中/缺试，语义判定移出）；TU-026 改为 LLMJudge 巡检/预检语义命中（cassette）；新增 TU-032（root_cause 语义判定 cassette：同义判对/indeterminate/hints 非判据）；IN-018 提前 P0 并扩全链断言（pairwise 留 P1 部分）；用例总数 53→54。v1.8 — 删除故障编译层联动（设计 v2.8）：TU-019（FaultCompiler）删除；分层表"FaultSpec→CLI 编译"移除；用例总数 54→53。v1.7 — 载体轨迹通道核实与分期联动（ADR-22）：新增 TU-031（wiretap 解析器：prompt-logger 帧映射 P0 / stream-json 帧 P2 部分）；EE-001/TU-029/IN-014 改为 OpenCode 为主断言对象（Claude Code 部分标 P2）；fixture 说明改 sut_demo_oc（P0）/sut_demo_cc（P2）；用例总数 53→54。v1.6 — 自优化模式分期重构联动（ADR-21）：新增 IN-019（P0 人工模式向导链路 + P1 模式状态流转与短路 + mode=p2 409）；TU-027（IterationEngine 状态机）与 IN-006（优化迭代链路）随设计提前为 P0 可执行；用例总数 52→53。v1.5 — 命名规范联动（设计 v2.4）：TU-022 增运行态 ID 时间戳段（UTC 14 位）与随机段格式校验。v1.4 — 评测准备模型重构联动（ADR-20）：TU-023 改写为两种手段编译（exec_cli 多设备多命令 / call_api 请求组装）；新增 TU-030（任务后恢复策略：备份恢复模板、API 撤销、L1/L2 切换）；IN-012 改为任务后恢复断言（判决后恢复、prepare 前环境干净）；TU-019 描述随故障库定位调整（编译为 exec_cli）；用例总数 51→52（TU 22）。v1.3 — 二次交叉审查修复：新增 13 条用例——TU-024（CredentialStore）/TU-025（站点覆盖校验）/TU-026（巡检·预检判定）/TU-027（IterationEngine 状态机）/TU-028（反偷步检测）/TU-029（FINAL_JSON 提取）、IN-013（预算熔断与 STOP）/IN-014（wire 级完整性）/IN-015（资源回收）/IN-016（轨迹-版本反查）/IN-017（导入导出）/IN-018（LLMJudge）/EE-009（网络隔离）；EE-008 补 SUT 日志归档断言；用例总数勘误 33→51（TU 21 + IN 18 + EE 9 + SIM 3）；IN-001/002 术语"用例"→"任务"。v1.1 — 评估集三件套重构配套：新增 TU-023（prepare 编译）与 IN-012（环境一次构建 + 任务间恢复）；TU-019 描述同步。v1.0 — 自主设计文档 v1.7 拆分建档（原第 7 章整体迁入，内容未变；TU-022 需求列引用同步为主设计 2.5 命名规范）。
+> 修订记录：v2.5 — **B2 批 LLM 核心用例映射（2026-11-16）**：新增 TU-040（归因 LLM 精分类：逐簇细化+逐簇降级+source 审计）、TU-041（opt_history 生产装配：fn 取数+bootstrap 近 20 条闭包）、TU-042（假设起草端点：propose.v1 渲染+九键 schema+503 路径）、TU-043（人工门② FR6.3 全 schema+hypotheses DB 行闭环）、TU-044（pairwise 三维度+刷分嫌疑+端点+antihack 信号）、TU-045（SFT 报告 LLM 分析段+失败回退）、TU-046（provider 重试/主备链/per-provider model 补测）、TU-047（llm_calls estimated 落列+旧库 ALTER 自迁移）、TU-048（/system/doctor 鉴权门禁 view:read）；IN-018 pairwise 标注 B2 落地并指向 TU-044；用例总数 63→72。v2.4 — **ADR-27 会话双模式联动（2026-11-10）**：新增 TU-038（NetworkPrepClient 三方法+超时/异常/status 探测语义）、TU-039（API 评估集在线响应→ApiEvalsetTask 转换）、IN-023（API 模式会话端到端：mock API→prepare→SUT→restore→判决，断言不注入 DEV_*/不走 SandboxService）；TU-023 中 call_api 组装部分随 config_apis 废除删除；用例总数 60→63。v2.3 — P0 多实例并行联动（ADR-24）：新增 IN-022（双批并行互不干扰/端点映射唯一/SshPool (ip,port) 隔离/同 lab 任务锁）；用例总数 59→60。v2.2 — 二轮交叉审查修复：EE-003/SIM-003 改写为 ADR-23 双口径（客观断言一致 + 语义判决一致率）；TU-032 增温度 0 稳定性断言；新增 TU-035（exec_readonly 前缀白名单）；用例总数 58→59。v2.1 — 平台 API 与 WEB 全量补齐联动（设计 v2.11/A–N）：新增 TU-034（settings 动态/静态管理与热更）、IN-020（人工门四端点工作流）、IN-021（运维观测端点集：instances/STOP 恢复/日志/审计/冻结/健康/文件 CRUD/报告/噪声带）；用例总数 55→58。v2.0 — 归因原文输入联动（设计 v2.10）：新增 TU-033（归因原文对照：提示词/知识库有无 → 不同失败模式、B 类原文证据引用、token 裁剪）；IN-006 增归因原文输入与证据断言；用例总数 54→55。v1.9 — LLM 主判决层联动（ADR-23）：TU-010 改写（客观断言：终态/证据命中/缺试，语义判定移出）；TU-026 改为 LLMJudge 巡检/预检语义命中（cassette）；新增 TU-032（root_cause 语义判定 cassette：同义判对/indeterminate/hints 非判据）；IN-018 提前 P0 并扩全链断言（pairwise 留 P1 部分）；用例总数 53→54。v1.8 — 删除故障编译层联动（设计 v2.8）：TU-019（FaultCompiler）删除；分层表"FaultSpec→CLI 编译"移除；用例总数 54→53。v1.7 — 载体轨迹通道核实与分期联动（ADR-22）：新增 TU-031（wiretap 解析器：prompt-logger 帧映射 P0 / stream-json 帧 P2 部分）；EE-001/TU-029/IN-014 改为 OpenCode 为主断言对象（Claude Code 部分标 P2）；fixture 说明改 sut_demo_oc（P0）/sut_demo_cc（P2）；用例总数 53→54。v1.6 — 自优化模式分期重构联动（ADR-21）：新增 IN-019（P0 人工模式向导链路 + P1 模式状态流转与短路 + mode=p2 409）；TU-027（IterationEngine 状态机）与 IN-006（优化迭代链路）随设计提前为 P0 可执行；用例总数 52→53。v1.5 — 命名规范联动（设计 v2.4）：TU-022 增运行态 ID 时间戳段（UTC 14 位）与随机段格式校验。v1.4 — 评测准备模型重构联动（ADR-20）：TU-023 改写为两种手段编译（exec_cli 多设备多命令 / call_api 请求组装）；新增 TU-030（任务后恢复策略：备份恢复模板、API 撤销、L1/L2 切换）；IN-012 改为任务后恢复断言（判决后恢复、prepare 前环境干净）；TU-019 描述随故障库定位调整（编译为 exec_cli）；用例总数 51→52（TU 22）。v1.3 — 二次交叉审查修复：新增 13 条用例——TU-024（CredentialStore）/TU-025（站点覆盖校验）/TU-026（巡检·预检判定）/TU-027（IterationEngine 状态机）/TU-028（反偷步检测）/TU-029（FINAL_JSON 提取）、IN-013（预算熔断与 STOP）/IN-014（wire 级完整性）/IN-015（资源回收）/IN-016（轨迹-版本反查）/IN-017（导入导出）/IN-018（LLMJudge）/EE-009（网络隔离）；EE-008 补 SUT 日志归档断言；用例总数勘误 33→51（TU 21 + IN 18 + EE 9 + SIM 3）；IN-001/002 术语"用例"→"任务"。v1.1 — 评估集三件套重构配套：新增 TU-023（prepare 编译）与 IN-012（环境一次构建 + 任务间恢复）；TU-019 描述同步。v1.0 — 自主设计文档 v1.7 拆分建档（原第 7 章整体迁入，内容未变；TU-022 需求列引用同步为主设计 2.5 命名规范）。

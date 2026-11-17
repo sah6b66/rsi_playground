@@ -40,6 +40,7 @@ from rsi.judge.summarizer import TraceSummarizer
 from rsi.llm.accounting import Accountant
 from rsi.llm.client import LLMClient
 from rsi.llm.prompts import PromptLibrary
+from rsi.llm.providers import HandlerResult
 from rsi.log import get_logger
 from rsi.optimizer.applier import ChangeApplier
 from rsi.optimizer.attribution import AttributionAnalyzer
@@ -163,6 +164,51 @@ def _hydrate_users(session_factory: Callable[[], Any]) -> dict[str, dict]:
     return users
 
 
+def _opt_history_lookup(
+    session_factory: Callable[[], Any], sut_id: str
+) -> list[dict]:
+    """B2-T3 (FR6.2): sut_id -> 近期优化历史（hypotheses 表近 20 条）.
+
+    归因（ATTRIBUTING）输入的"此簇已尝试 X 未果"数据基础：每条映射为
+    ``{failure_mode, decision, proposal_type, target}``（decision 即行 status）。
+    表按 ``created_at`` 倒序（hypotheses 无 updated_at 列）；单行 JSON 损坏
+    只丢该行字段、库缺失/未 init 整体降级 ``[]`` —— 历史输入缺失绝不阻断
+    归因主流程（与 _hydrate_users 同一诚实降级约定）。
+    """
+    try:
+        from sqlmodel import select
+
+        from rsi.db.tables import Hypothesis as _Hyp
+
+        out: list[dict] = []
+        with session_factory() as session:
+            rows = session.exec(
+                select(_Hyp)
+                .where(_Hyp.sut_id == sut_id)
+                .order_by(_Hyp.created_at.desc())
+                .limit(20)
+            ).all()
+            for row in rows:
+                try:
+                    payload = json.loads(row.hypothesis_json or "{}")
+                    if not isinstance(payload, dict):
+                        payload = {}
+                except Exception:  # noqa: BLE001 - 单行损坏不丢整批历史
+                    payload = {}
+                out.append(
+                    {
+                        "failure_mode": payload.get("failure_type", ""),
+                        "decision": row.status,
+                        "proposal_type": payload.get("proposal_type"),
+                        "target": payload.get("target_path")
+                        or payload.get("target"),
+                    }
+                )
+        return out
+    except Exception:  # noqa: BLE001 - 历史输入缺失不阻断归因
+        return []
+
+
 def build_services(
     settings: Settings | None = None,
     session_factory: Callable[[], Any] | None = None,
@@ -229,25 +275,44 @@ def build_services(
     # -- LLM (cassette off + 配了 anthropic key → 真实 handler；否则离线 mock) --
     from pathlib import Path as _Path
 
-    from rsi.llm.providers import AnthropicCompatHandler
+    from rsi.llm.providers import AnthropicCompatHandler, ProviderChain
 
     _prompts_root = _Path(__file__).parent / "llm" / "prompts"
     prompt_library = PromptLibrary()
     prompt_library.load_root(_prompts_root)
     accountant = Accountant(session_factory=session_factory)  # C-7: llm_calls rows
     judge_cfg = settings.llm.defaults.get("judge")
-    handler: Callable[..., str] = _offline_llm_handler
+    handler: Callable[..., HandlerResult] = _offline_llm_handler
     _anth = settings.llm.providers.get("anthropic")
     if settings.llm.cassette_mode == "off" and _anth is not None and _anth.api_key:
+        # B2-T8：model 解析——各 provider 自己的 model 键优先（跨族备胎不再
+        # 抄 judge 默认 → 404），空值回退 judge 默认，再回退 handler 内置默认。
+        _judge_default = (
+            judge_cfg.model if judge_cfg and judge_cfg.model else "glm-5.1"
+        )
         handler = AnthropicCompatHandler(
             api_key=_anth.api_key,
             base_url=_anth.base_url,
-            model=(judge_cfg.model if judge_cfg and judge_cfg.model else "glm-5.1"),
+            model=(_anth.model or _judge_default),
+            retry_max=settings.llm.retry_max,
         )
+        # B1-6：配置了 backup_provider 且有效 → 主备故障转移链（DD-02 §5.1）
+        _bk_name = _anth.backup_provider
+        _bk = settings.llm.providers.get(_bk_name) if _bk_name else None
+        if _bk is not None and _bk.api_key:
+            handler = ProviderChain(
+                handler,
+                AnthropicCompatHandler(
+                    api_key=_bk.api_key,
+                    base_url=_bk.base_url,
+                    model=(_bk.model or _judge_default),
+                    retry_max=settings.llm.retry_max,
+                ),
+            )
         logger.info(
             "bootstrap.llm_real_provider",
             base_url=_anth.base_url or "default",
-            model=(judge_cfg.model if judge_cfg and judge_cfg.model else "glm-5.1"),
+            model=(_anth.model or _judge_default),
         )
     llm_client = LLMClient(
         handler=handler,
@@ -262,11 +327,14 @@ def build_services(
 
     # -- Judge (session_factory wired -> judgments table persistence) -----
     llm_judge = LLMJudge(llm_client, TraceSummarizer())
+    # FR7.2 pairwise：detector 同一实例既进 JudgeService 也注册进 services，
+    # runs pairwise 端点经 services["antihack"] 取用（B2-T6 修复）。
+    antihack = AntiHackDetector()
     judge_service = JudgeService(
         det=DeterministicJudge(timeout_s=float(settings.judge.det_timeout_s)),
         safety=SafetyScanner(),
         llm=llm_judge,
-        antihack=AntiHackDetector(),
+        antihack=antihack,
         agg=VerdictAggregator(),
         session_factory=session_factory,
         # C-1: freeze-audit fingerprint of the judge prompt actually used
@@ -408,13 +476,29 @@ def build_services(
     decision_recorder = DecisionRecorder(
         session_factory=session_factory, audit_log=audit_log
     )
+    # B2-T2：真实 LLM（与 llm_client 同一判定：cassette off + provider key）
+    # 时包一层 LLM 精分类；离线/mock 形态保持裸规则层。
+    _real_llm = (
+        settings.llm.cassette_mode == "off"
+        and _anth is not None
+        and _anth.api_key
+    )
     attribution_analyzer = AttributionAnalyzer()
+    if _real_llm:
+        from rsi.optimizer.attribution_llm import LLMRefinedAttributionAnalyzer
+
+        attribution_analyzer = LLMRefinedAttributionAnalyzer(
+            attribution_analyzer, llm_client
+        )
+        logger.info("bootstrap.attribution_llm_refined")
     deterministic_critic = DeterministicCritic(target_registry)
     change_applier = ChangeApplier(target_registry, gitstore=git_store)
     sft_assessor = SftAssessor(
         no_gain_rounds=settings.optimizer.sft.no_gain_rounds,
         min_samples=settings.optimizer.sft.min_samples,
         artifacts_dir=settings.artifacts_dir,
+        # B2-7 FR6.9：真实 LLM 才接报告起草增强段；离线完全走老路径
+        llm=llm_client if _real_llm else None,
     )
 
     # -- Orchestrator -------------------------------------------------------
@@ -503,6 +587,9 @@ def build_services(
         decision_recorder=decision_recorder,
         gitstore=git_store,
         noise_lookup=_noise_lookup,
+        # B2-T3 (FR6.2): opt_history 生产装配——引擎在调用方未显式传入时经此
+        # 闭包查 hypotheses 表该 SUT 近 20 条假设，归因输入不再恒为空。
+        opt_history_fn=partial(_opt_history_lookup, session_factory),
         state_store=pause_store,
         # U7b: per-SUT optimization scope (suts store record) narrows RSI
         # auto-optimization to the explicitly defined paths; missing/empty
@@ -536,6 +623,8 @@ def build_services(
         "llm_judge": llm_judge,
         # judge
         "judge_service": judge_service,
+        # FR7.2 runs pairwise 刷分信号通道（与 JudgeService 共享同一实例）
+        "antihack": antihack,
         # carrier
         "host_service": host_service,
         "host_pool": host_pool,

@@ -8,12 +8,13 @@ aggregator routes indeterminate verdicts to the human queue (DD-08 §5.3 rule 4)
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import json
+from typing import TYPE_CHECKING, Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from rsi.core.errors import ConfigError
-from rsi.core.models import PathQuality
+from rsi.core.models import PairwiseReport, PathQuality
 from rsi.judge.summarizer import TraceSummarizer
 from rsi.llm.client import LLMClient
 from rsi.log import get_logger
@@ -21,9 +22,20 @@ from rsi.log import get_logger
 if TYPE_CHECKING:  # pragma: no cover - import cycle guard
     from rsi.core.models import EvalTask, TaskResult, TraceEvent
 
-__all__ = ["LLMJudge", "PathQualityResult", "RootCauseMatchResult", "SemanticScores"]
+__all__ = [
+    "LLMJudge",
+    "PairwiseOut",
+    "PathQualityResult",
+    "RootCauseMatchResult",
+    "SemanticScores",
+]
 
 logger = get_logger(__name__)
+
+# B2 终审 Fix2：pairwise 单侧摘要总量上限（仿 attribution 层 cap 常量风格）。
+# raw-dict 事件路径没有 summarizer budget 兜底（runs 端点生产源），超长
+# 轨迹逐行拼接会撑爆 pairwise 提示词——拼接后整体截断并标记。
+_SUMMARY_TOTAL_CAP = 8000
 
 
 class _M(BaseModel):
@@ -57,6 +69,18 @@ class PathQualityResult(_M):
     checklist_missed: list[str] = []  # expected checklist items not covered
     checklist_false_positive: list[str] = []  # SUT actions matching no checklist item
     reasoning: str
+
+
+class PairwiseOut(_M):
+    """judge/pairwise schema (FR7.2 pairwise 对比判决)."""
+
+    winner: Literal["baseline", "candidate", "tie"]
+    root_cause_dim: str
+    path_quality_dim: str
+    consistency_dim: str
+    rationale: str
+    hack_suspect: bool = False
+    hack_reasons: list[str] = []
 
 
 class LLMJudge:
@@ -142,6 +166,37 @@ class LLMJudge:
         )
         return result_scores
 
+    async def pairwise(
+        self,
+        task: Any,
+        base: "tuple[Any, Any]",
+        cand: "tuple[Any, Any]",
+        *,
+        antihack_signals: str = "",
+    ) -> PairwiseReport:
+        """FR7.2: pairwise comparison of two same-task runs (DD-08 pairwise).
+
+        Side-band enhancement — does NOT touch the ADR-23 single-run primary
+        judgment path (``judge``). ``base``/``cand`` are ``(result, events)``
+        pairs; events may be TraceEvent objects or raw trace dicts (traces
+        store / collector shape). ``task`` accepts an :class:`EvalTask`
+        wrapper or a plain mapping (``task_id``/``title``/``expected``).
+
+        ConfigError (template/vars contract drift) and LLMOutputInvalid
+        propagate to the caller — the API layer maps both to 503.
+        """
+        title, expected = self._pairwise_task_fields(task)
+        vars = {
+            "task_title": title,
+            "expected": expected,
+            "baseline_summary": self._side_summary(base[0], base[1]),
+            "candidate_summary": self._side_summary(cand[0], cand[1]),
+            "antihack_signals": antihack_signals or "",
+        }
+        resp = await self._llm.complete("judge", "pairwise", vars, schema=PairwiseOut)
+        assert resp.parsed is not None
+        return PairwiseReport(**resp.parsed.model_dump())
+
     # -- internals ----------------------------------------------------------------
 
     async def _judge_root_cause(
@@ -203,3 +258,97 @@ class LLMJudge:
             consistency=False,
             consistency_reason=reason,
         )
+
+    # -- pairwise internals (FR7.2) --------------------------------------------------
+
+    @staticmethod
+    def _pairwise_task_fields(task: Any) -> tuple[str, str]:
+        """Normalize task input to ``(task_title, expected_text)``."""
+        inner = getattr(task, "task", None)  # EvalTask wrapper
+        if inner is not None:
+            title = str(getattr(inner, "title", "") or "")
+            expected = getattr(inner, "expected", None)
+            expected_text = (
+                expected.model_dump_json()
+                if expected is not None and hasattr(expected, "model_dump_json")
+                else ""
+            )
+            return title, expected_text
+        if isinstance(task, Mapping):
+            title = str(task.get("title") or task.get("task_id") or "")
+            raw = task.get("expected")
+            if raw is None or isinstance(raw, str):
+                return title, str(raw or "")
+            return title, json.dumps(raw, ensure_ascii=False, default=str)
+        return "", ""
+
+    def _side_summary(self, result: Any, events: Any) -> str:
+        """One run's evidence summary: trace lines + final conclusion line.
+
+        TraceEvent lists reuse the shared TraceSummarizer; raw dicts (traces
+        store / collector / test rigs) get a command-sequence rendering so
+        the judge still sees what was executed.
+        """
+        if events and hasattr(events[0], "event_type"):
+            summary = self._summarizer.summarize(list(events))
+        elif events:
+            summary = "\n".join(
+                _dict_event_line(i, e) for i, e in enumerate(events)
+            )
+        else:
+            summary = ""
+        conclusion = self._conclusion_of(result)
+        if conclusion:
+            summary = (
+                f"{summary}\nfinal_answer={conclusion}"
+                if summary
+                else f"final_answer={conclusion}"
+            )
+        if len(summary) > _SUMMARY_TOTAL_CAP:
+            summary = summary[:_SUMMARY_TOTAL_CAP] + "…(truncated)"
+        return summary or "(no trace events)"
+
+    @staticmethod
+    def _conclusion_of(result: Any) -> str:
+        if result is None:
+            return ""
+        root = getattr(result, "root_cause", None)
+        if root:
+            return str(root)
+        if isinstance(result, Mapping):
+            for key in ("root_cause", "answer", "final_answer"):
+                value = result.get(key)
+                if value:
+                    return str(value)
+        return ""
+
+
+def _dict_event_line(index: int, e: Mapping) -> str:
+    """One-line rendering of a raw trace dict (non-TraceEvent event).
+
+    Covers both the rig shape ``{"kind", "payload": {...}}`` and the store /
+    collector dump shape ``{"seq", "type", "data": {...}}`` — the command
+    text must stay visible so the judge can compare executed steps.
+    """
+    kind = str(e.get("kind") or e.get("type") or e.get("event_type") or "event")
+    payload = e.get("payload")
+    if not isinstance(payload, Mapping):
+        payload = e.get("data") if isinstance(e.get("data"), Mapping) else {}
+    seq = e.get("seq", index)
+    command = str(payload.get("command") or payload.get("cli") or "")
+    if not command and isinstance(payload.get("args"), Mapping):
+        command = str(
+            payload["args"].get("cli") or payload["args"].get("command") or ""
+        )
+    if not command:
+        command = str(payload.get("name") or payload.get("tool") or "")
+    output = " ".join(str(payload.get("output") or "").split())[:240]
+    parts = [f"[{seq}] {kind}"]
+    if command:
+        parts.append(f"command={command[:200]}")
+    if output:
+        parts.append(f"output={output}")
+    if not command and not output:
+        keys = ",".join(sorted(k for k in payload.keys() if isinstance(k, str)))
+        parts.append(f"keys=[{keys}]")
+    return " ".join(parts)

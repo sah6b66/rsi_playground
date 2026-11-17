@@ -10,10 +10,14 @@ training, it returns a report when all three admission criteria hold:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rsi.log import get_logger
+
+if TYPE_CHECKING:
+    from rsi.llm.client import LLMClient
 
 __all__ = ["SftAssessor"]
 
@@ -49,12 +53,15 @@ class SftAssessor:
         no_gain_rounds: int = NO_GAIN_THRESHOLD,
         min_samples: int = FAILED_SAMPLE_THRESHOLD,
         artifacts_dir: str | Path | None = None,
+        llm: "LLMClient | None" = None,
     ) -> None:
         self.no_gain_rounds = int(no_gain_rounds)
         self.min_samples = int(min_samples)
         self.artifacts_dir = Path(artifacts_dir) if artifacts_dir else None
+        # B2-7 FR6.9：可选 LLM 起草客户端；None = 完全老路径（离线形态）
+        self._llm = llm
 
-    def assess(
+    async def assess(
         self,
         defect_b_clusters: list[dict[str, Any]],
         opt_history: list[dict[str, Any]],
@@ -130,13 +137,56 @@ class SftAssessor:
             },
         }
         if exp_id is not None:
-            path = self._write_report(report, exp_id=exp_id, batch_id=batch_id)
+            narrative = await self._draft_narrative(
+                defect_b_clusters, opt_history, exp_id=exp_id
+            )
+            if narrative:
+                report["llm_analysis"] = narrative
+            path = self._write_report(
+                report,
+                exp_id=exp_id,
+                batch_id=batch_id,
+                llm_section=narrative or None,
+            )
             if path is not None:
                 report["report_path"] = str(path)
         return report
 
+    async def _draft_narrative(
+        self,
+        defect_b_clusters: list[dict[str, Any]],
+        opt_history: list[dict[str, Any]],
+        *,
+        exp_id: str,
+    ) -> str:
+        """FR6.9: LLM 起草报告叙述段（sft/draft.v1，schema=None 取原文）.
+
+        任何失败降级为空串（报告回退现有模板文本），不阻断主流程。
+        """
+        if self._llm is None or not defect_b_clusters:
+            return ""
+        vars = {
+            "defect_clusters": json.dumps(
+                defect_b_clusters, ensure_ascii=False
+            ),
+            "opt_history": json.dumps(opt_history, ensure_ascii=False),
+        }
+        try:
+            resp = await self._llm.complete("sft", "draft", vars, schema=None)
+        except Exception as exc:  # noqa: BLE001 - 失败降级，不阻断评估
+            logger.warning(
+                "sft.llm_draft_failed", error=str(exc), exp_id=exp_id
+            )
+            return ""
+        return (resp.content or "").strip()
+
     def _write_report(
-        self, report: dict[str, Any], *, exp_id: str, batch_id: str | None
+        self,
+        report: dict[str, Any],
+        *,
+        exp_id: str,
+        batch_id: str | None,
+        llm_section: str | None = None,
     ) -> Path | None:
         """Write ``sft-<exp_id>.md`` under <artifacts>/<owner>/reports/ (D-10)."""
         base = self.artifacts_dir or Path("var/artifacts")
@@ -164,9 +214,18 @@ class SftAssessor:
             f"{'满足' if report['criteria']['knowledge_skill_tried'] else '不满足'}"
             f"（{', '.join(report['levers_tried']) or '无'}）",
             "",
-            "## 失败模式（无收益轮数）",
-            "",
         ]
+        if llm_section:
+            # FR6.9：LLM 增强段紧跟准入结论，其后才是失败模式明细
+            lines += [
+                "## LLM 分析与建议",
+                "",
+                llm_section,
+                "",
+                "（本段由 LLM 生成，须人工复核后采用）",
+                "",
+            ]
+        lines += ["## 失败模式（无收益轮数）", ""]
         for mode in report["failure_modes"]:
             lines.append(f"- {mode}: {report['no_gain_rounds'][mode]} 轮")
         lines += ["", "## 建议动作", "", "- 人工评估 SFT/DPO 数据构建与训练计划", ""]

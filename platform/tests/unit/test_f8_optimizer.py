@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from rsi.optimizer.sft import SftAssessor
 from rsi.optimizer.targets import TargetRegistry
 
@@ -32,28 +34,30 @@ def _history(rounds: int) -> list[dict]:
 
 
 class TestSftSettingsAndReport:
-    def test_thresholds_injected_from_settings(self):
+    @pytest.mark.asyncio
+    async def test_thresholds_injected_from_settings(self):
         # 4 rounds of no-gain: default (5) rejects, lowered (4) accepts
-        assert SftAssessor().assess(_clusters(), _history(4), 60) is None
+        assert await SftAssessor().assess(_clusters(), _history(4), 60) is None
         strict = SftAssessor(no_gain_rounds=4, min_samples=50)
-        assert strict.assess(_clusters(), _history(4), 60) is not None
+        assert await strict.assess(_clusters(), _history(4), 60) is not None
         # min_samples injected too
         assert (
-            SftAssessor(no_gain_rounds=5, min_samples=100).assess(
+            await SftAssessor(no_gain_rounds=5, min_samples=100).assess(
                 _clusters(), _history(6), 60
             )
             is None
         )
         assert (
-            SftAssessor(no_gain_rounds=5, min_samples=60).assess(
+            await SftAssessor(no_gain_rounds=5, min_samples=60).assess(
                 _clusters(), _history(6), 60
             )
             is not None
         )
 
-    def test_report_file_written(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_report_file_written(self, tmp_path):
         assessor = SftAssessor(artifacts_dir=tmp_path)
-        report = assessor.assess(
+        report = await assessor.assess(
             _clusters(), _history(6), 60, exp_id="exp-123", batch_id="batch-9"
         )
         assert report is not None
@@ -65,13 +69,17 @@ class TestSftSettingsAndReport:
         assert "准入条件" in text
         assert "missed_critical_command" in text
 
-    def test_report_owner_defaults_to_exp_id(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_report_owner_defaults_to_exp_id(self, tmp_path):
         assessor = SftAssessor(artifacts_dir=tmp_path)
-        report = assessor.assess(_clusters(), _history(6), 60, exp_id="exp-7")
+        report = await assessor.assess(
+            _clusters(), _history(6), 60, exp_id="exp-7"
+        )
         assert Path(report["report_path"]) == tmp_path / "exp-7" / "reports" / "sft-exp-7.md"
 
-    def test_no_report_written_without_exp_id(self):
-        report = SftAssessor().assess(_clusters(), _history(6), 60)
+    @pytest.mark.asyncio
+    async def test_no_report_written_without_exp_id(self):
+        report = await SftAssessor().assess(_clusters(), _history(6), 60)
         assert report is not None
         assert "report_path" not in report
 

@@ -443,6 +443,9 @@ class LlmCall(SQLModel, table=True):
     latency_ms: Optional[int] = None
     run_id: Optional[str] = None
     batch_id: Optional[str] = Field(default=None, index=True)
+    # B2-T8：token 数是否为字符估算（FR5.6 预算真实性标记）。旧库缺列时由
+    # Accountant._persist 捕 SQLite 缺列错误后 ALTER TABLE 自迁移。
+    estimated: bool = Field(default=False)
 
 
 class Checkpoint(SQLModel, table=True):

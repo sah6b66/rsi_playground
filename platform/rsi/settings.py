@@ -578,6 +578,10 @@ class LlmProviderSettings(BaseModel):
     model_config = _C
     api_key: str = ""
     base_url: str = ""
+    # B2-T8：每 provider 自己的 model 名（跨族备胎不再抄 judge 默认 → 404）；
+    # 空 = 回退 llm.defaults.judge.model，再回退 handler 内置默认。
+    model: str = ""
+    backup_provider: Optional[str] = None
 
 
 class LlmModelSettings(BaseModel):
@@ -601,6 +605,7 @@ class LlmSettings(BaseModel):
     })
     cassette_mode: Literal["replay", "record", "off"] = "replay"
     max_concurrent_calls: int = 4
+    retry_max: int = 3
 
 
 # ══════ ⑪ evalset / network-prep API (ADR-27, config doc §2 ⑪) ══════

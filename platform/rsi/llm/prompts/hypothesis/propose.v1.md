@@ -17,9 +17,14 @@
 任务：提出一个改进假设。约束：
 1. 只允许修改 enabled_targets 清单内的要素（单点变更，不做复合修改）；
 2. 与失败假设摘要中的方向不得重复；
-3. switch_model 类型时 diff_content 为空、model_config_patch 填充；其余类型相反。
+3. diff_content 填基于可改要素原文的 unified diff；switch_model 等无文件改动
+   的提案类型留空字符串；
+4. expected_improve 一句话给出预期指标改善；risk 说明实施风险与回滚方式；
+   verification_task_ids / predicted_affected_tasks 给出建议复验与可能受影响
+   的任务 ID（无则空数组）。
 
-仅输出 JSON（键名保持英文）：
+仅输出 JSON（键名保持英文，九键齐备）：
 {{"problem_trace_ids": [<str>], "failure_type": <str>,
-"defect_class": "A"|"B", "proposal_type": <str>, "target_path": <str>,
-"diff_content": <str>, "model_config_patch": <str|null>, "rationale": <str>}}
+"defect_class": "A"|"B", "proposal_type": <str>, "diff_content": <str>,
+"expected_improve": <str>, "risk": <str>, "verification_task_ids": [<str>],
+"predicted_affected_tasks": [<str>]}}
