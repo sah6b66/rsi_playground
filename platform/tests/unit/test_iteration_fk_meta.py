@@ -48,10 +48,13 @@ class _Budget:
 
 
 def _engine(runner):
+    async def _analyze(*a, **k):
+        return SimpleNamespace(
+            clusters=[], directions=[], defect_counts={})
+
     return IterationEngine(
         runner,
-        SimpleNamespace(analyze=lambda *a, **k: SimpleNamespace(
-            clusters=[], directions=[], defect_counts={})),
+        SimpleNamespace(analyze=_analyze),
         SimpleNamespace(decide=lambda ctx: Decision(
             action="ADVISE_MANUAL", rule_hit=0, reason="stub", evidence={})),
         _Bus(),

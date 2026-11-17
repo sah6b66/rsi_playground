@@ -310,7 +310,7 @@ class _Budget:
 
 
 class _Attribution:
-    def analyze(self, *a, **k):
+    async def analyze(self, *a, **k):
         class R:
             clusters: list = []
         return R()

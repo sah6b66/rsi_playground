@@ -427,7 +427,20 @@ def build_services(
     decision_recorder = DecisionRecorder(
         session_factory=session_factory, audit_log=audit_log
     )
+    # B2-T2：真实 LLM（与 llm_client 同一判定：cassette off + provider key）
+    # 时包一层 LLM 精分类；离线/mock 形态保持裸规则层。
     attribution_analyzer = AttributionAnalyzer()
+    if (
+        settings.llm.cassette_mode == "off"
+        and _anth is not None
+        and _anth.api_key
+    ):
+        from rsi.optimizer.attribution_llm import LLMRefinedAttributionAnalyzer
+
+        attribution_analyzer = LLMRefinedAttributionAnalyzer(
+            attribution_analyzer, llm_client
+        )
+        logger.info("bootstrap.attribution_llm_refined")
     deterministic_critic = DeterministicCritic(target_registry)
     change_applier = ChangeApplier(target_registry, gitstore=git_store)
     sft_assessor = SftAssessor(

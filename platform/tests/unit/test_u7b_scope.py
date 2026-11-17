@@ -164,7 +164,7 @@ async def test_engine_passes_scope_to_critic():
     from types import SimpleNamespace
 
     class StubAttribution:
-        def analyze(self, failed_runs, sut_config, opt_history):
+        async def analyze(self, failed_runs, sut_config, opt_history):
             return SimpleNamespace(clusters=[])
 
     class StubSelector:

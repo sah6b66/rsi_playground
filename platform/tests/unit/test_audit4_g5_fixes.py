@@ -61,7 +61,7 @@ class RecordingBus(EventBus):
 
 
 class _Attr:
-    def analyze(self, failed_runs, sut_config, opt_history):
+    async def analyze(self, failed_runs, sut_config, opt_history):
         return SimpleNamespace(clusters=[])
 
 

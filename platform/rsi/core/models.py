@@ -466,10 +466,13 @@ class AttributionCluster(_M):
     cluster_size: int
     sample_run_ids: list[str]
     evidence: list[str]  # trace refs + SUT source refs (v2.10)
+    rationale: str | None = None  # B2-T2: LLM 精分类归因依据
 
 
 class AttributionReport(_M):
     clusters: list[AttributionCluster]  # sorted by size x fixability desc
+    source: str = "rules"  # rules | llm（B2-T2 可审计）
+    directions: list[str] = []  # B2-T2: LLM 细化给出的优化方向
 
 
 # ---------------------------------------------------------------------------

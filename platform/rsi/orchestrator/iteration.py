@@ -651,7 +651,7 @@ class IterationEngine:
         # 1. ATTRIBUTING: rule-layer analysis of the baseline failures
         await self._advance(iteration_id, from_, "ATTRIBUTING")
         from_ = "ATTRIBUTING"
-        report = self.attribution_analyzer.analyze(
+        report = await self.attribution_analyzer.analyze(
             failed_runs or [], sut_config or {}, opt_history or []
         )
 

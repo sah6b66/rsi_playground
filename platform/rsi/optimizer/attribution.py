@@ -90,7 +90,7 @@ class _RunFeatures:
 class AttributionAnalyzer:
     """Rule-layer attribution over pre-computed failed-run data (P0)."""
 
-    def analyze(
+    async def analyze(
         self,
         failed_runs: list[dict],
         sut_config: dict[str, str],
